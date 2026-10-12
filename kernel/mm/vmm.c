@@ -13,6 +13,7 @@
 #include <core/sections.h>
 #include <lib/errno.h>
 #include <lib/string.h>
+#include <mm/kmalloc.h>
 #include <mm/pmm.h>
 #include <mm/vmm.h>
 
@@ -231,6 +232,60 @@ bool vmm_translate(const struct address_space *as, uptr va, u64 *pa, u64 *pte)
         table = table_virt(entry & PTE_ADDR);
     }
     return false;
+}
+
+struct address_space *vmm_create_user_space(void)
+{
+    struct address_space *as = kzalloc(sizeof(*as));
+
+    if (!as)
+        return NULL;
+    as->pml4_phys = alloc_table();
+    if (as->pml4_phys == 0) {
+        kfree(as);
+        return NULL;
+    }
+    as->lock = (struct spinlock)SPINLOCK_INIT("user page tables");
+
+    const u64 *kernel_pml4 = table_virt(kernel_as.pml4_phys);
+    u64 *pml4 = table_virt(as->pml4_phys);
+
+    BUG_ON(!kernel_half_frozen);
+    for (unsigned i = PT_ENTRIES / 2; i < PT_ENTRIES; i++)
+        pml4[i] = kernel_pml4[i];
+    return as;
+}
+
+/* Frees a user-half table at `level` (3 = PDPT ... 1 = PT) and everything below it. */
+static void free_user_table(u64 phys, int level)
+{
+    u64 *table = phys_to_virt(phys);
+
+    for (unsigned i = 0; i < PT_ENTRIES; i++) {
+        u64 e = table[i];
+
+        if (!(e & PTE_PRESENT))
+            continue;
+        BUG_ON(e & PTE_HUGE); /* user mappings are always 4 KiB */
+        if (level == 1)
+            pmm_free_page(e & PTE_ADDR); /* a user frame, owned by this space */
+        else
+            free_user_table(e & PTE_ADDR, level - 1);
+    }
+    pmm_free_page(phys);
+}
+
+void vmm_destroy_user_space(struct address_space *as)
+{
+    u64 *pml4 = phys_to_virt(as->pml4_phys);
+
+    BUG_ON(read_cr3() == as->pml4_phys);
+    for (unsigned i = 0; i < PT_ENTRIES / 2; i++) {
+        if (pml4[i] & PTE_PRESENT)
+            free_user_table(pml4[i] & PTE_ADDR, 3);
+    }
+    pmm_free_page(as->pml4_phys);
+    kfree(as);
 }
 
 static void must(int err, const char *what)

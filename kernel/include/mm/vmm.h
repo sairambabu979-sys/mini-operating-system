@@ -60,4 +60,14 @@ __must_check int vmm_unmap_page(struct address_space *as, uptr va, u64 *pa);
 /* Looks up va; on success stores the physical address and the leaf entry. */
 bool vmm_translate(const struct address_space *as, uptr va, u64 *pa, u64 *pte);
 
+/*
+ * User address spaces: a fresh PML4 whose kernel half (entries 256-511) is
+ * a copy of the kernel's. Since those entries are frozen, the copy never
+ * goes stale.
+ */
+__must_check struct address_space *vmm_create_user_space(void);
+
+/* Frees every user page, every user page table, and the PML4. Must not be active. */
+void vmm_destroy_user_space(struct address_space *as);
+
 #endif /* MINIOS_MM_VMM_H */

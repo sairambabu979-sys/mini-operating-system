@@ -55,6 +55,9 @@ enum {
     VEC_COUNT = 256,
 };
 
+/* trap_frame.vector for frames built by the syscall entry (not an IDT vector). */
+#define TRAP_VECTOR_SYSCALL 0x100
+
 /* Page-fault error code bits. */
 #define PF_PRESENT (1u << 0) /* 0: not-present page, 1: protection violation */
 #define PF_WRITE   (1u << 1)
@@ -73,6 +76,12 @@ void idt_init(void);
 
 /* C entry point for every vector, called from isr.asm. */
 void trap_dispatch(struct trap_frame *f);
+
+/* Restores `frame` and returns to it (first entry of a process into ring 3). */
+__noreturn void enter_user(struct trap_frame *frame);
+
+/* Called when iretq to ring 3 faults; kills the current process. */
+__noreturn void user_bad_iret(const u64 *iret_frame);
 
 const char *trap_name(u64 vector);
 

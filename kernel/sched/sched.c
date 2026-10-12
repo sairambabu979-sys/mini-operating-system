@@ -173,7 +173,7 @@ static void task_init_common(struct task *t, const char *name)
     wait_queue_init(&t->child_exit);
 }
 
-static struct task *task_alloc(int (*fn)(void *), void *arg, const char *name)
+struct task *sched_task_alloc(int (*fn)(void *), void *arg, const char *name)
 {
     struct task *t = kzalloc(sizeof(*t));
 
@@ -188,6 +188,11 @@ static struct task *task_alloc(int (*fn)(void *), void *arg, const char *name)
     task_init_common(t, name);
     task_setup_stack(t, fn, arg);
     return t;
+}
+
+void sched_task_discard(struct task *t)
+{
+    task_free(t);
 }
 
 /* Adds a fully built task to the task tree and makes it runnable. */
@@ -210,7 +215,7 @@ void sched_admit(struct task *t, unsigned flags)
 
 struct task *kthread_create(int (*fn)(void *), void *arg, const char *name, unsigned flags)
 {
-    struct task *t = task_alloc(fn, arg, name);
+    struct task *t = sched_task_alloc(fn, arg, name);
 
     if (t)
         sched_admit(t, flags);
@@ -548,7 +553,7 @@ void sched_init(void)
     list_push_back(&all_tasks, &boot_task.all_link);
     current_task = &boot_task;
 
-    idle_task = task_alloc(idle_main, NULL, "idle");
+    idle_task = sched_task_alloc(idle_main, NULL, "idle");
     if (!idle_task)
         panic("sched: cannot allocate the idle task");
     idle_task->pid = 0;

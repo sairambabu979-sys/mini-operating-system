@@ -51,6 +51,7 @@ struct task {
     uptr kstack_top;
     struct address_space *as; /* NULL: kernel thread */
     void *fpu_state;          /* FXSAVE area for user tasks */
+    uptr user_entry;          /* first user RIP (processes only) */
 
     enum task_state state;
     int pid;

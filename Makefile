@@ -76,9 +76,20 @@ HOST_CFLAGS := -std=gnu17 -O1 -g -fno-omit-frame-pointer -fno-builtin \
 	-fsanitize=address,undefined -fno-sanitize-recover=all \
 	-Wall -Wextra -Werror -Ikernel/include
 
+# User programs: same freestanding toolchain, but SSE allowed (the kernel
+# saves user FPU state), no kernel code model, linked at 4 MiB.
+USER_CFLAGS := --target=x86_64-unknown-none-elf -std=c17 \
+	-ffreestanding -nostdinc -isystem $(CLANG_RESOURCE_DIR)/include \
+	-fno-pic -fno-pie -O2 -fno-stack-protector -fno-omit-frame-pointer \
+	-fno-asynchronous-unwind-tables -fno-unwind-tables \
+	-Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wvla \
+	-ffile-prefix-map=$(CURDIR)/= -Ikernel/include -Iuser/lib
+USER_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack --build-id=none \
+	--strip-all
+
 # Rebuild everything when the flags change, not only when sources do.
 FLAGS_STAMP := $(BUILD)/flags.stamp
-FLAGS_SIG   := $(CC) $(KERNEL_CFLAGS) | $(HOSTCC) $(HOST_CFLAGS)
+FLAGS_SIG   := $(CC) $(KERNEL_CFLAGS) | $(HOSTCC) $(HOST_CFLAGS) | $(USER_CFLAGS)
 $(shell mkdir -p $(BUILD) && { printf '%s' '$(FLAGS_SIG)' | cmp -s - $(FLAGS_STAMP) || \
 	printf '%s' '$(FLAGS_SIG)' > $(FLAGS_STAMP); })
 
@@ -127,6 +138,48 @@ $(BUILD)/kernel/%.asm.o: kernel/%.asm | $(ASM_OFFSETS)
 	$(call msg,NASM,$<)
 	$(Q)$(NASM) $(KERNEL_ASFLAGS) -MD $(@:.o=.d) -MP $< -o $@
 
+# --------------------------------------------------------------------------
+# User programs, embedded in the kernel image (kernel/proc/process.c)
+# --------------------------------------------------------------------------
+
+USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/kernel/lib/printf.o \
+	$(BUILD)/user/kernel/lib/string.o $(BUILD)/user/user/lib/crt0.asm.o
+USER_PROGRAMS := $(sort $(basename $(notdir $(wildcard user/programs/*.c user/programs/*.asm))))
+USER_ELFS     := $(USER_PROGRAMS:%=$(BUILD)/user/bin/%.elf)
+USER_IMAGES   := $(BUILD)/gen/user_images.o
+
+$(BUILD)/user/%.o: %.c $(FLAGS_STAMP)
+	@mkdir -p $(@D)
+	$(call msg,CC,$<)
+	$(Q)$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD)/user/%.asm.o: %.asm
+	@mkdir -p $(@D)
+	$(call msg,NASM,$<)
+	$(Q)$(NASM) -f elf64 -w+all $< -o $@
+
+# C programs link against the runtime; assembly programs bring their own script.
+$(BUILD)/user/bin/%.elf: $(BUILD)/user/user/programs/%.o $(USER_LIB_OBJS) user/linker.ld
+	@mkdir -p $(@D)
+	$(call msg,LD,$@)
+	$(Q)$(LD) $(USER_LDFLAGS) -T user/linker.ld $(BUILD)/user/user/lib/crt0.asm.o $< \
+	  $(filter-out %crt0.asm.o,$(USER_LIB_OBJS)) -o $@
+
+$(BUILD)/user/bin/%.elf: $(BUILD)/user/user/programs/%.asm.o user/programs/%.ld
+	@mkdir -p $(@D)
+	$(call msg,LD,$@)
+	$(Q)$(LD) $(USER_LDFLAGS) -T user/programs/$*.ld $< -o $@
+
+$(BUILD)/gen/user_images.asm: $(USER_ELFS) tools/gen_user_images.py
+	@mkdir -p $(@D)
+	$(call msg,GEN,$@)
+	$(Q)$(PYTHON) tools/gen_user_images.py -o $@ \
+	  $(foreach p,$(USER_PROGRAMS),$(p)=$(BUILD)/user/bin/$(p).elf)
+
+$(USER_IMAGES): $(BUILD)/gen/user_images.asm $(USER_ELFS)
+	$(call msg,NASM,$<)
+	$(Q)$(NASM) -f elf64 $< -o $@
+
 # Code that UBSan reports through must not itself be instrumented.
 $(BUILD)/kernel/core/ubsan.o: KERNEL_CFLAGS += -fno-sanitize=all
 
@@ -149,13 +202,13 @@ $(BUILD)/gen/%.o: $(BUILD)/gen/%.c $(FLAGS_STAMP)
 	$(call msg,CC,$<)
 	$(Q)$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_PASS1): $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o kernel/linker.ld
+$(KERNEL_PASS1): $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms_empty.o kernel/linker.ld
 	$(call msg,LD,$@)
-	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o -o $@
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms_empty.o -o $@
 
-$(KERNEL_ELF): $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o kernel/linker.ld
+$(KERNEL_ELF): $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms.o kernel/linker.ld
 	$(call msg,LD,$@)
-	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o -o $@
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms.o -o $@
 	$(Q)$(PYTHON) tools/gen_ksyms.py --check $@ $(KSYMS)
 
 $(KERNEL_STRIPPED): $(KERNEL_ELF)
@@ -182,6 +235,12 @@ TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
 PANIC_IMG := $(BUILD)/disk-panic.img
+DEMO_IMG  := $(BUILD)/disk-demo.img
+
+$(DEMO_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
+	$(call msg,IMAGE,$@)
+	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
+	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
 
 $(PANIC_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
 	$(call msg,IMAGE,$@)
@@ -204,7 +263,7 @@ $(TEST_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
 	  --kernel $(KERNEL_STRIPPED) --cmdline "ktest" -o $@
 
 .PHONY: all
-all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(KERNEL_ELF)
+all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -229,7 +288,7 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 # --------------------------------------------------------------------------
 
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
-	kernel/mm/memmap.c kernel/mm/buddy.c
+	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 
@@ -262,7 +321,7 @@ host-test: $(HOST_TEST_BIN)
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
-qemu-test: $(TEST_IMG) $(PANIC_IMG)
+qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG)
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
@@ -274,6 +333,10 @@ qemu-test: $(TEST_IMG) $(PANIC_IMG)
 	  --expect '#0 +0x[0-9a-f]+ selftest_page_fault\+0x' \
 	  --expect '#[0-9]+ +0x[0-9a-f]+ kmain\+0x' \
 	  --expect 'end of panic'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(DEMO_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --expect 'init: pid [0-9]+, starting 11 programs' \
+	  --expect 'init: all children reaped, 0 unexpected' \
+	  --expect 'init exited with status 0'
 
 # Static checks on the linked kernel (e.g. no SSE instructions slipped in).
 check-binary: $(KERNEL_ELF)
@@ -283,7 +346,7 @@ check-binary: $(KERNEL_ELF)
 # Code quality
 # --------------------------------------------------------------------------
 
-FORMAT_SRCS := $(shell find kernel tests -name '*.c' -o -name '*.h')
+FORMAT_SRCS := $(shell find kernel tests user -name '*.c' -o -name '*.h')
 
 .PHONY: format check-format lint
 format:
@@ -294,6 +357,7 @@ check-format:
 
 lint: $(ASM_OFFSETS)
 	$(Q)clang-tidy --quiet $(KERNEL_C_SRCS) -- $(KERNEL_CFLAGS)
+	$(Q)clang-tidy --quiet $(wildcard user/lib/*.c user/programs/*.c) -- $(USER_CFLAGS)
 
 .PHONY: clean
 clean:

@@ -30,6 +30,18 @@ int kvprintf(const char *fmt, va_list ap)
     return n;
 }
 
+void console_write(const char *s, usize len)
+{
+    if (panic_in_progress()) {
+        serial_write(s, len);
+        return;
+    }
+    irqflags_t flags = spin_lock_irqsave(&console_lock);
+
+    serial_write(s, len);
+    spin_unlock_irqrestore(&console_lock, flags);
+}
+
 int kprintf(const char *fmt, ...)
 {
     va_list ap;

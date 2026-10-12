@@ -68,7 +68,13 @@ isr_common:
     cld
     mov     rdi, rsp
     call    trap_dispatch
+    ; fall through
 
+; trap_return: restores a struct trap_frame at RSP and returns into it.
+; Shared by interrupts, the syscall slow path and the first entry into a
+; new process. Interrupts must be off.
+global trap_return
+trap_return:
     test    byte [rsp + TF_CS], 3
     jz      .to_kernel
     swapgs
@@ -89,7 +95,30 @@ isr_common:
     pop     rbx
     pop     rax
     add     rsp, 16                     ; drop vector and error code
+global trap_iretq
+trap_iretq:
     iretq
+
+; iretq itself can fault when returning to user mode with a bad frame (a
+; non-canonical RIP, say): the #GP arrives in ring 0, at trap_iretq, with
+; the user GS already swapped in. The exception table sends it here.
+; RSP still points at the iret frame. The process caused it, so the
+; process dies; the kernel carries on.
+extern user_bad_iret
+iret_fault:
+    test    byte [rsp + 8], 3           ; CS of the rejected frame
+    jz      .kernel_frame               ; (impossible; user_bad_iret panics)
+    swapgs                              ; back to the kernel GS
+.kernel_frame:
+    mov     rdi, rsp                    ; the rejected iret frame
+    and     rsp, -16
+    call    user_bad_iret               ; does not return
+    ud2
+
+section __ex_table progbits alloc noexec nowrite align=8
+    dq      trap_iretq, iret_fault
+
+section .text
 
 section .rodata
 align 8

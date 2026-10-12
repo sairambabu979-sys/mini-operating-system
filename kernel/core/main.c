@@ -4,7 +4,9 @@
  */
 #include <arch/cpu.h>
 #include <arch/cpuid.h>
+#include <arch/fpu.h>
 #include <arch/paging.h>
+#include <arch/percpu.h>
 #include <arch/segments.h>
 #include <arch/trap.h>
 #include <boot/boot_info.h>
@@ -21,6 +23,7 @@
 #include <lib/cmdline.h>
 #include <lib/string.h>
 #include <mm/mm.h>
+#include <proc/process.h>
 #include <sched/sched.h>
 #include <version.h>
 
@@ -131,6 +134,31 @@ static void run_selftest(const char *cmdline)
     panic("selftest '%s' did not panic", which);
 }
 
+/*
+ * Starts user space and becomes its reaper: init's orphans are adopted by
+ * this task, so it waits for anything, forever. With "exit-after-init" on
+ * the command line (the demo test), init's exit status ends the QEMU run.
+ */
+static __noreturn void run_init(const char *cmdline)
+{
+    int init_pid = process_spawn("init");
+    int status;
+
+    if (init_pid < 0)
+        panic("cannot start init: %d", init_pid);
+    for (;;) {
+        int pid = task_wait(-1, &status);
+
+        if (pid == init_pid) {
+            pr_info("init exited with status %d\n", status);
+            if (cmdline_has_flag(cmdline, "exit-after-init"))
+                qemu_exit(status == 0 ? QEMU_EXIT_SUCCESS : QEMU_EXIT_FAILURE);
+        }
+        if (pid < 0)
+            sleep_ms(1000); /* no children left: idle along */
+    }
+}
+
 __noreturn void kmain(u64 boot_info_phys)
 {
     entry_rflags = read_rflags(); /* the loader's hand-off state, for tests */
@@ -150,6 +178,9 @@ __noreturn void kmain(u64 boot_info_phys)
 
     irq_init();
     time_init();
+    percpu_init();
+    fpu_init();
+    syscall_init();
     sched_init();
     cpu_irq_enable();
 
@@ -166,6 +197,5 @@ __noreturn void kmain(u64 boot_info_phys)
         qemu_exit(failed ? QEMU_EXIT_FAILURE : QEMU_EXIT_SUCCESS);
     }
 
-    kprintf("boot complete, halting\n");
-    cpu_halt_forever();
+    run_init(boot_info->cmdline);
 }

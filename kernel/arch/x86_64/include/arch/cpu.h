@@ -32,16 +32,24 @@ static __always_inline void cpu_pause(void)
 }
 
 #define CR0_PE (1ull << 0)
+#define CR0_MP (1ull << 1)  /* monitor coprocessor */
+#define CR0_EM (1ull << 2)  /* x87 emulation: must be clear for SSE */
+#define CR0_TS (1ull << 3)  /* task switched: lazy-FPU trap, unused */
 #define CR0_WP (1ull << 16) /* honor read-only pages in ring 0 */
 #define CR0_PG (1ull << 31)
 
-#define CR4_PAE  (1ull << 5)
-#define CR4_PGE  (1ull << 7)
-#define CR4_SMEP (1ull << 20)
-#define CR4_SMAP (1ull << 21)
+#define CR4_PAE        (1ull << 5)
+#define CR4_PGE        (1ull << 7)
+#define CR4_OSFXSR     (1ull << 9)  /* FXSAVE/FXRSTOR and SSE enabled */
+#define CR4_OSXMMEXCPT (1ull << 10) /* unmasked SSE exceptions raise #XM */
+#define CR4_SMEP       (1ull << 20)
+#define CR4_SMAP       (1ull << 21)
 
-#define RFLAGS_IF (1ull << 9)
-#define RFLAGS_DF (1ull << 10)
+#define RFLAGS_TF       (1ull << 8)
+#define RFLAGS_IF       (1ull << 9)
+#define RFLAGS_AC       (1ull << 18)
+#define RFLAGS_RESERVED (1ull << 1) /* always reads as 1 */
+#define RFLAGS_DF       (1ull << 10)
 
 #define DEFINE_READ_CR(n)                                                                          \
     static inline u64 read_cr##n(void)                                                             \

@@ -19,6 +19,7 @@
 #include <core/irq.h>
 #include <core/klog.h>
 #include <core/panic.h>
+#include <proc/process.h>
 
 static const char *const exception_names[VEC_FIRST_IRQ] = {
     [VEC_DIVIDE_ERROR] = "#DE divide error",
@@ -107,6 +108,10 @@ static void handle_exception(struct trap_frame *f)
 {
     if (handle_expected(f))
         return;
+
+    /* A process's fault is the process's problem: it dies, the kernel does not. */
+    if (trap_from_user(f) && f->vector != VEC_NMI && f->vector != VEC_MACHINE_CHECK)
+        process_kill_on_fault(f);
 
     switch (f->vector) {
     case VEC_BREAKPOINT:

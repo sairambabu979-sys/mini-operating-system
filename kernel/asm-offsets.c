@@ -7,6 +7,8 @@
  * "%define NAME value". The technique is borrowed from Linux; it lets
  * assembly use C layouts without anyone keeping two copies in sync.
  */
+#include <arch/percpu.h>
+#include <arch/segments.h>
 #include <arch/setjmp.h>
 #include <arch/trap.h>
 #include <boot/boot_info.h>
@@ -49,6 +51,14 @@ void asm_offsets(void)
     OFFSET(TF_CS, trap_frame, cs);
     OFFSET(TF_RFLAGS, trap_frame, rflags);
     OFFSET(TF_RSP, trap_frame, rsp);
+    OFFSET(TF_SS, trap_frame, ss);
+    DEFINE(TRAP_VECTOR_SYSCALL, TRAP_VECTOR_SYSCALL);
+    DEFINE(USER_CS, GDT_USER_CODE | RPL_USER);
+    DEFINE(USER_SS, GDT_USER_DATA | RPL_USER);
+
+    /* Per-CPU area (arch/percpu.h) */
+    OFFSET(PERCPU_KERNEL_RSP, percpu, kernel_rsp);
+    OFFSET(PERCPU_USER_RSP, percpu, user_rsp);
 
     /* Non-local jumps (arch/setjmp.h) */
     OFFSET(KJMP_RBX, kjmp_buf, rbx);

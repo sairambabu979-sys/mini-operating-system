@@ -7,6 +7,12 @@
 
 #include <sched/sched.h>
 
+/* Allocates a task with a kernel stack, ready to run fn(arg); not yet admitted. */
+struct task *sched_task_alloc(int (*fn)(void *), void *arg, const char *name);
+
+/* Frees a task that was allocated but never admitted. */
+void sched_task_discard(struct task *t);
+
 /* Inserts a built task into the tree and run queue (assigns its pid). */
 void sched_admit(struct task *t, unsigned flags);
 

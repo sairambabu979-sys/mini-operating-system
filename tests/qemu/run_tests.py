@@ -70,6 +70,8 @@ def main() -> int:
     ap.add_argument("--log-dir", type=Path, default=Path("build/logs"))
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run must end in a kernel panic")
+    ap.add_argument("--no-tap", action="store_true",
+                    help="the run reports no TAP (judge by exit status and --expect only)")
     ap.add_argument("--expect", action="append", default=[],
                     help="regex the output must match (in order); repeatable")
     ap.add_argument("qemu_args", nargs="*", help="extra QEMU arguments (after --)")
@@ -119,7 +121,7 @@ def main() -> int:
             break
         pos = m.end()
 
-    if not args.expect_panic:
+    if not args.expect_panic and not args.no_tap:
         if plan is None:
             problems.append("no TAP plan in output")
         elif len(results) != plan:
@@ -129,7 +131,12 @@ def main() -> int:
         problems.append("failed tests: " + ", ".join(failed))
 
     passed = sum(ok for ok, _, _ in results)
-    what = "panicked as expected" if args.expect_panic else f"{passed}/{plan or 0} passed"
+    if args.expect_panic:
+        what = "panicked as expected"
+    elif args.no_tap:
+        what = f"exited cleanly, {len(args.expect)} expectations met"
+    else:
+        what = f"{passed}/{plan or 0} passed"
     summary = f"{args.image.name} ({args.memory}): {what} in {elapsed:.1f}s (log: {log_path})"
     if problems:
         print(f"FAIL {summary}")

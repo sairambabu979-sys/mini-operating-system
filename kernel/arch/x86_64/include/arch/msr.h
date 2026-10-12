@@ -7,7 +7,12 @@
 
 #include <types.h>
 
-#define MSR_EFER 0xC0000080u
+#define MSR_EFER           0xC0000080u
+#define MSR_STAR           0xC0000081u /* syscall/sysret segment selectors */
+#define MSR_LSTAR          0xC0000082u /* syscall entry point */
+#define MSR_FMASK          0xC0000084u /* RFLAGS bits cleared on syscall */
+#define MSR_GS_BASE        0xC0000101u
+#define MSR_KERNEL_GS_BASE 0xC0000102u /* swapped in by swapgs */
 
 #define EFER_SCE (1ull << 0)  /* syscall/sysret enable */
 #define EFER_LME (1ull << 8)  /* long mode enable */
