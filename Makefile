@@ -142,10 +142,17 @@ $(KERNEL_C_OBJS): $(BUILD)/%.o: %.c $(FLAGS_STAMP)
 	$(call msg,CC,$<)
 	$(Q)$(CC) $(KERNEL_CFLAGS) -MMD -MP -c $< -o $@
 
+# NASM 2.16's -MD leaves %include'd files out of the dependency file (it
+# lists only the source), so a separate -M pass, which gets them right,
+# writes it. Without this, changing a struct layout in asm-offsets.inc did
+# not rebuild the assembly that uses it.
+nasm_deps = $(NASM) $(1) -M -MF $(2) -MP -MT $(3) $(4)
+
 $(BUILD)/kernel/%.asm.o: kernel/%.asm | $(ASM_OFFSETS)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$<)
-	$(Q)$(NASM) $(KERNEL_ASFLAGS) -MD $(@:.o=.d) -MP $< -o $@
+	$(Q)$(call nasm_deps,$(KERNEL_ASFLAGS),$(@:.o=.d),$@,$<)
+	$(Q)$(NASM) $(KERNEL_ASFLAGS) $< -o $@
 
 # --------------------------------------------------------------------------
 # User programs, embedded in the kernel image (kernel/proc/process.c)
@@ -235,7 +242,8 @@ STAGE2 := $(BUILD)/boot/stage2.bin
 $(BUILD)/boot/%.bin: boot/%.asm | $(ASM_OFFSETS)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$<)
-	$(Q)$(NASM) $(BOOT_ASFLAGS) -MD $(@:.bin=.d) -MP -MT $@ $< -o $@
+	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS),$(@:.bin=.d),$@,$<)
+	$(Q)$(NASM) $(BOOT_ASFLAGS) $< -o $@
 
 # Same kernel binary in both images; only the command line differs, so the
 # tests exercise exactly what `make run` boots.
