@@ -48,14 +48,24 @@ KTEST(pit_is_programmed_for_the_tick_rate)
     u16 lo = 0xFFFF, hi = 0;
 
     KEXPECT_EQ(pit_divisor(), 1193); /* 1193182 Hz / 1000 */
-    for (int i = 0; i < 2000; i++) {
+
+    /*
+     * Sample across two full ticks, so at least one whole counter period is
+     * covered however fast the host is. (A fixed sample count did not: on
+     * a faster CI runner, 2000 reads finished within half a period.)
+     */
+    u64 end_tick = time_ticks() + 2;
+    u64 deadline = rdtsc() + tsc_khz() * 1000; /* 1 s: never hang */
+
+    while (time_ticks() < end_tick && rdtsc() < deadline) {
         u16 c = pit_read_counter();
 
         lo = c < lo ? c : lo;
         hi = c > hi ? c : hi;
     }
+    KEXPECT(time_ticks() >= end_tick);
     KEXPECT(lo >= 1 && hi <= pit_divisor());
-    KEXPECT(hi - lo > pit_divisor() / 2); /* it is actually counting */
+    KEXPECT(hi - lo > pit_divisor() / 2); /* it is actually counting down the full range */
 
     KEXPECT(wait_ticks(1));
     u64 t0 = rdtsc(), s = time_ticks();
