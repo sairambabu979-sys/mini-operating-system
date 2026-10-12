@@ -65,7 +65,7 @@ SECTIONS
         *(.data .data.*)
     } :data
 
-    .bss ALIGN(16) : AT(ADDR(.bss) - KERNEL_VMA)
+    .bss : AT(ADDR(.bss) - KERNEL_VMA)
     {
         __bss_start = .;
         *(.bss .bss.*)

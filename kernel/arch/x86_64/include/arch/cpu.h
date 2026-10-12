@@ -90,9 +90,9 @@ static inline __noreturn void cpu_halt_forever(void)
 }
 
 /*
- * Physical-to-virtual through the kernel image window. Valid only for the
- * first 1 GiB of physical memory, which the bootloader maps at KERNEL_VMA.
- * Used before the kernel builds its own direct map.
+ * Physical-to-virtual through the bootloader's kernel window, which maps
+ * the first 1 GiB of physical memory at KERNEL_VMA. Valid only until
+ * vmm_init() switches page tables; use phys_to_virt() after that.
  */
 static inline void *phys_to_kimage(u64 phys)
 {

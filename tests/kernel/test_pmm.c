@@ -2,15 +2,18 @@
 /*
  * Physical memory manager tests, run against the real machine's memory.
  */
-#include <arch/cpu.h>
+#include <arch/paging.h>
+#include <arch/setjmp.h>
 #include <core/boot.h>
 #include <core/ktest.h>
+#include <core/panic.h>
+#include <mm/mm.h>
 #include <mm/pmm.h>
 
 static bool in_usable_ram(u64 phys, u64 len)
 {
     usize n;
-    const struct mem_region *r = pmm_regions(&n);
+    const struct mem_region *r = mm_regions(&n);
 
     for (usize i = 0; i < n; i++) {
         if (r[i].type == E820_USABLE && r[i].base <= phys && phys + len <= r[i].end)
@@ -30,7 +33,7 @@ KTEST(pmm_manages_nearly_all_usable_ram)
 {
     struct pmm_stats st;
     usize n;
-    const struct mem_region *r = pmm_regions(&n);
+    const struct mem_region *r = mm_regions(&n);
     u64 usable = 0;
 
     for (usize i = 0; i < n; i++) {
@@ -82,11 +85,7 @@ KTEST(pmm_exhaust_and_restore)
 
         if (p == PMM_ALLOC_FAILED)
             break;
-        if (p >= (1ull << 30)) { /* outside the boot window: cannot touch yet */
-            pmm_free_page(p);
-            break;
-        }
-        *(volatile u64 *)phys_to_kimage(p) = head;
+        *(volatile u64 *)phys_to_virt(p) = head;
         head = p;
         count++;
     }
@@ -95,7 +94,7 @@ KTEST(pmm_exhaust_and_restore)
     KEXPECT_EQ(drained.free_frames, 0);
 
     while (head != 0) {
-        u64 next = *(volatile u64 *)phys_to_kimage(head);
+        u64 next = *(volatile u64 *)phys_to_virt(head);
 
         pmm_free_page(head);
         head = next;
@@ -103,4 +102,19 @@ KTEST(pmm_exhaust_and_restore)
     pmm_get_stats(&after);
     KEXPECT_EQ(after.free_frames, before.free_frames);
     KEXPECT_EQ(pmm_verify(&why), 0);
+}
+
+KTEST(pmm_double_free_panics)
+{
+    struct kjmp_buf jb;
+    struct panic_expectation e;
+    u64 p = pmm_alloc_page();
+
+    KEXPECT(p != PMM_ALLOC_FAILED);
+    pmm_free_page(p);
+    panic_expect(&e, &jb);
+    if (ksetjmp(&jb) == 0)
+        pmm_free_page(p);
+    panic_expect_clear();
+    KEXPECT(e.hit);
 }

@@ -46,3 +46,18 @@ klongjmp:
     mov     r15, [rdi + KJMP_R15]
     mov     rsp, [rdi + KJMP_RSP]
     jmp     [rdi + KJMP_RIP]
+
+; void call_on_stack(void (*fn)(void *), void *arg, void *stack_top)
+;   Runs fn(arg) on another stack, then returns on the original one.
+;   in:  RDI = fn, RSI = arg, RDX = stack_top (16-byte aligned)
+global call_on_stack
+call_on_stack:
+    push    rbp
+    mov     rbp, rsp
+    mov     rsp, rdx
+    mov     rax, rdi
+    mov     rdi, rsi
+    call    rax
+    mov     rsp, rbp
+    pop     rbp
+    ret

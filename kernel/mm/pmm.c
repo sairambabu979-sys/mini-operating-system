@@ -2,11 +2,10 @@
 /*
  * Physical memory manager. See <mm/pmm.h>.
  *
- * Init:
- *   1. sanitize the E820 map,
- *   2. size the struct page array for the highest usable frame and place
- *      it in usable RAM above the kernel image (inside the boot window),
- *   3. hand every usable frame to the buddy allocator except the reserved
+ * Init (runs after vmm_init, so all RAM is reachable through the direct map):
+ *   1. size the struct page array for the highest usable frame and place
+ *      it in usable RAM above the kernel image,
+ *   2. hand every usable frame to the buddy allocator except the reserved
  *      ranges: low 1 MiB, kernel image, and the page array itself.
  *
  * Locking: none yet. Nothing runs concurrently until interrupts handlers
@@ -14,28 +13,19 @@
  */
 #define pr_fmt(fmt) "pmm: " fmt
 
-#include <arch/cpu.h>
+#include <arch/paging.h>
 #include <core/klog.h>
 #include <core/panic.h>
 #include <mm/pmm.h>
-
-/* The bootloader maps only physical 0-1 GiB until the VMM takes over. */
-#define BOOT_WINDOW_END (1ull << 30)
 
 struct phys_range {
     u64 start, end;
 };
 
 static struct buddy buddy;
-static struct mem_region regions[BOOT_MMAP_MAX];
+static const struct mem_region *regions;
 static usize nregions;
 static u64 metadata_bytes;
-
-const struct mem_region *pmm_regions(usize *count)
-{
-    *count = nregions;
-    return regions;
-}
 
 static u64 pfn_of(u64 phys)
 {
@@ -72,9 +62,10 @@ static void add_usable(u64 start, u64 end, const struct phys_range *rsv, usize n
         BUG_ON(buddy_add_range(&buddy, pfn_of(start), pfn_of(end)) != 0);
 }
 
-void pmm_init(const struct boot_info *bi)
+void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *bi)
 {
-    nregions = memmap_sanitize(bi->mmap, bi->mmap_count, regions, ARRAY_SIZE(regions));
+    regions = map;
+    nregions = nmap;
 
     u64 top = 0;
 
@@ -90,13 +81,13 @@ void pmm_init(const struct boot_info *bi)
 
     metadata_bytes = ALIGN_UP(nframes * sizeof(struct page), PAGE_SIZE);
 
-    u64 meta = find_free_area(metadata_bytes, kernel_end, BOOT_WINDOW_END);
+    u64 meta = find_free_area(metadata_bytes, kernel_end, HHDM_SIZE);
 
     if (meta == 0)
-        panic("pmm: no room for %llu KiB of page metadata below 1 GiB",
+        panic("pmm: no room for %llu KiB of page metadata",
               (unsigned long long)(metadata_bytes / 1024));
 
-    buddy_init(&buddy, phys_to_kimage(meta), nframes);
+    buddy_init(&buddy, phys_to_virt(meta), nframes);
 
     /* Sorted and disjoint: low memory < kernel image < metadata. */
     const struct phys_range reserved[] = {
@@ -135,6 +126,11 @@ void pmm_free_pages(u64 phys, unsigned order)
     if (!IS_ALIGNED(phys, PAGE_SIZE) || buddy_free(&buddy, pfn_of(phys), order) != 0)
         panic("pmm: invalid free of %#llx (order %u): double free or wrong order?",
               (unsigned long long)phys, order);
+}
+
+int pmm_block_order(u64 phys)
+{
+    return IS_ALIGNED(phys, PAGE_SIZE) ? buddy_block_order(&buddy, pfn_of(phys)) : -1;
 }
 
 void pmm_get_stats(struct pmm_stats *out)

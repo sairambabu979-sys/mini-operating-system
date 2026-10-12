@@ -32,10 +32,10 @@ TAP_PLAN = re.compile(r"^1\.\.(\d+)$")
 TAP_RESULT = re.compile(r"^(not ok|ok) (\d+) - (.+)$")
 
 
-def qemu_command(image: Path, extra: list[str]) -> list[str]:
+def qemu_command(image: Path, memory: str, extra: list[str]) -> list[str]:
     return [
         "qemu-system-x86_64",
-        "-m", "128M",
+        "-m", memory,
         "-cpu", "max",
         "-no-reboot",
         "-display", "none",
@@ -63,6 +63,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--image", type=Path, required=True)
     ap.add_argument("--timeout", type=float, default=60.0)
+    ap.add_argument("--memory", default="128M", help="guest RAM, e.g. 128M or 4G")
     ap.add_argument("--log-dir", type=Path, default=Path("build/logs"))
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run must end in a kernel panic")
@@ -72,8 +73,8 @@ def main() -> int:
     args = ap.parse_args()
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = args.log_dir / f"{args.image.stem}.serial.log"
-    cmd = qemu_command(args.image, args.qemu_args)
+    log_path = args.log_dir / f"{args.image.stem}-{args.memory}.serial.log"
+    cmd = qemu_command(args.image, args.memory, args.qemu_args)
 
     start = time.monotonic()
     try:
@@ -124,7 +125,7 @@ def main() -> int:
 
     passed = sum(ok for ok, _, _ in results)
     what = "panicked as expected" if args.expect_panic else f"{passed}/{plan or 0} passed"
-    summary = f"{args.image.name}: {what} in {elapsed:.1f}s (log: {log_path})"
+    summary = f"{args.image.name} ({args.memory}): {what} in {elapsed:.1f}s (log: {log_path})"
     if problems:
         print(f"FAIL {summary}")
         for p in problems:

@@ -261,8 +261,10 @@ host-test: $(HOST_TEST_BIN)
 
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
+# The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
 qemu-test: $(TEST_IMG) $(PANIC_IMG)
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
 	  --expect 'KERNEL PANIC' \

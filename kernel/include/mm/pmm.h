@@ -26,7 +26,8 @@ struct pmm_stats {
     u64 metadata_bytes; /* the struct page array */
 };
 
-void pmm_init(const struct boot_info *bi);
+/* Called by mm_init() once the direct map is live. */
+void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *bi);
 
 /* Returns the physical address of 2^order contiguous, aligned frames, or 0. */
 __must_check u64 pmm_alloc_pages(unsigned order);
@@ -44,12 +45,12 @@ static inline void pmm_free_page(u64 phys)
     pmm_free_pages(phys, 0);
 }
 
+/* Order of the allocated block at phys, or -1 if phys is not a block head. */
+int pmm_block_order(u64 phys);
+
 void pmm_get_stats(struct pmm_stats *out);
 
 /* Full allocator consistency check (O(frames)); 0 if consistent. */
 int pmm_verify(const char **reason);
-
-/* Sanitized memory map built at init, for diagnostics and the VMM. */
-const struct mem_region *pmm_regions(usize *count);
 
 #endif /* MINIOS_MM_PMM_H */

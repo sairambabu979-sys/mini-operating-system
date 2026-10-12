@@ -5,17 +5,33 @@
  * allocator, lock or interrupt.
  */
 #include <arch/cpu.h>
+#include <arch/extable.h>
 #include <arch/msr.h>
+#include <arch/paging.h>
+#include <arch/setjmp.h>
 #include <arch/trap.h>
 #include <core/ksyms.h>
 #include <core/panic.h>
 #include <core/printk.h>
 #include <drivers/qemu.h>
+#include <lib/printf.h>
 
 #define BACKTRACE_MAX_DEPTH 32
 
 static bool exit_on_panic;
 static volatile bool panicking;
+static struct panic_expectation *expectation;
+
+void panic_expect(struct panic_expectation *e, struct kjmp_buf *resume)
+{
+    *e = (struct panic_expectation){.armed = true, .resume = resume};
+    expectation = e;
+}
+
+void panic_expect_clear(void)
+{
+    expectation = NULL;
+}
 
 void panic_set_exit_on_panic(bool exit_qemu)
 {
@@ -39,30 +55,30 @@ static void print_symbol(uptr addr, uptr lookup_addr)
 
 /*
  * Frame-pointer walk. Every frame is [saved RBP][return address]; the chain
- * ends at RBP = 0 (set by _start). A frame pointer is followed only if it
- * is aligned, inside the kernel window, and moves up the stack, so a
- * corrupt chain stops the walk instead of faulting inside panic().
+ * ends at RBP = 0 (set by _start). Frames are read with probe_read_u64 and
+ * must be aligned, in the kernel half, and move up the stack, so a corrupt
+ * chain ends the walk instead of faulting inside panic().
  */
 static void print_backtrace(uptr rbp)
 {
     for (int depth = 0; depth < BACKTRACE_MAX_DEPTH && rbp != 0; depth++) {
-        if (!IS_ALIGNED(rbp, 8) || rbp < KERNEL_VMA || rbp > ~(uptr)0 - 16) {
-            kprintf("  (frame pointer %#llx invalid, stopping)\n", (unsigned long long)rbp);
+        u64 saved_rbp, ret;
+
+        if (!IS_ALIGNED(rbp, 8) || rbp < KERNEL_HALF || rbp > ~(uptr)0 - 16 ||
+            !probe_read_u64(rbp, &saved_rbp) || !probe_read_u64(rbp + 8, &ret)) {
+            kprintf("  (frame pointer %#lx unreadable, stopping)\n", rbp);
             return;
         }
-        const uptr *frame = (const uptr *)rbp;
-        uptr ret = frame[1];
-
         if (ret == 0)
             return;
         kprintf("  #%-2d ", depth + 1);
         /* Look up ret-1: a call at the very end of a function returns past it. */
         print_symbol(ret, ret - 1);
-        if (frame[0] != 0 && frame[0] <= rbp) {
+        if (saved_rbp != 0 && saved_rbp <= rbp) {
             kprintf("  (frame chain does not ascend, stopping)\n");
             return;
         }
-        rbp = frame[0];
+        rbp = saved_rbp;
     }
 }
 
@@ -132,6 +148,17 @@ static void enter_panic(void)
 __noreturn void panic(const char *fmt, ...)
 {
     va_list ap;
+
+    if (expectation && expectation->armed) {
+        struct panic_expectation *e = expectation;
+
+        e->armed = false;
+        e->hit = true;
+        va_start(ap, fmt);
+        k_vsnprintf(e->message, sizeof(e->message), fmt, ap);
+        va_end(ap);
+        klongjmp(e->resume, 1);
+    }
 
     enter_panic();
     va_start(ap, fmt);

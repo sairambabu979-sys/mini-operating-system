@@ -17,3 +17,22 @@ uptr extable_find(uptr rip)
     }
     return 0;
 }
+
+bool probe_read_u64(uptr addr, u64 *out)
+{
+    u64 value = 0;
+    u32 ok = 1;
+
+    /* On a fault the fixup clears `ok` and resumes after the load. */
+    __asm__ volatile("1: movq (%[addr]), %[value]\n"
+                     "2:\n"
+                     ".pushsection .text.fixup, \"ax\"\n"
+                     "3: xorl %k[ok], %k[ok]\n"
+                     "   jmp 2b\n"
+                     ".popsection\n" EXTABLE_ENTRY(1b, 3b)
+                     : [value] "+r"(value), [ok] "+r"(ok)
+                     : [addr] "r"(addr)
+                     : "memory");
+    *out = value;
+    return ok != 0;
+}

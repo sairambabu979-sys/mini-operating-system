@@ -39,6 +39,7 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 /* Integer arithmetic: the member's alignment already implies the container's. */
-#define container_of(ptr, type, member) ((type *)((uptr)(ptr) - __builtin_offsetof(type, member)))
+#define container_of(ptr, type, member)                                                            \
+    ((type *)((__UINTPTR_TYPE__)(ptr) - __builtin_offsetof(type, member)))
 
 #endif /* MINIOS_COMPILER_H */

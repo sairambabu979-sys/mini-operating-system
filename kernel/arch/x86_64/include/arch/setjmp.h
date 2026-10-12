@@ -20,4 +20,7 @@ struct kjmp_buf {
 __attribute__((returns_twice)) int ksetjmp(struct kjmp_buf *buf);
 __noreturn void klongjmp(struct kjmp_buf *buf, int value);
 
+/* Runs fn(arg) with RSP = stack_top, then switches back. */
+void call_on_stack(void (*fn)(void *), void *arg, void *stack_top);
+
 #endif /* MINIOS_ARCH_SETJMP_H */

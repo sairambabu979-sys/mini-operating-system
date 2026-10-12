@@ -131,6 +131,13 @@ int buddy_free(struct buddy *b, u64 pfn, unsigned order)
     return 0;
 }
 
+int buddy_block_order(const struct buddy *b, u64 pfn)
+{
+    if (pfn >= b->nframes || b->pages[pfn].state != PAGE_ALLOC_HEAD)
+        return -1;
+    return b->pages[pfn].order;
+}
+
 int buddy_verify(const struct buddy *b, const char **reason)
 {
     u64 free_frames = 0;

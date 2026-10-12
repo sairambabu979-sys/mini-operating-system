@@ -64,6 +64,9 @@ u64 buddy_alloc(struct buddy *b, unsigned order);
  */
 int buddy_free(struct buddy *b, u64 pfn, unsigned order);
 
+/* Order of the allocated block starting at pfn, or -1 if it is not one. */
+int buddy_block_order(const struct buddy *b, u64 pfn);
+
 /*
  * Exhaustive consistency check: frame states, list membership, alignment,
  * counters, and the fully-merged property. Returns 0 or a negative errno and

@@ -3,6 +3,8 @@
  * Kernel C entry point and boot sequence.
  */
 #include <arch/cpu.h>
+#include <arch/cpuid.h>
+#include <arch/paging.h>
 #include <arch/segments.h>
 #include <arch/trap.h>
 #include <boot/boot_info.h>
@@ -16,7 +18,7 @@
 #include <drivers/serial.h>
 #include <lib/cmdline.h>
 #include <lib/string.h>
-#include <mm/pmm.h>
+#include <mm/mm.h>
 #include <version.h>
 
 __noreturn void kmain(u64 boot_info_phys);
@@ -132,7 +134,9 @@ __noreturn void kmain(u64 boot_info_phys)
     nmi_enable();
     run_selftest(boot_info->cmdline);
 
-    pmm_init(boot_info);
+    cpu_detect_features();
+    mm_init(boot_info_phys);
+    boot_info = phys_to_virt(boot_info_phys);
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
     kprintf("cmdline: \"%s\"\n", boot_info->cmdline);

@@ -31,4 +31,10 @@ struct extable_entry {
 /* Returns the fixup address for `rip`, or 0 if the fault is not expected. */
 uptr extable_find(uptr rip);
 
+/*
+ * Reads 8 bytes from an address that may be unmapped. Returns false instead
+ * of faulting. For diagnostics (backtraces) over possibly-corrupt pointers.
+ */
+bool probe_read_u64(uptr addr, u64 *out);
+
 #endif /* MINIOS_ARCH_EXTABLE_H */

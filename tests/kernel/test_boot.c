@@ -5,6 +5,7 @@
  */
 #include <arch/cpu.h>
 #include <arch/msr.h>
+#include <arch/paging.h>
 #include <core/boot.h>
 #include <core/ktest.h>
 #include <core/sections.h>
@@ -79,16 +80,20 @@ KTEST(cpu_is_in_long_mode)
 
 KTEST(a20_line_is_enabled)
 {
-    /* With A20 off, physical 0x100500 aliases 0x500. */
-    volatile u8 *low = phys_to_kimage(0x500);
-    volatile u8 *high = phys_to_kimage(0x100500);
-    u8 saved_low = *low, saved_high = *high;
+    /*
+     * With A20 off, physical 0x100500 aliases 0x500. 0x100500 is kernel text
+     * (read-only in the direct map), so write two values to 0x500 and check
+     * the high address never follows.
+     */
+    volatile u8 *low = phys_to_virt(0x500);
+    volatile const u8 *high = phys_to_virt(0x100500);
+    u8 saved = *low, before = *high;
 
-    *low = 0x00;
-    *high = 0xFF;
-    KEXPECT_EQ(*low, 0x00);
-    *low = saved_low;
-    *high = saved_high;
+    *low = (u8)~before;
+    KEXPECT_EQ(*high, before);
+    *low = before;
+    KEXPECT_EQ(*high, before);
+    *low = saved;
 }
 
 KTEST(interrupts_disabled_and_direction_clear)
