@@ -57,7 +57,7 @@ make check      # format + lint + test: exactly what CI checks; run before commi
 | `V=1` | show full commands |
 | `CMDLINE="..."` | kernel options for `make run`, e.g. `loglevel=debug` |
 | `make bench` | microbenchmarks |
-| `make debug` | QEMU waits for gdb on `:1234` (`gdb -x tools/gdb/gdbinit build/debug/kernel.elf`) |
+| `make debug` | QEMU waits for gdb on `:1234` (`gdb -x tools/gdb/gdbinit build/debug/kernel.elf`); adds `minios-tasks` and `minios-ptwalk ADDR` |
 | `make lint` / `make format` | clang-tidy, clang-format |
 
 ## What is in it

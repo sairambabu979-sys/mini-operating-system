@@ -558,6 +558,7 @@ void sched_init(void)
         panic("sched: cannot allocate the idle task");
     idle_task->pid = 0;
     idle_task->state = TASK_RUNNABLE; /* never on the run queue: picked when it is empty */
+    list_push_back(&all_tasks, &idle_task->all_link); /* counted in ntasks; listed too */
 
     ntasks = 2;
     time_set_tick_hook(sched_tick);

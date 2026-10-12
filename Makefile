@@ -76,7 +76,8 @@ KERNEL_CFLAGS += -O2 -g -DCONFIG_DEBUG=1
 KERNEL_UBSAN_FLAGS := -fsanitize=undefined -fno-sanitize=function
 KERNEL_CFLAGS += $(KERNEL_UBSAN_FLAGS)
 else
-KERNEL_CFLAGS += -O2 -DNDEBUG
+# Debug info in release too: kernel.elf stays debuggable; disk images are stripped.
+KERNEL_CFLAGS += -O2 -g -DNDEBUG
 endif
 
 # Host unit-test flags: kernel library code built for Linux under ASan/UBSan.
@@ -377,8 +378,12 @@ $(HOST_TEST_BIN): $(HOST_TEST_OBJS)
 	$(call msg,HOSTLD,$@)
 	$(Q)$(HOSTCC) $(HOST_CFLAGS) $^ -o $@
 
-.PHONY: test host-test qemu-test check-binary
-test: host-test check-binary qemu-test
+.PHONY: test host-test qemu-test check-binary gdb-test
+test: host-test check-binary qemu-test gdb-test
+
+# The gdb helpers (tools/gdb/minios.py), driven against a live kernel.
+gdb-test: $(DISK_IMG) $(KERNEL_ELF)
+	$(Q)$(PYTHON) tests/gdb/test_gdb_helpers.py --image $(DISK_IMG) --kernel $(KERNEL_ELF)
 
 host-test: $(HOST_TEST_BIN)
 	$(Q)$(HOST_TEST_BIN)
