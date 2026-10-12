@@ -519,6 +519,13 @@ or something the implementation taught us.
 | ADR files in `docs/adr/` | Not written. Rationale lives in §2 and the design docs. |
 | `-mno-red-zone` checked in CI | Done differently: the Makefile refuses to build without `-mno-red-zone`, `-mgeneral-regs-only` and `-mcmodel=kernel`, and `check_kernel.py` rejects vector registers in the binary. |
 
+**Built after v1.0** (beyond the original scope)
+
+| Item | Notes |
+|------|-------|
+| UEFI loader | Promoted from stretch goal 6. Same `boot_info` hand-off as the BIOS path (version 2 adds `loader`), so the whole suite runs under both firmwares in `make test`. |
+| Runner self-tests | `check_runner.py` boots kernels that hang and triple-fault, and requires `run_tests.py` to reject them. |
+
 **Learned the hard way** (each one is now covered by a test or a check)
 
 - The early page-table pool sits in the kernel image, whose direct-map
@@ -534,3 +541,6 @@ or something the implementation taught us.
   always write.
 - Freed task structs read by the tests themselves were caught by the
   kmalloc poison (`0x6b6b6b6b` where a pid was expected).
+- A PIT test sampled a fixed number of times and assumed that spanned half
+  a timer period; the faster CI runner disproved it. It now samples across
+  two ticks.

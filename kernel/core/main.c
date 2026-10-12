@@ -200,6 +200,7 @@ __noreturn void kmain(u64 boot_info_phys)
     cpu_irq_enable();
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
+    kprintf("loader: %s\n", boot_info->loader == BOOT_LOADER_UEFI ? "UEFI" : "BIOS");
     kprintf("cmdline: \"%s\"\n", boot_info->cmdline);
     kprintf("kernel: phys [%#llx-%#llx), virt %p\n",
             (unsigned long long)boot_info->kernel_phys_start,

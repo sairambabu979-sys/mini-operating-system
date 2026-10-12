@@ -38,7 +38,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang lld llvm nasm gcc make python3 qemu-system-x86
+            clang lld llvm nasm gcc make python3 qemu-system-x86 ovmf mtools
       - name: Build
         run: make -j"$(nproc)" CONFIG=${{ matrix.config }}
       - name: Test

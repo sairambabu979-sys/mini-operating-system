@@ -262,10 +262,50 @@ $(eval $(call bios_image,$(BENCH_IMG),bench))
 $(eval $(call bios_image,$(HANG_IMG),selftest=hang))
 $(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
 
+# --------------------------------------------------------------------------
+# UEFI loader (boot/efi) and UEFI boot images
+# --------------------------------------------------------------------------
+
+EFI_CFLAGS := --target=x86_64-unknown-windows -std=c17 \
+	-ffreestanding -nostdinc -isystem $(CLANG_RESOURCE_DIR)/include \
+	-mno-red-zone -mgeneral-regs-only -mno-stack-arg-probe -fno-stack-protector -O2 \
+	-Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wvla \
+	-ffile-prefix-map=$(CURDIR)/= -Ikernel/include
+EFI_SRCS   := boot/efi/loader.c kernel/lib/printf.c kernel/lib/string.c
+EFI_OBJS   := $(EFI_SRCS:%.c=$(BUILD)/efi/%.o)
+EFI_LOADER := $(BUILD)/efi/BOOTX64.EFI
+
+$(BUILD)/efi/%.o: %.c $(FLAGS_STAMP)
+	@mkdir -p $(@D)
+	$(call msg,CC-EFI,$<)
+	$(Q)$(CC) $(EFI_CFLAGS) -MMD -MP -c $< -o $@
+
+$(EFI_LOADER): $(EFI_OBJS)
+	$(call msg,LD,$@)
+	$(Q)lld-link /nologo /subsystem:efi_application /entry:efi_main /nodefaultlib \
+	  /machine:x64 /out:$@ $(EFI_OBJS)
+
+UEFI_IMG       := $(BUILD)/disk-uefi.img
+UEFI_TEST_IMG  := $(BUILD)/disk-uefi-ktest.img
+UEFI_DEMO_IMG  := $(BUILD)/disk-uefi-demo.img
+
+# $(call uefi_image,<image>,<command line>): the same kernel behind the UEFI loader.
+define uefi_image
+$(1): $$(EFI_LOADER) $$(KERNEL_STRIPPED) tools/mkesp.py $(3)
+	$$(call msg,ESP,$$@)
+	$$(Q)$$(PYTHON) tools/mkesp.py --loader $$(EFI_LOADER) --kernel $$(KERNEL_STRIPPED) \
+	  --cmdline "$(2)" -o $$@
+endef
+
+$(eval $(call uefi_image,$(UEFI_TEST_IMG),ktest))
+$(eval $(call uefi_image,$(UEFI_DEMO_IMG),exit-after-init))
+
 # The run image embeds $(CMDLINE); this stamp changes only when it does.
 CMDLINE_STAMP := $(BUILD)/cmdline.stamp
 $(shell mkdir -p $(BUILD) && { printf '%s' '$(CMDLINE)' | cmp -s - $(CMDLINE_STAMP) || \
 	printf '%s' '$(CMDLINE)' > $(CMDLINE_STAMP); })
+
+$(eval $(call uefi_image,$(UEFI_IMG),$(CMDLINE),$(CMDLINE_STAMP)))
 
 $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_STAMP)
 	$(call msg,IMAGE,$@)
@@ -274,7 +314,7 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 
 .PHONY: all
 all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
-	$(TRIPLEFAULT_IMG) $(KERNEL_ELF)
+	$(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -285,7 +325,16 @@ QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display none -monitor n
               -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
               -drive file=$(DISK_IMG),format=raw,if=ide
 
-.PHONY: run debug bench
+.PHONY: run run-uefi debug bench
+
+# Boots disk-uefi.img through OVMF (apt install ovmf).
+OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd))
+run-uefi: $(UEFI_IMG)
+	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
+	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
+	$(QEMU) $(subst $(DISK_IMG),$(UEFI_IMG),$(QEMU_FLAGS)) \
+	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA)
 # Numbers under TCG reflect the emulator too; use QEMU_EXTRA="-enable-kvm -cpu host" for real ones.
 bench: $(BENCH_IMG)
 	$(Q)$(QEMU) $(subst $(DISK_IMG),$(BENCH_IMG),$(QEMU_FLAGS)) $(QEMU_EXTRA) | grep --line-buffered 'bench:' || true
@@ -336,7 +385,8 @@ host-test: $(HOST_TEST_BIN)
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
-qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) $(TRIPLEFAULT_IMG)
+qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) $(TRIPLEFAULT_IMG) \
+	  $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
@@ -354,6 +404,10 @@ qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) $(TRIPL
 	  --expect 'init: pid [0-9]+, starting 11 programs' \
 	  --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
+	  --no-tap --expect 'loader: UEFI' --expect 'init: all children reaped, 0 unexpected' \
+	  --expect 'init exited with status 0'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BENCH_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --expect 'bench: context switch' --expect 'bench: syscall round trip' \
 	  --expect 'user benchmark exit 0'
@@ -366,7 +420,7 @@ check-binary: $(KERNEL_ELF)
 # Code quality
 # --------------------------------------------------------------------------
 
-FORMAT_SRCS := $(shell find kernel tests user -name '*.c' -o -name '*.h')
+FORMAT_SRCS := $(shell find boot kernel tests user -name '*.c' -o -name '*.h')
 
 .PHONY: format check-format lint
 format:
@@ -378,6 +432,7 @@ check-format:
 lint: $(ASM_OFFSETS)
 	$(Q)clang-tidy --quiet $(KERNEL_C_SRCS) -- $(KERNEL_CFLAGS)
 	$(Q)clang-tidy --quiet $(wildcard user/lib/*.c user/programs/*.c) -- $(USER_CFLAGS)
+	$(Q)clang-tidy --quiet boot/efi/loader.c -- $(EFI_CFLAGS)
 
 .PHONY: clean
 clean:

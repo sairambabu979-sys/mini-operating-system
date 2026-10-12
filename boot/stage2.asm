@@ -434,6 +434,7 @@ fill_boot_info_real:
     mov     byte [BOOT_INFO_PHYS + BI_CMDLINE + BOOT_CMDLINE_MAX - 1], 0
     movzx   eax, byte [boot_drive]
     mov     [BOOT_INFO_PHYS + BI_BOOT_DRIVE], eax
+    mov     dword [BOOT_INFO_PHYS + BI_LOADER], BOOT_LOADER_BIOS
     ret
 
 ; --------------------------------------------------------------------------
