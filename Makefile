@@ -53,7 +53,8 @@ KERNEL_CFLAGS := \
 	-ffreestanding -nostdinc -isystem $(CLANG_RESOURCE_DIR)/include \
 	-mcmodel=kernel -mno-red-zone -mgeneral-regs-only -fno-pic -fno-pie \
 	-fno-omit-frame-pointer -fno-strict-aliasing -fno-common \
-	-fno-asynchronous-unwind-tables -fno-unwind-tables -fno-stack-protector \
+	-fno-asynchronous-unwind-tables -fno-unwind-tables \
+	-fstack-protector-strong -mstack-protector-guard=global \
 	-Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
 	-Wvla -Wcast-align -Wpointer-arith -Wundef -Wimplicit-fallthrough \
 	-ffile-prefix-map=$(CURDIR)/= \
@@ -61,9 +62,25 @@ KERNEL_CFLAGS := \
 
 ifeq ($(CONFIG),debug)
 KERNEL_CFLAGS += -O2 -g -DCONFIG_DEBUG=1
+# Kernel UBSan; the runtime is kernel/core/ubsan.c. -fsanitize=function needs
+# type metadata a freestanding kernel does not provide. Handlers are the
+# recoverable variants: they panic by default, but tests can observe them.
+KERNEL_UBSAN_FLAGS := -fsanitize=undefined -fno-sanitize=function
+KERNEL_CFLAGS += $(KERNEL_UBSAN_FLAGS)
 else
 KERNEL_CFLAGS += -O2 -DNDEBUG
 endif
+
+# Host unit-test flags: kernel library code built for Linux under ASan/UBSan.
+HOST_CFLAGS := -std=gnu17 -O1 -g -fno-omit-frame-pointer -fno-builtin \
+	-fsanitize=address,undefined -fno-sanitize-recover=all \
+	-Wall -Wextra -Werror -Ikernel/include
+
+# Rebuild everything when the flags change, not only when sources do.
+FLAGS_STAMP := $(BUILD)/flags.stamp
+FLAGS_SIG   := $(CC) $(KERNEL_CFLAGS) | $(HOSTCC) $(HOST_CFLAGS)
+$(shell mkdir -p $(BUILD) && { printf '%s' '$(FLAGS_SIG)' | cmp -s - $(FLAGS_STAMP) || \
+	printf '%s' '$(FLAGS_SIG)' > $(FLAGS_STAMP); })
 
 KERNEL_ASFLAGS := -f elf64 -w+all -Ikernel/arch/x86_64/ -I$(BUILD)/gen/
 KERNEL_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack \
@@ -75,7 +92,7 @@ KERNEL_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack \
 
 ASM_OFFSETS := $(BUILD)/gen/asm-offsets.inc
 
-$(BUILD)/gen/asm-offsets.s: kernel/asm-offsets.c
+$(BUILD)/gen/asm-offsets.s: kernel/asm-offsets.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,GEN,$@)
 	$(Q)$(CC) $(KERNEL_CFLAGS) -MMD -MP -MT $@ -S $< -o $@
@@ -100,7 +117,7 @@ KERNEL_STRIPPED := $(BUILD)/kernel.stripped.elf
 
 KERNEL_C_OBJS := $(KERNEL_C_SRCS:%.c=$(BUILD)/%.o)
 
-$(KERNEL_C_OBJS): $(BUILD)/%.o: %.c
+$(KERNEL_C_OBJS): $(BUILD)/%.o: %.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,CC,$<)
 	$(Q)$(CC) $(KERNEL_CFLAGS) -MMD -MP -c $< -o $@
@@ -110,9 +127,36 @@ $(BUILD)/kernel/%.asm.o: kernel/%.asm | $(ASM_OFFSETS)
 	$(call msg,NASM,$<)
 	$(Q)$(NASM) $(KERNEL_ASFLAGS) -MD $(@:.o=.d) -MP $< -o $@
 
-$(KERNEL_ELF): $(KERNEL_OBJS) kernel/linker.ld
+# Code that UBSan reports through must not itself be instrumented.
+$(BUILD)/kernel/core/ubsan.o: KERNEL_CFLAGS += -fno-sanitize=all
+
+# Symbol table: link once with an empty table, generate the real one from
+# that binary, link again, then prove no function moved (tools/gen_ksyms.py).
+KERNEL_PASS1 := $(BUILD)/kernel.pass1.elf
+KSYMS_EMPTY  := $(BUILD)/gen/ksyms_empty.c
+KSYMS        := $(BUILD)/gen/ksyms.c
+
+$(KSYMS_EMPTY): tools/gen_ksyms.py
+	@mkdir -p $(@D)
+	$(call msg,GEN,$@)
+	$(Q)$(PYTHON) tools/gen_ksyms.py --empty -o $@
+
+$(KSYMS): $(KERNEL_PASS1) tools/gen_ksyms.py
+	$(call msg,GEN,$@)
+	$(Q)$(PYTHON) tools/gen_ksyms.py $< -o $@
+
+$(BUILD)/gen/%.o: $(BUILD)/gen/%.c $(FLAGS_STAMP)
+	$(call msg,CC,$<)
+	$(Q)$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(KERNEL_PASS1): $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o kernel/linker.ld
 	$(call msg,LD,$@)
-	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o -o $@
+
+$(KERNEL_ELF): $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o kernel/linker.ld
+	$(call msg,LD,$@)
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o -o $@
+	$(Q)$(PYTHON) tools/gen_ksyms.py --check $@ $(KSYMS)
 
 $(KERNEL_STRIPPED): $(KERNEL_ELF)
 	$(call msg,STRIP,$@)
@@ -137,6 +181,13 @@ DISK_IMG := $(BUILD)/disk.img
 TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
+PANIC_IMG := $(BUILD)/disk-panic.img
+
+$(PANIC_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
+	$(call msg,IMAGE,$@)
+	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
+	  --kernel $(KERNEL_STRIPPED) --cmdline "selftest=panic" -o $@
+
 # The run image embeds $(CMDLINE); this stamp changes only when it does.
 CMDLINE_STAMP := $(BUILD)/cmdline.stamp
 $(shell mkdir -p $(BUILD) && { printf '%s' '$(CMDLINE)' | cmp -s - $(CMDLINE_STAMP) || \
@@ -153,7 +204,7 @@ $(TEST_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
 	  --kernel $(KERNEL_STRIPPED) --cmdline "ktest" -o $@
 
 .PHONY: all
-all: $(DISK_IMG) $(TEST_IMG) $(KERNEL_ELF)
+all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -181,20 +232,17 @@ HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdl
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 
-HOST_CFLAGS := -std=gnu17 -O1 -g -fno-omit-frame-pointer -fno-builtin \
-	-fsanitize=address,undefined -fno-sanitize-recover=all \
-	-Wall -Wextra -Werror -Ikernel/include
 
 HOST_TEST_OBJS := $(HOST_TEST_SRCS:%.c=$(BUILD)/host/%.o) \
 	$(HOST_TEST_KERNEL_SRCS:%.c=$(BUILD)/host/%.o)
 
-$(BUILD)/host/tests/%.o: tests/%.c
+$(BUILD)/host/tests/%.o: tests/%.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,HOSTCC,$<)
 	$(Q)$(HOSTCC) $(HOST_CFLAGS) -MMD -MP -c $< -o $@
 
 # Kernel sources get their libc-named symbols renamed (see kernel_shim.h).
-$(BUILD)/host/kernel/%.o: kernel/%.c
+$(BUILD)/host/kernel/%.o: kernel/%.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,HOSTCC,$<)
 	$(Q)$(HOSTCC) $(HOST_CFLAGS) -include tests/host/kernel_shim.h -MMD -MP -c $< -o $@
@@ -210,8 +258,19 @@ test: host-test check-binary qemu-test
 host-test: $(HOST_TEST_BIN)
 	$(Q)$(HOST_TEST_BIN)
 
-qemu-test: $(TEST_IMG)
+# The panic run checks the whole crash path: decode, CR2, registers and a
+# backtrace symbolized through the faulting function back to kmain.
+qemu-test: $(TEST_IMG) $(PANIC_IMG)
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
+	  --expect-panic \
+	  --expect 'KERNEL PANIC' \
+	  --expect 'exception 14 \(#PF page fault\), error code 0x2, from kernel mode' \
+	  --expect 'page fault: write hit a non-present page in kernel mode' \
+	  --expect 'CR2 0000000080000000' \
+	  --expect '#0 +0x[0-9a-f]+ selftest_page_fault\+0x' \
+	  --expect '#[0-9]+ +0x[0-9a-f]+ kmain\+0x' \
+	  --expect 'end of panic'
 
 # Static checks on the linked kernel (e.g. no SSE instructions slipped in).
 check-binary: $(KERNEL_ELF)

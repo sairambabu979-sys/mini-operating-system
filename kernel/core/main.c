@@ -3,14 +3,19 @@
  * Kernel C entry point and boot sequence.
  */
 #include <arch/cpu.h>
+#include <arch/segments.h>
+#include <arch/trap.h>
 #include <boot/boot_info.h>
 #include <core/boot.h>
+#include <core/klog.h>
 #include <core/ktest.h>
+#include <core/panic.h>
 #include <core/printk.h>
 #include <core/sections.h>
 #include <drivers/qemu.h>
 #include <drivers/serial.h>
 #include <lib/cmdline.h>
+#include <lib/string.h>
 #include <version.h>
 
 __noreturn void kmain(u64 boot_info_phys);
@@ -75,10 +80,56 @@ static const struct boot_info *validate_boot_info(u64 phys)
     return bi;
 }
 
+static void apply_cmdline(const char *cmdline)
+{
+    char value[16];
+    enum log_level level;
+
+    if (cmdline_get(cmdline, "loglevel", value, sizeof(value))) {
+        if (klog_parse_level(value, &level))
+            klog_set_level(level);
+        else
+            pr_warn("unknown loglevel '%s' ignored\n", value);
+    }
+    /* Under test, a panic must end the run with a failure, not hang it. */
+    panic_set_exit_on_panic(cmdline_has_flag(cmdline, "ktest") ||
+                            cmdline_get(cmdline, "selftest", value, sizeof(value)));
+}
+
+/*
+ * selftest=panic: crash on purpose so the QEMU suite can check the panic
+ * path end to end (decode, registers, symbolized backtrace, exit code).
+ * noinline keeps this frame visible in the backtrace.
+ */
+static __attribute__((noinline)) void selftest_page_fault(void)
+{
+    *(volatile u64 *)0x80000000ull = 0xDEAD; /* canonical but unmapped */
+}
+
+static void run_selftest(const char *cmdline)
+{
+    char which[16];
+
+    if (!cmdline_get(cmdline, "selftest", which, sizeof(which)))
+        return;
+    if (strcmp(which, "panic") == 0) {
+        pr_info("selftest: provoking a kernel page fault\n");
+        selftest_page_fault();
+    }
+    panic("selftest '%s' did not panic", which);
+}
+
 __noreturn void kmain(u64 boot_info_phys)
 {
     serial_init();
     boot_info = validate_boot_info(boot_info_phys);
+    apply_cmdline(boot_info->cmdline);
+
+    /* CPU tables first: from here on, any fault produces a decoded panic. */
+    gdt_init();
+    idt_init();
+    nmi_enable();
+    run_selftest(boot_info->cmdline);
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
     kprintf("cmdline: \"%s\"\n", boot_info->cmdline);

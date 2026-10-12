@@ -31,6 +31,55 @@ static __always_inline void cpu_pause(void)
     __asm__ volatile("pause");
 }
 
+#define CR0_PE (1ull << 0)
+#define CR0_WP (1ull << 16) /* honor read-only pages in ring 0 */
+#define CR0_PG (1ull << 31)
+
+#define CR4_PAE  (1ull << 5)
+#define CR4_PGE  (1ull << 7)
+#define CR4_SMEP (1ull << 20)
+#define CR4_SMAP (1ull << 21)
+
+#define RFLAGS_IF (1ull << 9)
+#define RFLAGS_DF (1ull << 10)
+
+#define DEFINE_READ_CR(n)                                                                          \
+    static inline u64 read_cr##n(void)                                                             \
+    {                                                                                              \
+        u64 v;                                                                                     \
+        __asm__ volatile("mov %%cr" #n ", %0" : "=r"(v));                                          \
+        return v;                                                                                  \
+    }
+DEFINE_READ_CR(0)
+DEFINE_READ_CR(2)
+DEFINE_READ_CR(3)
+DEFINE_READ_CR(4)
+#undef DEFINE_READ_CR
+
+static inline u64 read_rflags(void)
+{
+    u64 v;
+
+    __asm__ volatile("pushfq; popq %0" : "=r"(v));
+    return v;
+}
+
+static __always_inline uptr read_rsp(void)
+{
+    uptr v;
+
+    __asm__ volatile("mov %%rsp, %0" : "=r"(v));
+    return v;
+}
+
+static __always_inline uptr read_rbp(void)
+{
+    uptr v;
+
+    __asm__ volatile("mov %%rbp, %0" : "=r"(v));
+    return v;
+}
+
 /* Stops this CPU for good: interrupts off, then halt in a loop. */
 static inline __noreturn void cpu_halt_forever(void)
 {

@@ -14,13 +14,25 @@ default rel
 section .text.entry
 global _start
 extern kmain
+extern __stack_chk_guard
 
 _start:
     cli
     cld
     lea     rsp, [boot_stack_top]
     xor     ebp, ebp                ; terminates frame-pointer backtraces
-    ; RDI (boot_info physical address) is passed through untouched.
+
+    ; Seed the stack-protector canary before any protected C function runs.
+    ; RDI (boot_info physical address) must survive: rdtsc clobbers only
+    ; RAX/RDX, and RCX is scratch.
+    rdtsc
+    shl     rdx, 32
+    or      rax, rdx
+    mov     rcx, 0x9E3779B97F4A7C15     ; golden-ratio multiplier spreads TSC bits
+    imul    rax, rcx
+    xor     [__stack_chk_guard], rax
+    and     byte [__stack_chk_guard], 0 ; keep the low byte zero
+
     call    kmain
 .halt:                              ; kmain never returns; belt and braces
     cli

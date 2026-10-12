@@ -49,6 +49,12 @@ SECTIONS
         KEEP(*(.ktest))
         __ktest_end = .;
 
+        /* Exception fixups, see <arch/extable.h> */
+        . = ALIGN(8);
+        __extable_start = .;
+        KEEP(*(__ex_table))
+        __extable_end = .;
+
         . = ALIGN(4K);
         __rodata_end = .;
     } :rodata

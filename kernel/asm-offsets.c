@@ -7,6 +7,8 @@
  * "%define NAME value". The technique is borrowed from Linux; it lets
  * assembly use C layouts without anyone keeping two copies in sync.
  */
+#include <arch/setjmp.h>
+#include <arch/trap.h>
 #include <boot/boot_info.h>
 
 #define DEFINE(sym, val)      __asm__ volatile("\n.ascii \"->" #sym " %c0\"" : : "i"((u64)(val)))
@@ -37,4 +39,23 @@ void asm_offsets(void)
     OFFSET(E820_LENGTH, e820_entry, length);
     OFFSET(E820_TYPE, e820_entry, type);
     OFFSET(E820_ACPI, e820_entry, acpi_attrs);
+
+    /* Trap frame (arch/trap.h) */
+    DEFINE(TF_SIZE, sizeof(struct trap_frame));
+    OFFSET(TF_VECTOR, trap_frame, vector);
+    OFFSET(TF_ERROR_CODE, trap_frame, error_code);
+    OFFSET(TF_RIP, trap_frame, rip);
+    OFFSET(TF_CS, trap_frame, cs);
+    OFFSET(TF_RFLAGS, trap_frame, rflags);
+    OFFSET(TF_RSP, trap_frame, rsp);
+
+    /* Non-local jumps (arch/setjmp.h) */
+    OFFSET(KJMP_RBX, kjmp_buf, rbx);
+    OFFSET(KJMP_RBP, kjmp_buf, rbp);
+    OFFSET(KJMP_R12, kjmp_buf, r12);
+    OFFSET(KJMP_R13, kjmp_buf, r13);
+    OFFSET(KJMP_R14, kjmp_buf, r14);
+    OFFSET(KJMP_R15, kjmp_buf, r15);
+    OFFSET(KJMP_RSP, kjmp_buf, rsp);
+    OFFSET(KJMP_RIP, kjmp_buf, rip);
 }

@@ -36,7 +36,7 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 |-----------|-------|
 | M0 Scaffolding: build, CI, host tests | ✅ |
 | M1 Bootloader: MBR → long mode → ELF load | ✅ |
-| M2 Kernel foundation: GDT/TSS/IDT, exceptions, panic | planned |
+| M2 Kernel foundation: GDT/TSS/IDT, exceptions, panic, UBSan | ✅ |
 | M3 Physical memory: buddy allocator | planned |
 | M4 Virtual memory: own page tables, W^X, kmalloc | planned |
 | M5 Interrupts and time: PIC, PIT | planned |
@@ -50,8 +50,10 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 | Host unit tests | Kernel library code under ASan + UBSan; printf differentially tested against glibc | `tests/host/` |
 | Binary checks | No SSE/AVX in kernel code; W^X segment layout; entry point | `tools/check_kernel.py` |
 | In-kernel tests | `KTEST()` cases, TAP over serial, judged by exit code and TAP count | `tests/kernel/`, `tests/qemu/run_tests.py` |
+| Crash path | Deliberate kernel page fault; panic decode and symbolized backtrace matched against patterns | `disk-panic.img` |
 
 ## Documentation
 
 - [`docs/PLAN.md`](docs/PLAN.md): architecture, decisions, milestones, risks
 - [`docs/design/boot.md`](docs/design/boot.md): boot sequence, memory layout, debugging
+- [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers

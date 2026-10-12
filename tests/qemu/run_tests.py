@@ -13,6 +13,9 @@ if all of the following hold:
 
 A triple fault shows up as QEMU exiting 0 (thanks to -no-reboot) with a
 truncated log, so it can never be mistaken for success.
+
+With --expect-panic the run must instead end in a kernel panic (status 35)
+whose output matches every --expect regex, in order.
 """
 
 import argparse
@@ -61,6 +64,10 @@ def main() -> int:
     ap.add_argument("--image", type=Path, required=True)
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--log-dir", type=Path, default=Path("build/logs"))
+    ap.add_argument("--expect-panic", action="store_true",
+                    help="the run must end in a kernel panic")
+    ap.add_argument("--expect", action="append", default=[],
+                    help="regex the output must match (in order); repeatable")
     ap.add_argument("qemu_args", nargs="*", help="extra QEMU arguments (after --)")
     args = ap.parse_args()
 
@@ -90,20 +97,34 @@ def main() -> int:
     problems = []
     if timed_out:
         problems.append(f"timed out after {args.timeout:.0f}s")
+    elif args.expect_panic:
+        if status != EXIT_FAILURE:
+            problems.append(f"expected a panic (status {EXIT_FAILURE}), got status {status}")
     elif status == EXIT_FAILURE:
         problems.append("kernel reported failure (QEMU_EXIT_FAILURE)")
     elif status != EXIT_SUCCESS:
         problems.append(f"QEMU exited with status {status}: crash or triple fault?")
-    if plan is None:
-        problems.append("no TAP plan in output")
-    elif len(results) != plan:
-        problems.append(f"TAP plan announced {plan} tests, {len(results)} reported")
+
+    pos = 0
+    for pattern in args.expect:
+        m = re.compile(pattern, re.MULTILINE).search(text, pos)
+        if not m:
+            problems.append(f"output does not match /{pattern}/ (after offset {pos})")
+            break
+        pos = m.end()
+
+    if not args.expect_panic:
+        if plan is None:
+            problems.append("no TAP plan in output")
+        elif len(results) != plan:
+            problems.append(f"TAP plan announced {plan} tests, {len(results)} reported")
     failed = [name for ok, _, name in results if not ok]
     if failed:
         problems.append("failed tests: " + ", ".join(failed))
 
     passed = sum(ok for ok, _, _ in results)
-    summary = f"{args.image.name}: {passed}/{plan or 0} passed in {elapsed:.1f}s (log: {log_path})"
+    what = "panicked as expected" if args.expect_panic else f"{passed}/{plan or 0} passed"
+    summary = f"{args.image.name}: {what} in {elapsed:.1f}s (log: {log_path})"
     if problems:
         print(f"FAIL {summary}")
         for p in problems:
