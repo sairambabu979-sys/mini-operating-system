@@ -42,6 +42,13 @@ SECTIONS
     {
         __rodata_start = .;
         *(.rodata .rodata.*)
+
+        /* KTEST() descriptors, see <core/ktest.h> */
+        . = ALIGN(8);
+        __ktest_start = .;
+        KEEP(*(.ktest))
+        __ktest_end = .;
+
         . = ALIGN(4K);
         __rodata_end = .;
     } :rodata

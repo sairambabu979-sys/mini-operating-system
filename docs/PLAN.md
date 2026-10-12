@@ -96,7 +96,7 @@ Dependency rule: arrows only point downward. `arch/` exposes a narrow interface
 ├── boot/
 │   ├── stage1.asm            # MBR, 446 bytes of code + partition table + 0x55AA
 │   ├── stage2.asm            # A20, E820, unreal-mode loader, long mode, ELF64 load
-│   └── inc/                  # shared NASM macros, boot_info.inc (generated)
+│   └── inc/                  # layout.inc (boot memory map); asm-offsets.inc is generated
 ├── kernel/
 │   ├── arch/x86_64/
 │   │   ├── entry.asm         # _start: stack, rbp=0, call kmain(boot_info*)
@@ -157,7 +157,7 @@ starting LBA and sector count, so the loader has no hard-coded sizes.
 2. Check for INT 13h extensions (`AH=41h`), then load stage 2 with `AH=42h` (LBA DAP).
 3. Far jump to stage 2. On any failure, print a one-letter error code and `hlt`.
 
-**Stage 2** (16 → 32 → 64-bit):
+**Stage 2** (16 → 64-bit; real mode switches straight to long mode):
 1. **A20**: BIOS `INT 15h AX=2401h`, then the keyboard controller, then fast A20 (port `0x92`).
    Each attempt is checked with a memory-wraparound test.
 2. **Memory map**: `INT 15h EAX=E820h`, handling both 20- and 24-byte entries (ACPI 3.0 attributes).
@@ -184,14 +184,14 @@ struct boot_info {
     u64 magic;
     u32 version;
     u32 mmap_count;
-    struct e820_entry mmap[BOOT_MMAP_MAX];
     u64 kernel_phys_start, kernel_phys_end;
     u64 boot_drive;
-    char cmdline[128];          /* e.g. "ktest loglevel=debug" */
+    char cmdline[BOOT_CMDLINE_MAX];      /* e.g. "ktest loglevel=debug" */
+    struct e820_entry mmap[BOOT_MMAP_MAX];
 };
 ```
 
-The NASM mirror `boot_info.inc` is **generated** from the C header via `asm-offsets.c`,
+The NASM mirror `asm-offsets.inc` is **generated** from the C header via `asm-offsets.c`,
 so the two cannot drift apart. `static_assert`s pin the layout.
 
 ### 5.2 Early kernel and diagnostics (`core/`, `drivers/`)
