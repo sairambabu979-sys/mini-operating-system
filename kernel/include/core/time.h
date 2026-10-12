@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Timekeeping: the PIT drives a 1 kHz tick; the TSC is calibrated against
- * it for fine-grained measurements.
+ * Timekeeping: a 1 kHz tick from the local APIC timer (or the PIT on the
+ * legacy path), and the TSC for fine-grained measurements. Both rates are
+ * measured at boot against the HPET, or against the PIT without one.
  */
 #ifndef MINIOS_CORE_TIME_H
 #define MINIOS_CORE_TIME_H
@@ -10,7 +11,25 @@
 
 #define TIMER_HZ 1000
 
+enum tick_source {
+    TICK_PIT,   /* PIT channel 0 on ISA IRQ 0 */
+    TICK_LAPIC, /* local APIC timer, periodic */
+};
+
+enum ref_clock {
+    REF_HPET, /* HPET main counter */
+    REF_PIT,  /* PIT channel 2 one-shot */
+};
+
+/* Calibrates and starts the tick. Needs irq_init(); "nohpet" ignores the HPET. */
 void time_init(void);
+
+enum tick_source time_tick_source(void);
+enum ref_clock time_ref_clock(void);
+u64 time_ns_per_tick(void);
+
+/* Local APIC timer input rate after its divider, in Hz (0 in PIT mode). */
+u64 lapic_timer_hz(void);
 
 /* Ticks since time_init(). Monotonic. */
 u64 time_ticks(void);
@@ -30,10 +49,6 @@ static inline u64 rdtsc(void)
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return ((u64)hi << 32) | lo;
 }
-
-/* The divisor programmed into PIT channel 0, and a latched read of its counter. */
-u16 pit_divisor(void);
-u16 pit_read_counter(void);
 
 /* TSC frequency measured at boot, in kHz. */
 u64 tsc_khz(void);

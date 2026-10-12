@@ -1,32 +1,46 @@
 // SPDX-License-Identifier: MIT
 /*
- * PIT tick and TSC calibration.
+ * The tick and the TSC. See <core/time.h>.
  *
- * The PIT input clock is 1.193182 MHz; divisor 1193 gives 1000.15 Hz, a
- * tick of 999,847 ns. time_ns() multiplies by that integer, drifting
- * about 0.4 ppm, far below the PIT crystal's own tolerance.
+ * Boot measures the TSC (and, in APIC mode, the local APIC timer) against
+ * a reference clock, polled with interrupts off: the HPET main counter
+ * when ACPI describes one, else a one-shot on PIT channel 2. The tick then
+ * comes from the local APIC timer, programmed from that measurement, or
+ * from PIT channel 0 when the kernel runs on the 8259.
+ *
+ * PIT tick: divisor 1193 gives 1000.15 Hz, a tick of 999,847 ns. LAPIC
+ * tick: the nearest whole count to 1 ms; the period is what that count
+ * measured, so time_ns() inherits the calibration error (well under
+ * 0.1% against the HPET; see the tests).
  */
 #define pr_fmt(fmt) "time: " fmt
 
-#include <arch/io.h>
+#include <acpi/acpi.h>
 #include <arch/irqflags.h>
+#include <arch/lapic.h>
+#include <core/boot.h>
 #include <core/irq.h>
 #include <core/klog.h>
 #include <core/panic.h>
 #include <core/time.h>
+#include <drivers/hpet.h>
+#include <drivers/pit.h>
+#include <lib/cmdline.h>
 
-#define PIT_INPUT_HZ  1193182u
-#define PIT_CH0_DATA  0x40
-#define PIT_CMD       0x43
-#define PIT_CH0_MODE2 0x34 /* channel 0, lobyte/hibyte, rate generator, binary */
-#define PIT_DIVISOR   ((PIT_INPUT_HZ + TIMER_HZ / 2) / TIMER_HZ)
-#define NS_PER_TICK   ((u64)PIT_DIVISOR * 1000000000ull / PIT_INPUT_HZ)
+#define PIT_TICK_DIVISOR    ((PIT_INPUT_HZ + TIMER_HZ / 2) / TIMER_HZ)
+#define PIT_NS_PER_TICK     ((u64)PIT_TICK_DIVISOR * 1000000000ull / PIT_INPUT_HZ)
+#define CALIBRATION_MS      50u /* PIT channel 2 can time at most 54.9 ms */
+#define PIT_CALIBRATION_CNT (PIT_INPUT_HZ * CALIBRATION_MS / 1000u)
 
 static volatile u64 ticks;
+static u64 ns_per_tick;
 static u64 tsc_freq_khz;
+static u64 lapic_freq_hz;
+static enum tick_source tick_source;
+static enum ref_clock ref_clock;
 static void (*tick_hook)(void);
 
-static void pit_irq(struct trap_frame *frame, void *ctx)
+static void tick_interrupt(struct trap_frame *frame, void *ctx)
 {
     (void)frame;
     (void)ctx;
@@ -35,54 +49,188 @@ static void pit_irq(struct trap_frame *frame, void *ctx)
         tick_hook();
 }
 
-/* Counts TSC cycles across 50 PIT ticks. Needs interrupts enabled. */
-static void calibrate_tsc(void)
+struct calibration {
+    u64 elapsed_ns;
+    u64 tsc;   /* TSC cycles in that time */
+    u64 lapic; /* local APIC timer counts (divider 16), if it was running */
+    u64 skew;  /* TSC cycles the endpoints are uncertain by */
+};
+
+/*
+ * One reading of the reference (and the LAPIC timer) between two TSC
+ * reads. Its time is the midpoint; its uncertainty, the gap. A gap much
+ * wider than a few register reads means something ran in between: host
+ * scheduling under emulation, an SMI on real hardware.
+ */
+struct sample {
+    u64 tsc;
+    u64 width;
+    u64 ref;
+    u32 lapic;
+};
+
+static struct sample take_sample(bool with_lapic)
 {
+    struct sample s;
+    u64 a = rdtsc();
+
+    s.ref = ref_clock == REF_HPET ? hpet_counter() : pit_oneshot_done();
+    s.lapic = with_lapic ? lapic_timer_current() : 0;
+    u64 b = rdtsc();
+
+    s.tsc = a + (b - a) / 2;
+    s.width = b - a;
+    return s;
+}
+
+/*
+ * Times one CALIBRATION_MS window on the reference clock. Interrupts are
+ * off throughout: one arriving between two reads would stretch only one
+ * side of the measurement.
+ */
+static struct calibration measure_once(bool with_lapic)
+{
+    struct calibration c;
+    struct sample start, end;
     irqflags_t flags = arch_irq_save();
 
-    cpu_irq_enable();
-    u64 start_tick = ticks;
+    if (with_lapic)
+        lapic_timer_start_oneshot(0xFFFFFFFFu);
 
-    while (ticks == start_tick)
-        cpu_halt(); /* align to a tick edge */
-    u64 t0 = rdtsc(), s = ticks;
+    if (ref_clock == REF_HPET) {
+        u64 mask = hpet_counter_mask();
+        u64 target = CALIBRATION_MS * 1000000000000ull / hpet_period_fs();
 
-    while (ticks < s + 50)
-        cpu_halt();
-    u64 t1 = rdtsc();
+        start = take_sample(with_lapic);
+        while (((hpet_counter() - start.ref) & mask) < target)
+            cpu_pause();
+        end = take_sample(with_lapic);
+        c.elapsed_ns = ((end.ref - start.ref) & mask) * hpet_period_fs() / 1000000;
+    } else {
+        /* The count starts during the programming: bracket that instead. */
+        u64 a = rdtsc();
 
-    if (!(flags & RFLAGS_IF))
-        cpu_irq_disable(); /* back to the caller's state */
-    tsc_freq_khz = (t1 - t0) * 1000000 / (50 * NS_PER_TICK);
+        pit_oneshot_start(PIT_CALIBRATION_CNT);
+        start = (struct sample){.lapic = with_lapic ? lapic_timer_current() : 0};
+        start.width = rdtsc() - a;
+        start.tsc = a + start.width / 2;
+
+        /* The output rose between the last two polls: the end is their span. */
+        struct sample prev = take_sample(with_lapic);
+
+        while (!(end = take_sample(with_lapic)).ref)
+            prev = end;
+        end.width = end.tsc + end.width / 2 - (prev.tsc - prev.width / 2);
+        end.tsc = (prev.tsc + end.tsc) / 2;
+        c.elapsed_ns = (u64)PIT_CALIBRATION_CNT * 1000000000ull / PIT_INPUT_HZ;
+    }
+    arch_irq_restore(flags);
+
+    c.tsc = end.tsc - start.tsc;
+    c.lapic = with_lapic ? start.lapic - end.lapic : 0;
+    c.skew = start.width + end.width;
+    return c;
+}
+
+/*
+ * Up to five windows, keeping the first whose endpoints are pinned to
+ * within 0.1% of its length (else the tightest seen). Without this, a
+ * single preemption at an endpoint skews the TSC rate for the whole run.
+ */
+static struct calibration measure(bool with_lapic)
+{
+    struct calibration best = {0};
+
+    for (int attempt = 0; attempt < 5; attempt++) {
+        struct calibration c = measure_once(with_lapic);
+
+        if (attempt == 0 || c.skew < best.skew)
+            best = c;
+        if (c.skew * 1000 <= c.tsc)
+            return c;
+    }
+    pr_warn("calibration endpoints uncertain by %llu of %llu TSC cycles\n",
+            (unsigned long long)best.skew, (unsigned long long)best.tsc);
+    return best;
+}
+
+static void choose_reference(void)
+{
+    const struct acpi_hpet_info *hpet = acpi_hpet();
+
+    ref_clock = REF_PIT;
+    if (cmdline_has_flag(boot_info_get()->cmdline, "nohpet"))
+        pr_info("HPET disabled on the command line\n");
+    else if (hpet && hpet_init(hpet))
+        ref_clock = REF_HPET;
+}
+
+static void start_lapic_tick(void)
+{
+    u32 count = (u32)((lapic_freq_hz + TIMER_HZ / 2) / TIMER_HZ);
+
+    if (count == 0)
+        panic("local APIC timer runs at %llu Hz: too slow for a %u Hz tick",
+              (unsigned long long)lapic_freq_hz, TIMER_HZ);
+    ns_per_tick = (u64)count * 1000000000ull / lapic_freq_hz;
+    BUG_ON(irq_register_local(VEC_APIC_TIMER, tick_interrupt, NULL) != 0);
+    lapic_timer_start_periodic(VEC_APIC_TIMER, count);
+    tick_source = TICK_LAPIC;
+}
+
+static void start_pit_tick(void)
+{
+    ns_per_tick = PIT_NS_PER_TICK;
+    pit_start_periodic(PIT_TICK_DIVISOR);
+    BUG_ON(irq_register(0, tick_interrupt, NULL) != 0);
+    tick_source = TICK_PIT;
 }
 
 void time_init(void)
 {
-    outb(PIT_CMD, PIT_CH0_MODE2);
-    outb(PIT_CH0_DATA, PIT_DIVISOR & 0xFF);
-    outb(PIT_CH0_DATA, PIT_DIVISOR >> 8);
-    BUG_ON(irq_register(0, pit_irq, NULL) != 0);
-    calibrate_tsc();
-    pr_info("PIT at %u Hz (%llu ns/tick), TSC %llu.%03llu MHz\n", TIMER_HZ,
-            (unsigned long long)NS_PER_TICK, (unsigned long long)(tsc_freq_khz / 1000),
-            (unsigned long long)(tsc_freq_khz % 1000));
+    bool apic = irq_mode() == IRQ_MODE_APIC;
+
+    choose_reference();
+    struct calibration c = measure(apic);
+
+    if (c.tsc == 0 || c.elapsed_ns == 0)
+        panic("TSC calibration failed: %llu cycles in %llu ns", (unsigned long long)c.tsc,
+              (unsigned long long)c.elapsed_ns);
+    tsc_freq_khz = c.tsc * 1000000 / c.elapsed_ns;
+    if (apic) {
+        lapic_freq_hz = c.lapic * 1000000000ull / c.elapsed_ns;
+        start_lapic_tick();
+    } else {
+        start_pit_tick();
+    }
+
+    pr_info("tick: %s at %u Hz (%llu ns/tick); TSC %llu.%03llu MHz; calibrated against the %s\n",
+            tick_source == TICK_LAPIC ? "local APIC timer" : "PIT", TIMER_HZ,
+            (unsigned long long)ns_per_tick, (unsigned long long)(tsc_freq_khz / 1000),
+            (unsigned long long)(tsc_freq_khz % 1000), ref_clock == REF_HPET ? "HPET" : "PIT");
+    if (apic)
+        pr_info("local APIC timer: %llu Hz after the divide-by-%u\n",
+                (unsigned long long)lapic_freq_hz, LAPIC_TIMER_DIVIDER);
 }
 
-u16 pit_divisor(void)
+enum tick_source time_tick_source(void)
 {
-    return PIT_DIVISOR;
+    return tick_source;
 }
 
-u16 pit_read_counter(void)
+enum ref_clock time_ref_clock(void)
 {
-    irqflags_t flags = arch_irq_save(); /* lo/hi reads must not be split */
+    return ref_clock;
+}
 
-    outb(PIT_CMD, 0x00); /* latch channel 0 */
-    u8 lo = inb(PIT_CH0_DATA);
-    u8 hi = inb(PIT_CH0_DATA);
+u64 time_ns_per_tick(void)
+{
+    return ns_per_tick;
+}
 
-    arch_irq_restore(flags);
-    return (u16)(hi << 8 | lo);
+u64 lapic_timer_hz(void)
+{
+    return lapic_freq_hz;
 }
 
 u64 time_ticks(void)
@@ -92,7 +240,7 @@ u64 time_ticks(void)
 
 u64 time_ns(void)
 {
-    return ticks * NS_PER_TICK;
+    return ticks * ns_per_tick;
 }
 
 u64 tsc_khz(void)

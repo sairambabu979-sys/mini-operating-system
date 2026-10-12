@@ -86,6 +86,8 @@ def main() -> int:
     ap.add_argument("--memory", default="128M", help="guest RAM, e.g. 128M or 4G")
     ap.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
     ap.add_argument("--log-dir", type=Path, default=Path("build/logs"))
+    ap.add_argument("--log-suffix", default="",
+                    help="distinguishes the log of a run with different QEMU arguments")
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run must end in a kernel panic")
     ap.add_argument("--no-tap", action="store_true",
@@ -96,7 +98,8 @@ def main() -> int:
     args = ap.parse_args()
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = args.log_dir / f"{args.image.stem}-{args.memory}.serial.log"
+    suffix = f"-{args.log_suffix}" if args.log_suffix else ""
+    log_path = args.log_dir / f"{args.image.stem}-{args.memory}{suffix}.serial.log"
     workdir = Path(tempfile.mkdtemp(prefix="minios-qemu-"))
     firmware = ovmf_drives(workdir) if args.uefi else []
     cmd = qemu_command(args.image, args.memory, firmware + args.qemu_args)
@@ -151,14 +154,16 @@ def main() -> int:
     if failed:
         problems.append("failed tests: " + ", ".join(failed))
 
-    passed = sum(ok for ok, _, _ in results)
+    skipped = sum(ok and "# SKIP" in name for ok, _, name in results)
+    passed = sum(ok for ok, _, _ in results) - skipped
     if args.expect_panic:
         what = "panicked as expected"
     elif args.no_tap:
         what = f"exited cleanly, {len(args.expect)} expectations met"
     else:
-        what = f"{passed}/{plan or 0} passed"
-    summary = f"{args.image.name} ({args.memory}): {what} in {elapsed:.1f}s (log: {log_path})"
+        what = f"{passed}/{plan or 0} passed ({skipped} skipped)"
+    config = args.memory + (f", {' '.join(args.qemu_args)}" if args.qemu_args else "")
+    summary = f"{args.image.name} ({config}): {what} in {elapsed:.1f}s (log: {log_path})"
     if problems:
         print(f"FAIL {summary}")
         for p in problems:

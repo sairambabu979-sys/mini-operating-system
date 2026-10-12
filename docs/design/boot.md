@@ -83,7 +83,9 @@ hand-off**: `boot_info` at `BOOT_INFO_PHYS`, the kernel at its link
 address, the same identity plus higher-half windows, interrupts off, PICs
 masked. One kernel binary therefore runs under both firmwares, and
 `make test` boots the full in-kernel suite and the `init` demo both ways.
-`boot_info.loader` records which loader ran (it is `boot_info` version 2).
+`boot_info.loader` records which loader ran (`boot_info` version 2), and
+`boot_info.acpi_rsdp` carries the ACPI RSDP from the EFI configuration
+table (version 3; the BIOS loader leaves it 0 and the kernel scans for it).
 
 ```
 ESP (FAT32, built by tools/mkesp.py with mtools)
@@ -96,6 +98,7 @@ ESP (FAT32, built by tools/mkesp.py with mtools)
 |------|--------|
 | Claim memory | `AllocatePages(AllocateAddress)` for the kernel's physical range and the `boot_info` page. If the firmware owns either, the loader stops with a message instead of overwriting firmware memory. |
 | Load | Files are read through the volume the loader itself came from (LoadedImage → SimpleFileSystem). The kernel ELF gets the same checks as in stage 2, then is copied and its `.bss` zeroed **while boot services still run**. |
+| ACPI | The RSDP from the configuration table: the ACPI 2.0 GUID first, 1.0 accepted. |
 | Page tables | 0–4 GiB identity (the loader keeps running after the CR3 switch, so its image and stack must lie below 4 GiB, which is checked) and 0–1 GiB at `-2 GiB`, with 2 MiB pages. |
 | Exit | The final `GetMemoryMap` is followed immediately by `ExitBootServices`, with nothing allocating or printing in between, retried if the map key went stale. |
 | Memory map | EFI descriptors become E820 entries. Loader and boot-services memory and conventional memory become usable; ACPI types are kept; runtime services, MMIO and everything unknown become reserved. Contiguous same-type runs are merged. |
@@ -110,4 +113,3 @@ printed with `%ll`.
 **Real-hardware caveats.** Firmware may occupy physical 1 MiB or
 `0x1000`; the loader then fails cleanly, because the kernel is not
 physically relocatable. Firmware using 5-level paging (LA57) is refused.
-Some recent platforms gate off the legacy PIT, the kernel's only timer.

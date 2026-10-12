@@ -133,6 +133,15 @@ Virtual addresses come from a bump pointer and are **never reused**:
 An area needs no metadata: it ends at the next unmapped page. `vfree()`
 of anything but an area's first page panics.
 
+**`iomap()`** maps physical ranges the direct map leaves out (device
+registers, firmware tables in reserved memory) into the same region,
+behind the same guard pages, never executable. Two rules:
+- An uncached request over RAM the direct map already caches is
+  refused. Mixed memory types for one frame are undefined (SDM 12.12.4).
+- Its PTEs carry a software-available bit, and `vfree()` panics on it.
+  An iomap area has the same shape as a vmalloc area, and freeing one
+  would hand device memory to the PMM.
+
 ## kmalloc
 
 Size classes 16 B – 2 KiB use one-page slabs with a 64-byte header. Larger

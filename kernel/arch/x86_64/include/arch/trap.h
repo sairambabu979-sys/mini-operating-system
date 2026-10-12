@@ -51,7 +51,12 @@ enum {
     VEC_HYPERVISOR_INJECTION = 28,
     VEC_VMM_COMMUNICATION = 29,
     VEC_SECURITY = 30,
-    VEC_FIRST_IRQ = 32,
+    VEC_FIRST_IRQ = 32,     /* ISA IRQ n arrives on VEC_FIRST_IRQ + n, through either controller */
+    VEC_FIRST_LOCAL = 0xF0, /* local APIC sources: the highest priority class */
+    VEC_APIC_TIMER = 0xF0,
+    VEC_APIC_TEST = 0xFD, /* self-IPI target for the APIC tests */
+    VEC_APIC_ERROR = 0xFE,
+    VEC_APIC_SPURIOUS = 0xFF, /* low nibble all ones: P6-family APICs hard-wire it */
     VEC_COUNT = 256,
 };
 

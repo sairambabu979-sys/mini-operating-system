@@ -28,6 +28,8 @@ struct cpu_features {
     bool smep;    /* supervisor-mode execution prevention */
     bool smap;    /* supervisor-mode access prevention */
     bool invariant_tsc;
+    bool apic;   /* on-chip local APIC */
+    bool x2apic; /* x2APIC mode available (MSR interface) */
     u32 phys_addr_bits;
     u32 virt_addr_bits;
     char vendor[13];

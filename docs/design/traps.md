@@ -104,6 +104,11 @@ against expected patterns.
 
 ## Hardware interrupts and time (M5)
 
+M5 built the legacy path described here. The local APIC, I/O APIC, HPET
+and ACPI discovery came later and are now the default; see
+[interrupts.md](interrupts.md). The 8259 + PIT path below is the
+fallback (`noapic`), and it is still tested.
+
 **PIC.** The 8259 pair is remapped to vectors 32–47, since the BIOS
 default collides with CPU exceptions (IRQ 0 would arrive as `#DF`). All
 lines start masked except the cascade. Lines 7 and 15 can fire
@@ -111,14 +116,16 @@ spuriously: the in-service register is checked first. A spurious IRQ 7
 gets no EOI; a spurious IRQ 15 still needs an EOI to the master.
 
 **Dispatch.** `irq_dispatch()` runs the registered handler with
-interrupts off, sends EOI, and *then* calls `irq_exit_hook()`, the
-scheduler's preemption point. A context switch there may not return for
-a long time, so the PIC must already be acknowledged.
+interrupts off, sends EOI (to the 8259 or the local APIC), and *then*
+calls `irq_exit_hook()`, the scheduler's preemption point. A context
+switch there may not return for a long time, so the controller must
+already be acknowledged.
 
-**Time.** PIT channel 0 runs in mode 2 at 1000 Hz (divisor 1193, 999,847 ns
-per tick). `time_ns()` multiplies ticks by that integer, which drifts about
-0.4 ppm, far below the crystal's own tolerance. The TSC is calibrated
-against 50 PIT ticks at boot for fine-grained delays and benchmarks.
+**Time (legacy path).** PIT channel 0 runs in mode 2 at 1000 Hz (divisor
+1193, 999,847 ns per tick). `time_ns()` multiplies ticks by that integer,
+which drifts about 0.4 ppm, far below the crystal's own tolerance. The
+TSC is calibrated by polling the HPET or PIT channel 2, as on the APIC
+path.
 
 **Locks.** `spin_lock_irqsave` disables interrupts, disables preemption,
 and takes the lock with an atomic exchange. With one CPU, the only way to

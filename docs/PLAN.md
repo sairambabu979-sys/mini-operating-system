@@ -451,12 +451,12 @@ background, about **6–9 weeks** in total. Expect roughly double for a first ke
 M6 carry most of the schedule risk.
 
 ### Stretch goals (post-v1.0, in priority order)
-1. LAPIC timer (PIT-calibrated) + IOAPIC via ACPI MADT
+1. LAPIC timer (PIT-calibrated) + IOAPIC via ACPI MADT (done, HPET-calibrated; see §11)
 2. Priority scheduling / MLFQ, with latency benchmarks against RR
 3. SMP bring-up (INIT-SIPI-SIPI, per-CPU run queues, real spinlocks)
 4. Copy-on-write `fork()`
 5. initrd + a minimal VFS, so programs no longer need embedding
-6. UEFI loader producing the same `boot_info`
+6. UEFI loader producing the same `boot_info` (done; see §11)
 7. KASLR for the kernel image
 
 ---
@@ -524,6 +524,7 @@ or something the implementation taught us.
 | Item | Notes |
 |------|-------|
 | UEFI loader | Promoted from stretch goal 6. Same `boot_info` hand-off as the BIOS path (version 2 adds `loader`), so the whole suite runs under both firmwares in `make test`. |
+| LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. See [design/interrupts.md](design/interrupts.md). |
 | Runner self-tests | `check_runner.py` boots kernels that hang and triple-fault, and requires `run_tests.py` to reject them. |
 
 **Learned the hard way** (each one is now covered by a test or a check)
@@ -542,5 +543,16 @@ or something the implementation taught us.
 - Freed task structs read by the tests themselves were caught by the
   kmalloc poison (`0x6b6b6b6b` where a pid was expected).
 - A PIT test sampled a fixed number of times and assumed that spanned half
-  a timer period; the faster CI runner disproved it. It now samples across
-  two ticks.
+  a timer period; the faster CI runner disproved it. It then sampled
+  across two ticks, which a loaded host (vCPU descheduled for most of
+  them) disproved in turn. It now samples until the range is covered,
+  with a deadline.
+- NASM 2.16's `-MD` lists only the source file, not its `%include`s, so
+  changing `boot_info` did not rebuild stage 2 (the kernel then refused
+  the stale loader's version). Every assembly file had the same gap.
+  Dependencies now come from a separate `-M` pass, and touching
+  `asm-offsets.inc` was checked to rebuild them all.
+- Stress-running the APIC tests (8 QEMUs at once) failed two of them 1 run
+  in 12. Both asserted emulator timing, not kernel behavior. Register
+  read-back is now the exact check, and rate checks only catch factor
+  errors.

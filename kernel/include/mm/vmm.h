@@ -25,6 +25,7 @@ enum vm_flags {
     VM_USER = 1u << 2,
     VM_NOCACHE = 1u << 3, /* device memory */
     VM_GLOBAL = 1u << 4,  /* kernel mappings: survive CR3 switches in the TLB */
+    VM_IOMAP = 1u << 5,   /* memory the PMM does not own (iomap()): vfree() refuses it */
 };
 
 struct address_space {

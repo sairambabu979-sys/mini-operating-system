@@ -19,4 +19,17 @@ __must_check void *vmalloc(usize size);
 /* Frees a vmalloc() allocation. Panics on a pointer vmalloc did not return. */
 void vfree(void *ptr);
 
+/*
+ * Maps physical [phys, phys + size) into the vmalloc region, behind a guard
+ * page, and returns the virtual address of `phys` (which need not be page
+ * aligned). For what the direct map deliberately leaves out: device
+ * registers (VM_NOCACHE) and firmware tables in reserved memory. `flags`
+ * may contain only VM_WRITE and VM_NOCACHE; mappings are never executable.
+ *
+ * Returns NULL on a bad range, when out of address space, or for a
+ * VM_NOCACHE request covering RAM the direct map already caches.
+ * Mappings are permanent: nothing needs to unmap one yet.
+ */
+__must_check void *iomap(u64 phys, usize size, unsigned flags);
+
 #endif /* MINIOS_MM_VMALLOC_H */

@@ -42,6 +42,10 @@ static const struct efi_guid loaded_image_guid = {
     0x5B1B31A1, 0x9562, 0x11D2, {0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}};
 static const struct efi_guid simple_fs_guid = {
     0x964E5B22, 0x6459, 0x11D2, {0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B}};
+static const struct efi_guid acpi20_guid = {
+    0x8868E871, 0xE4F1, 0x11D3, {0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81}};
+static const struct efi_guid acpi10_guid = {
+    0xEB9D2D30, 0x2D88, 0x11D3, {0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D}};
 
 /* --- output ----------------------------------------------------------------- */
 
@@ -266,6 +270,22 @@ static u64 load_kernel(const u8 *file, u64 size, struct boot_info *bi)
 
 /* --- page tables and hand-off --------------------------------------------------- */
 
+/* The RSDP from the configuration table: ACPI 2.0+ preferred, 1.0 accepted. */
+static u64 find_acpi_rsdp(void)
+{
+    u64 v1 = 0;
+
+    for (u64 i = 0; i < st->number_of_table_entries; i++) {
+        const struct efi_configuration_table *t = &st->configuration_table[i];
+
+        if (memcmp(&t->vendor_guid, &acpi20_guid, sizeof(struct efi_guid)) == 0)
+            return (u64)(uptr)t->vendor_table;
+        if (memcmp(&t->vendor_guid, &acpi10_guid, sizeof(struct efi_guid)) == 0)
+            v1 = (u64)(uptr)t->vendor_table;
+    }
+    return v1;
+}
+
 /* 0-4 GiB identity (this loader keeps running after the switch) and 0-1 GiB at
  * KERNEL_VMA, exactly the windows stage 2 provides. 2 MiB pages. */
 static u64 build_page_tables(void)
@@ -389,6 +409,10 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
 
     u64 entry = load_kernel(kernel, kernel_size, bi);
     u64 pml4 = build_page_tables();
+
+    bi->acpi_rsdp = find_acpi_rsdp();
+    if (!bi->acpi_rsdp)
+        efi_log("no ACPI RSDP in the configuration table\n");
 
     efi_log("kernel %#llx-%#llx, entry %#llx, cmdline \"%s\"\n",
             (unsigned long long)bi->kernel_phys_start, (unsigned long long)bi->kernel_phys_end,

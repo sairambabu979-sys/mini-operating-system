@@ -32,6 +32,19 @@ struct ktest {
 
 void ktest_fail(const char *file, int line, const char *fmt, ...) __printf(3, 4);
 
+/*
+ * Ends the current test as skipped: it reports "ok ... # SKIP <reason>"
+ * (TAP's directive). For tests that do not apply to this boot, such as
+ * PIT checks when the local APIC drives the tick.
+ */
+#define KTEST_SKIP(reason)                                                                         \
+    do {                                                                                           \
+        ktest_skip(reason);                                                                        \
+        return;                                                                                    \
+    } while (0)
+
+void ktest_skip(const char *reason);
+
 #define KEXPECT(cond)                                                                              \
     do {                                                                                           \
         if (!(cond))                                                                               \

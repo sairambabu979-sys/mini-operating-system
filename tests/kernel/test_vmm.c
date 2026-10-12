@@ -11,10 +11,12 @@
 #include <arch/paging.h>
 #include <arch/setjmp.h>
 #include <arch/trap.h>
+#include <core/boot.h>
 #include <core/ktest.h>
 #include <core/panic.h>
 #include <core/sections.h>
 #include <lib/errno.h>
+#include <lib/string.h>
 #include <mm/pmm.h>
 #include <mm/vmalloc.h>
 #include <mm/vmm.h>
@@ -216,6 +218,16 @@ KTEST(vfree_rejects_foreign_pointers)
     panic_expect_clear();
     KEXPECT(e.hit);
     vfree(p);
+
+    /* Shaped like a vmalloc area (guard page, then mappings), but device memory. */
+    void *dev = iomap(0xFEC00000ull, PAGE_SIZE_4K, VM_WRITE | VM_NOCACHE);
+
+    KEXPECT(dev != NULL);
+    panic_expect(&e, &jb);
+    if (ksetjmp(&jb) == 0)
+        vfree(dev);
+    panic_expect_clear();
+    KEXPECT(e.hit);
 }
 
 /*
@@ -242,6 +254,43 @@ static void __attribute__((noinline)) recurse_forever(void *depth)
  * stack and faults again, so the CPU raises #DF, which runs on its IST
  * stack. Without guard + IST this is a silent corruption or a triple fault.
  */
+KTEST(iomap_maps_device_registers_uncached)
+{
+    u64 phys = 0xFEC00010ull; /* inside the I/O APIC page, a hole in every QEMU memory map */
+    volatile u32 *p = iomap(phys, 8, VM_WRITE | VM_NOCACHE);
+    u64 pa, pte;
+
+    KEXPECT(p != NULL);
+    KEXPECT_EQ((uptr)p & (PAGE_SIZE_4K - 1), 0x10); /* the offset survives */
+    KEXPECT(vmm_translate(vmm_kernel_space(), (uptr)p, &pa, &pte));
+    KEXPECT_EQ(pa, phys);
+    KEXPECT((pte & PTE_PCD) && (pte & PTE_PWT)); /* strong uncacheable */
+    KEXPECT((pte & PTE_NX) && (pte & PTE_WRITE) && (pte & PTE_GLOBAL) && !(pte & PTE_USER));
+    KEXPECT(try_read(ALIGN_DOWN((uptr)p, PAGE_SIZE_4K) - 8).hit); /* guard page */
+}
+
+KTEST(iomap_refuses_bad_requests_and_uncached_ram)
+{
+    u64 kernel_phys = boot_info_get()->kernel_phys_start;
+
+    /* RAM is cached in the direct map; an uncached alias would be undefined. */
+    KEXPECT(iomap(kernel_phys, 16, VM_NOCACHE) == NULL);
+    KEXPECT(iomap(kernel_phys, 16, VM_EXEC) == NULL);
+    KEXPECT(iomap(kernel_phys, 0, 0) == NULL);
+    KEXPECT(iomap(1ull << 52, 16, 0) == NULL); /* beyond any physical address */
+    KEXPECT(iomap(~0ull - 8, 16, 0) == NULL);  /* wraps */
+
+    /* A cached, read-only view of the same frame is fine: same memory type. */
+    const u32 *view = iomap(kernel_phys, 16, 0);
+
+    KEXPECT(view != NULL);
+    u32 expected;
+
+    memcpy(&expected, __kernel_start, sizeof(expected));
+    KEXPECT_EQ(*view, expected);
+    KEXPECT(try_write((uptr)view).hit);
+}
+
 KTEST(kernel_stack_overflow_hits_guard_page)
 {
     enum { STACK = 4 * PAGE_SIZE_4K };

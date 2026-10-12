@@ -251,6 +251,7 @@ DISK_IMG := $(BUILD)/disk.img
 TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
+TEST_NOAPIC_IMG := $(BUILD)/disk-ktest-noapic.img
 PANIC_IMG       := $(BUILD)/disk-panic.img
 DEMO_IMG        := $(BUILD)/disk-demo.img
 BENCH_IMG       := $(BUILD)/disk-bench.img
@@ -266,6 +267,7 @@ $(1): $$(STAGE1) $$(STAGE2) $$(KERNEL_STRIPPED) tools/mkimage.py
 endef
 
 $(eval $(call bios_image,$(TEST_IMG),ktest))
+$(eval $(call bios_image,$(TEST_NOAPIC_IMG),ktest noapic))
 $(eval $(call bios_image,$(PANIC_IMG),selftest=panic))
 $(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
 $(eval $(call bios_image,$(BENCH_IMG),bench))
@@ -323,8 +325,8 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 	  --kernel $(KERNEL_STRIPPED) --cmdline "$(CMDLINE)" -o $@
 
 .PHONY: all
-all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
-	$(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(KERNEL_ELF)
+all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
+	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -362,7 +364,7 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 # --------------------------------------------------------------------------
 
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
-	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c
+	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 
@@ -399,12 +401,17 @@ host-test: $(HOST_TEST_BIN)
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
-qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) $(TRIPLEFAULT_IMG) \
-	  $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG)
+# The interrupt paths: APICs calibrated by the HPET (default), APICs calibrated
+# by PIT channel 2 (no HPET table), and the legacy 8259 + PIT ("noapic").
+qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
+	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs \
+	  --log-suffix nohpet -- -machine pc,hpet=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
 	  --expect 'KERNEL PANIC' \
