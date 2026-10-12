@@ -123,8 +123,9 @@ Some of what the in-kernel tests prove:
 - memory is fully reclaimed after hundreds of threads and processes.
 
 The QEMU runner fails on timeout, triple fault, kernel-reported failure or
-a TAP count mismatch. It was itself checked by injecting a failing test
-and a triple fault. Timing-sensitive tests were run repeatedly with 6 QEMU
+a TAP count mismatch, and `make test` proves it: `tests/qemu/check_runner.py`
+boots kernels that hang and that triple-fault, and requires the runner to
+reject each for the right reason. Timing-sensitive tests were run repeatedly with 6 QEMU
 instances competing for 4 host cores.
 
 ## Benchmarks

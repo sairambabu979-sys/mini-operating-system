@@ -132,6 +132,20 @@ static void run_selftest(const char *cmdline)
         pr_info("selftest: provoking a kernel page fault\n");
         selftest_page_fault();
     }
+    /* The next two exist to prove the QEMU test runner fails when it should. */
+    if (strcmp(which, "hang") == 0) {
+        pr_info("selftest: hanging with interrupts off\n");
+        cpu_halt_forever();
+    }
+    if (strcmp(which, "triplefault") == 0) {
+        static const struct {
+            u16 limit;
+            u64 base;
+        } __packed empty_idt = {0, 0};
+
+        pr_info("selftest: triple fault via an empty IDT\n");
+        __asm__ volatile("lidt %0; int3" : : "m"(empty_idt));
+    }
     panic("selftest '%s' did not panic", which);
 }
 

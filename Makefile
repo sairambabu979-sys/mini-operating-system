@@ -241,24 +241,26 @@ DISK_IMG := $(BUILD)/disk.img
 TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
-PANIC_IMG := $(BUILD)/disk-panic.img
-DEMO_IMG  := $(BUILD)/disk-demo.img
-BENCH_IMG := $(BUILD)/disk-bench.img
+PANIC_IMG       := $(BUILD)/disk-panic.img
+DEMO_IMG        := $(BUILD)/disk-demo.img
+BENCH_IMG       := $(BUILD)/disk-bench.img
+HANG_IMG        := $(BUILD)/disk-selftest-hang.img
+TRIPLEFAULT_IMG := $(BUILD)/disk-selftest-triplefault.img
 
-$(BENCH_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "bench" -o $@
+# $(call bios_image,<image>,<command line>): a BIOS disk image of the same kernel.
+define bios_image
+$(1): $$(STAGE1) $$(STAGE2) $$(KERNEL_STRIPPED) tools/mkimage.py
+	$$(call msg,IMAGE,$$@)
+	$$(Q)$$(PYTHON) tools/mkimage.py --stage1 $$(STAGE1) --stage2 $$(STAGE2) \
+	  --kernel $$(KERNEL_STRIPPED) --cmdline "$(2)" -o $$@
+endef
 
-$(DEMO_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
-
-$(PANIC_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "selftest=panic" -o $@
+$(eval $(call bios_image,$(TEST_IMG),ktest))
+$(eval $(call bios_image,$(PANIC_IMG),selftest=panic))
+$(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
+$(eval $(call bios_image,$(BENCH_IMG),bench))
+$(eval $(call bios_image,$(HANG_IMG),selftest=hang))
+$(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
 
 # The run image embeds $(CMDLINE); this stamp changes only when it does.
 CMDLINE_STAMP := $(BUILD)/cmdline.stamp
@@ -270,13 +272,9 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
 	  --kernel $(KERNEL_STRIPPED) --cmdline "$(CMDLINE)" -o $@
 
-$(TEST_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "ktest" -o $@
-
 .PHONY: all
-all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(KERNEL_ELF)
+all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
+	$(TRIPLEFAULT_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -338,7 +336,9 @@ host-test: $(HOST_TEST_BIN)
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
-qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG)
+qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) $(TRIPLEFAULT_IMG)
+	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
+	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
