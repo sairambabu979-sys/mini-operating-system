@@ -94,7 +94,9 @@ struct efi_boot_services {
     void *get_next_monotonic_count, *stall, *set_watchdog_timer;
     void *connect_controller, *disconnect_controller;
     void *open_protocol, *close_protocol, *open_protocol_information;
-    void *protocols_per_handle, *locate_handle_buffer;
+    void *protocols_per_handle;
+    efi_status (*locate_handle_buffer)(u32 search_type, const struct efi_guid *protocol,
+                                       void *search_key, u64 *count, efi_handle **handles);
     efi_status (*locate_protocol)(const struct efi_guid *protocol, void *registration,
                                   void **interface);
 };
@@ -132,6 +134,8 @@ struct efi_loaded_image {
     void *image_base;
     u64 image_size;
 };
+
+#define EFI_LOCATE_BY_PROTOCOL 2u
 
 enum efi_pixel_format {
     EFI_PIXEL_RGB_RESERVED_8BIT = 0, /* byte 0 red, 1 green, 2 blue */
@@ -190,6 +194,8 @@ static_assert(__builtin_offsetof(struct efi_boot_services, allocate_pages) == 40
 static_assert(__builtin_offsetof(struct efi_boot_services, get_memory_map) == 56, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_boot_services, handle_protocol) == 152, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_boot_services, exit_boot_services) == 232, "UEFI 4.4");
+static_assert(__builtin_offsetof(struct efi_boot_services, locate_handle_buffer) == 312,
+              "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_boot_services, locate_protocol) == 320, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_loaded_image, image_size) == 72, "UEFI 9.1");
 static_assert(__builtin_offsetof(struct efi_gop_mode, frame_buffer_base) == 24, "UEFI 12.9");

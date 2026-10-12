@@ -301,17 +301,16 @@ static bool mask_shift(u32 mask, u8 *shift)
 }
 
 /*
- * The firmware's current graphics mode, as is: changing modes is where
- * firmware bugs live, and the kernel draws at any resolution.
+ * Describes a GOP's current mode as a framebuffer the kernel can draw on:
+ * 32-bit pixels with byte-aligned channels, as large as the mode says.
+ * On failure, *why says what is missing and *fb is untouched.
  */
-static void find_framebuffer(struct boot_framebuffer *fb)
+static bool describe_gop(const struct efi_graphics_output *gop, struct boot_framebuffer *fb,
+                         const char **why)
 {
-    struct efi_graphics_output *gop = NULL;
-
-    if (bs->locate_protocol(&gop_guid, NULL, (void **)&gop) != EFI_SUCCESS || !gop || !gop->mode ||
-        !gop->mode->info) {
-        efi_log("no graphics output protocol; serial console only\n");
-        return;
+    if (!gop || !gop->mode || !gop->mode->info) {
+        *why = "no mode information";
+        return false;
     }
     const struct efi_gop_mode_info *info = gop->mode->info;
     u8 r, g, b;
@@ -324,28 +323,71 @@ static void find_framebuffer(struct boot_framebuffer *fb)
         r = 16, g = 8, b = 0;
         break;
     case EFI_PIXEL_BIT_MASK:
+        /* The masks together span the pixel: nothing above bit 23 means 24-bit pixels. */
+        if (!((info->red_mask | info->green_mask | info->blue_mask | info->reserved_mask) >> 24)) {
+            *why = "24-bit pixels";
+            return false;
+        }
         if (mask_shift(info->red_mask, &r) && mask_shift(info->green_mask, &g) &&
             mask_shift(info->blue_mask, &b))
             break;
-        efi_log("framebuffer channel masks %#x/%#x/%#x unsupported\n", info->red_mask,
-                info->green_mask, info->blue_mask);
-        return;
+        *why = "channel masks not byte-aligned";
+        return false;
     default:
-        efi_log("graphics output has no linear framebuffer\n");
-        return;
+        *why = "no linear framebuffer (Blt only)";
+        return false;
+    }
+    u64 pitch = (u64)info->pixels_per_scan_line * 4;
+
+    if (!gop->mode->frame_buffer_base || info->pixels_per_scan_line < info->width ||
+        gop->mode->frame_buffer_size < pitch * info->height) {
+        *why = "framebuffer smaller than its mode";
+        return false;
     }
     *fb = (struct boot_framebuffer){
         .phys = gop->mode->frame_buffer_base,
         .width = info->width,
         .height = info->height,
-        .pitch = info->pixels_per_scan_line * 4,
+        .pitch = (u32)pitch,
         .bpp = 32,
         .red_shift = r,
         .green_shift = g,
         .blue_shift = b,
     };
-    efi_log("framebuffer %ux%u at %#llx\n", info->width, info->height,
-            (unsigned long long)fb->phys);
+    return true;
+}
+
+/*
+ * The framebuffer the user is looking at, in the firmware's current mode
+ * (changing modes is where firmware bugs live, and the kernel draws at any
+ * resolution). The GOP on the console-out handle comes first: it drives
+ * the visible display. It can be a Blt-only splitter spanning several
+ * outputs, so then the first GOP with a usable framebuffer wins.
+ */
+static bool gop_on(efi_handle handle, struct boot_framebuffer *fb, const char **why)
+{
+    struct efi_graphics_output *gop = NULL;
+
+    return handle && bs->handle_protocol(handle, &gop_guid, (void **)&gop) == EFI_SUCCESS &&
+           describe_gop(gop, fb, why);
+}
+
+static void find_framebuffer(struct boot_framebuffer *fb)
+{
+    const char *why = "no graphics output protocol";
+    efi_handle *handles = NULL;
+    u64 count = 0;
+    bool found = gop_on(st->console_out_handle, fb, &why);
+
+    if (!found && bs->locate_handle_buffer(EFI_LOCATE_BY_PROTOCOL, &gop_guid, NULL, &count,
+                                           &handles) == EFI_SUCCESS)
+        for (u64 i = 0; i < count && !found; i++)
+            found = gop_on(handles[i], fb, &why);
+    if (found)
+        efi_log("framebuffer %ux%u at %#llx\n", fb->width, fb->height,
+                (unsigned long long)fb->phys);
+    else
+        efi_log("no usable framebuffer (%s); serial console only\n", why);
 }
 
 /* 0-4 GiB identity (this loader keeps running after the switch) and 0-1 GiB at

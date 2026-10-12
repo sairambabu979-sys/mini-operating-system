@@ -35,11 +35,12 @@ u32 screen_cell_height(void);
 const volatile u16 *screen_vga_text(void);
 
 /*
- * Renders done with interrupts off after console_go_live(). Must stay 0:
- * the console defers such drawing (core/printk.c), since a slow redraw
- * with interrupts off loses timer ticks.
+ * Renders after console_go_live() (outside a panic) that ran with
+ * interrupts off or preemption on. Must stay 0: a slow redraw with
+ * interrupts off loses timer ticks, and a preempted one stalls the
+ * screen (see core/printk.c). Debug builds panic instead of counting.
  */
-u64 screen_renders_with_irqs_off(void);
+u64 screen_render_violations(void);
 
 /* Text colors on the framebuffer, 0xRRGGBB. */
 #define SCREEN_FG 0xC0C0C0u

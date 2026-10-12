@@ -87,8 +87,14 @@ TEST(fbrender_clips_at_the_edges)
 {
     struct fb_surface s = make_surface(13, 11, 0); /* not a multiple of any cell */
 
-    fb_draw_glyph(&s, 8, 0, 'W', 1, 2, 0xFFFFFF, 0);   /* right edge */
-    fb_draw_glyph(&s, 0, 8, 'W', 1, 2, 0xFFFFFF, 0);   /* bottom edge */
+    fb_draw_glyph(&s, 8, 0, 'W', 1, 2, 0xFFFFFF, 0); /* right edge: 5 of 8 columns */
+    for (uint32_t y = 0; y < 11; y++)
+        for (uint32_t x = 8; x < 13; x++)
+            EXPECT_EQ(pixel(&s, x, y), (font8x8['W'][y / 2] >> (x - 8)) & 1 ? 0xFFFFFFu : 0u);
+    fb_draw_glyph(&s, 0, 8, 'M', 1, 2, 0xFFFFFF, 0); /* bottom edge: 3 of 16 rows */
+    for (uint32_t y = 8; y < 11; y++)
+        for (uint32_t x = 0; x < 8; x++)
+            EXPECT_EQ(pixel(&s, x, y), (font8x8['M'][(y - 8) / 2] >> x) & 1 ? 0xFFFFFFu : 0u);
     fb_draw_glyph(&s, 12, 10, 'W', 1, 2, 0xFFFFFF, 0); /* one pixel visible */
     fb_draw_glyph(&s, 13, 0, 'W', 1, 2, 0xFFFFFF, 0);  /* fully outside */
     fb_draw_glyph(&s, 0, 0, 'W', 0, 2, 0xFFFFFF, 0);   /* degenerate scale */

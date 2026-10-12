@@ -41,6 +41,9 @@ void console_go_live(void);
 bool console_is_live(void);
 void console_drain(void);
 
+/* Starts the thread that drains every 50 ms (if there is a screen). Needs the scheduler. */
+void console_start_thread(void);
+
 /* Copies the newest min(len, logged) bytes of console output into buf. */
 usize console_log_read(char *buf, usize len);
 

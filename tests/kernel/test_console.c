@@ -158,7 +158,7 @@ KTEST(screen_drawing_waits_for_interrupts)
 
     for (u32 i = 0; i < sizeof(probe) - 1; i++)
         KEXPECT_EQ(textgrid_cell(g, i, at), (u8)probe[i]);
-    KEXPECT_EQ(screen_renders_with_irqs_off(), 0); /* over the whole boot so far */
+    KEXPECT_EQ(screen_render_violations(), 0); /* over the whole boot so far */
 }
 
 KTEST(pat_entry_one_is_write_combining)

@@ -14,7 +14,17 @@ real-hardware boot observable, including a panic.
 | Loader | Screen | How |
 |--------|--------|-----|
 | UEFI | GOP framebuffer | The loader reports the firmware's current mode in `boot_info.framebuffer` (version 4). The kernel draws an 8x8 font as 8x16 cells (16x32 from 1920 pixels wide). |
-| BIOS | VGA text mode | If the BIOS data area says the display is in text mode (2, 3 or 7). The kernel adopts the screen as the BIOS left it, including the loader's progress line and the cursor position. |
+| BIOS | VGA text mode | If the BIOS data area says the display is in text mode (2, 3 or 7). The kernel adopts the screen as the BIOS left it: the loader's progress line and the cursor stay, the BIOS's colors do not. If another display page is active, page 0 is shown instead, cleared. |
+
+**Which GOP.** The loader tries the GOP on the console-out handle first,
+because it drives the visible display. On a machine with several outputs,
+that one can be a Blt-only splitter, so the loader then takes the first
+GOP with a usable framebuffer. A usable framebuffer has:
+- 32-bit pixels: a bit-mask mode whose masks stop at bit 23 is 24-bit,
+  and is rejected rather than drawn with the wrong pixel size;
+- byte-aligned channels;
+- a size at least `pitch × height`, so the kernel can never write past
+  its end.
 
 `console=serial` turns the screen console off.
 
@@ -49,14 +59,32 @@ lost several of them. Now:
 - Output produced with interrupts off (IRQ handlers, code holding a
   spinlock) is only logged. The next printer with interrupts on draws it,
   or the idle loop does (`console_drain()`).
-- One context feeds the screen at a time. Another that finds it busy
-  leaves its bytes to the feeder, which loops until it has caught up.
-  Nothing is dropped, and nobody waits.
+- One context feeds the screen at a time, **with preemption off**.
+  Another that finds it busy leaves its bytes to the feeder, which loops
+  until it has caught up. Nothing is dropped, and nobody waits.
+- The first version left preemption on, and the adversarial review found
+  the consequence. The idle task, preempted mid-redraw by a timer wakeup
+  (a redraw takes longer than a tick), kept the screen "busy" for as long
+  as any task stayed runnable. Every message in that time reached COM1
+  and never the screen.
+- A `console` kernel thread drains every 50 ms. Output deferred from an
+  interrupt handler then reaches the screen even if no task ever prints
+  again and the CPU never idles. It sleeps on the timer rather than being
+  woken from `printk`, because a wakeup takes the scheduler lock, which
+  the printing code may already hold.
 - Before interrupts are enabled (boot), drawing is immediate, so a hang
   in early boot is visible. In a panic it is immediate too, with no lock.
+  It resumes at the exact byte an interrupted feeder reached, so nothing
+  is drawn twice. A fault inside the drawing code itself leaves the
+  nested panic on COM1 instead of recursing.
+- After each framebuffer render, an `sfence` drains the write-combining
+  buffers. A panic that halts never would.
 
-`screen_renders_with_irqs_off()` counts violations. A test requires it
-to be 0 after the whole boot and the entire test suite.
+Once the system is live, a render that runs with interrupts off or
+preemption on is a violation. `screen_render_violations()` counts them,
+and debug builds panic. Every test of every boot in `make test` checks
+the rule, not just the console tests: removing the `preempt_disable()`
+fails the very first render.
 
 **Deferred rendering.** `textgrid_putc` only updates the `cells` array.
 `textgrid_render` then compares `cells` row by row against `shown` (what
@@ -82,7 +110,8 @@ A VT100 subset, enough for a log:
   printable character, so an exactly-full line followed by `\n` does not
   leave a blank line;
 - `\n` is a new line, `\r` the start of this one, `\t` the next multiple
-  of 8, `\b` one column left;
+  of 8 (it neither moves nor cancels a pending wrap), `\b` one column
+  left;
 - below the last row, everything scrolls up.
 
 ## Tests
@@ -90,14 +119,24 @@ A VT100 subset, enough for a log:
 | Where | What |
 |-------|------|
 | `tests/host/test_textgrid.c` | Hand-checked cases (wrap, pending wrap, tabs, backspace, scroll), draw counts proving the diff, and 20,000 random streams against an **independent reference model**, rendered at random moments. The display built from the draw calls must equal the model's screen. |
-| `tests/host/test_fbrender.c` | Exact pixels of plain and scaled glyphs; row padding never written; clipping at every edge in exactly-sized buffers under ASan. |
+| `tests/host/test_fbrender.c` | Exact pixels of plain and scaled glyphs; row padding never written; clipping at every edge in exactly-sized buffers under ASan, including the exact pixels of the visible part of a clipped glyph. |
 | `tests/kernel/test_console.c` | The log ring. The screen matches the loader. Printed text is in the grid **and in video memory**: VGA cells, or every framebuffer pixel of the first two glyphs read back. Scrolling. Output printed with interrupts off is logged but not drawn until they are back on, and no render ever ran with them off. The PAT holds WC at entry 1, and a `VM_WC` mapping uses it. |
 
 Each layer was mutation-checked by planting bugs, and every one was
 caught:
 - six in the text grid, two of them in the render diff;
 - three in the renderer;
-- one that removes the deferral.
+- one that removes the deferral;
+- one that removes the `preempt_disable()`.
+
+The adversarial review of the first version also found:
+- the preempted-feeder stall described above;
+- duplicated lines on a panic screen;
+- the 24-bit and multi-GOP cases;
+- a tab that cancelled a pending wrap;
+- a clipping test that could not detect under-drawing.
+
+All of them are fixed.
 
 The deferral check had a vacuous assertion until then. On the bottom row
 a drawn line scrolls the grid instead of moving the cursor, so the test

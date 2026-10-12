@@ -57,8 +57,9 @@ void textgrid_putc(struct textgrid *g, char c)
     case '\t': {
         u32 next = (g->col / TAB_WIDTH + 1) * TAB_WIDTH;
 
-        g->col = next < g->cols ? next : g->cols - 1;
-        g->wrap_pending = false;
+        /* At the last column a tab cannot move, and must not cancel a pending wrap. */
+        if (!g->wrap_pending)
+            g->col = next < g->cols ? next : g->cols - 1;
         return;
     }
     case '\b':

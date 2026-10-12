@@ -160,6 +160,18 @@ TEST(textgrid_control_characters)
     EXPECT_STREQ(row_text(&g, 1), "???       ");
 }
 
+TEST(textgrid_tab_keeps_a_pending_wrap)
+{
+    uint8_t cells[COLS * ROWS];
+    struct screen s;
+    struct textgrid g;
+
+    setup(&g, cells, &s);
+    puts_grid(&g, "0123456789\tX");              /* a full line, a tab, then a character */
+    EXPECT_STREQ(row_text(&g, 0), "0123456789"); /* nothing overwritten */
+    EXPECT_STREQ(row_text(&g, 1), "X         ");
+}
+
 TEST(textgrid_set_cursor_clamps)
 {
     uint8_t cells[COLS * ROWS];
@@ -207,10 +219,11 @@ static void model_putc(struct model *m, uint8_t c)
         m->col = 0;
         m->pending = 0;
     } else if (c == '\t') {
-        m->col = (m->col / 8 + 1) * 8;
-        if (m->col >= COLS)
-            m->col = COLS - 1;
-        m->pending = 0;
+        if (!m->pending) {
+            m->col = (m->col / 8 + 1) * 8;
+            if (m->col >= COLS)
+                m->col = COLS - 1;
+        }
     } else if (c == '\b') {
         if (m->col)
             m->col--;

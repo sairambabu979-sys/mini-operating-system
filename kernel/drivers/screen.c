@@ -9,6 +9,7 @@
 #include <arch/paging.h>
 #include <core/klog.h>
 #include <core/panic.h>
+#include <core/preempt.h>
 #include <core/printk.h>
 #include <drivers/screen.h>
 #include <lib/cmdline.h>
@@ -18,21 +19,24 @@
 #include <mm/vmm.h>
 
 /* BIOS data area fields (IBM PC/AT BIOS technical reference). */
-#define BDA_PHYS       0x400u
-#define BDA_VIDEO_MODE 0x49u /* u8 */
-#define BDA_COLUMNS    0x4Au /* u16 */
-#define BDA_CURSOR     0x50u /* u8 column, u8 row (page 0) */
-#define BDA_CRTC_PORT  0x63u /* u16: 0x3D4 colour, 0x3B4 mono */
-#define BDA_LAST_ROW   0x84u /* u8: rows - 1 (EGA and later) */
-#define VGA_COLOR_TEXT 0xB8000u
-#define VGA_MONO_TEXT  0xB0000u
-#define VGA_ATTR       0x0700u /* light grey on black */
-#define CRTC_CURSOR_HI 0x0Eu
-#define CRTC_CURSOR_LO 0x0Fu
+#define BDA_PHYS        0x400u
+#define BDA_VIDEO_MODE  0x49u /* u8 */
+#define BDA_COLUMNS     0x4Au /* u16 */
+#define BDA_CURSOR      0x50u /* u8 column, u8 row (page 0) */
+#define BDA_ACTIVE_PAGE 0x62u /* u8 */
+#define BDA_CRTC_PORT   0x63u /* u16: 0x3D4 colour, 0x3B4 mono */
+#define BDA_LAST_ROW    0x84u /* u8: rows - 1 (EGA and later) */
+#define VGA_COLOR_TEXT  0xB8000u
+#define VGA_MONO_TEXT   0xB0000u
+#define VGA_ATTR        0x0700u /* light grey on black */
+#define CRTC_START_HI   0x0Cu
+#define CRTC_START_LO   0x0Du
+#define CRTC_CURSOR_HI  0x0Eu
+#define CRTC_CURSOR_LO  0x0Fu
 
 static struct textgrid grid;
 static bool active;
-static u64 renders_irqs_off; /* once live, outside a panic: always 0 */
+static u64 render_violations; /* once live, outside a panic: always 0 */
 
 /* Both arrays hold `n` cells; NULL if either allocation fails. */
 static u8 *alloc_grid(usize n, u8 **shown)
@@ -53,11 +57,28 @@ static void putc_grid(char c)
     textgrid_putc(&grid, c);
 }
 
+/*
+ * Once the system is live, outside a panic, a render must run with
+ * interrupts on (or the clock loses ticks) and preemption off (or a
+ * switched-out feeder holds the screen). Debug builds enforce it.
+ */
 static void render(void)
 {
-    if (console_is_live() && !arch_irqs_enabled() && !panic_in_progress())
-        renders_irqs_off++;
+    if (console_is_live() && !panic_in_progress() && (!arch_irqs_enabled() || preempt_count == 0)) {
+        render_violations++;
+#ifdef CONFIG_DEBUG
+        panic("screen: render with interrupts %s, preempt count %u",
+              arch_irqs_enabled() ? "on" : "off", preempt_count);
+#endif
+    }
     textgrid_render(&grid);
+}
+
+static void fb_flush(void)
+{
+    render();
+    /* Push the last stores out of the write-combining buffers: a halted panic never would. */
+    __asm__ volatile("sfence" ::: "memory");
 }
 
 /* --- framebuffer ------------------------------------------------------------- */
@@ -73,7 +94,7 @@ static void fb_draw_cell(void *ctx, u32 col, u32 row, u8 ch)
 }
 
 static const struct console_screen fb_screen = {
-    .name = "framebuffer", .putc = putc_grid, .flush = render};
+    .name = "framebuffer", .putc = putc_grid, .flush = fb_flush};
 
 static bool shift_ok(u8 shift)
 {
@@ -188,16 +209,29 @@ static bool vga_init(void)
 
     if (!cells)
         return false;
-    for (u32 i = 0; i < cols * rows; i++) {
-        u8 ch = vga[i] & 0xFF;
+    /*
+     * The kernel writes page 0. If something left another page on display
+     * (a boot manager, an option ROM), show page 0 instead, cleared.
+     */
+    bool other_page = bda[BDA_ACTIVE_PAGE] != 0;
 
-        /* A non-ASCII cell is "shown" as itself, so the first render replaces it. */
-        shown[i] = ch;
-        cells[i] = ch >= 0x20 && ch <= 0x7E ? ch : ' ';
-    }
     crtc_port = port;
+    if (other_page) {
+        outb(crtc_port, CRTC_START_HI);
+        outb(crtc_port + 1, 0);
+        outb(crtc_port, CRTC_START_LO);
+        outb(crtc_port + 1, 0);
+    }
+    /* Keep the BIOS's text but not its colors: blank cells must not stay blue. */
+    for (u32 i = 0; i < cols * rows; i++) {
+        u8 ch = other_page ? ' ' : vga[i] & 0xFF;
+
+        cells[i] = shown[i] = ch >= 0x20 && ch <= 0x7E ? ch : ' ';
+        vga[i] = VGA_ATTR | cells[i];
+    }
     textgrid_init(&grid, cells, shown, cols, rows, vga_draw_cell, NULL);
-    textgrid_set_cursor(&grid, bda[BDA_CURSOR], bda[BDA_CURSOR + 1]);
+    if (!other_page)
+        textgrid_set_cursor(&grid, bda[BDA_CURSOR], bda[BDA_CURSOR + 1]);
     if (grid.col != 0) /* the loader's progress line ends mid-line on screen */
         textgrid_putc(&grid, '\n');
     active = true;
@@ -245,7 +279,7 @@ const volatile u16 *screen_vga_text(void)
     return active && vga ? vga : NULL;
 }
 
-u64 screen_renders_with_irqs_off(void)
+u64 screen_render_violations(void)
 {
-    return renders_irqs_off;
+    return render_violations;
 }

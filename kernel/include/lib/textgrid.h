@@ -16,7 +16,8 @@
  *     followed by '\n' does not leave a blank line;
  *   - '\n' moves to the start of the next line (the console has no
  *     separate CR/LF translation), '\r' to the start of this one, '\t' to
- *     the next multiple of 8, '\b' one column left;
+ *     the next multiple of 8 (or nowhere, keeping a pending wrap), '\b'
+ *     one column left;
  *   - moving below the last row scrolls everything up one row.
  */
 #ifndef MINIOS_LIB_TEXTGRID_H

@@ -203,6 +203,7 @@ __noreturn void kmain(u64 boot_info_phys)
     sched_init();
     cpu_irq_enable();
     console_go_live(); /* screen drawing leaves interrupts on from here */
+    console_start_thread();
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
     kprintf("loader: %s\n", boot_info->loader == BOOT_LOADER_UEFI ? "UEFI" : "BIOS");
