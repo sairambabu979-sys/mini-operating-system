@@ -25,6 +25,7 @@
 #include <core/klog.h>
 #include <core/panic.h>
 #include <core/preempt.h>
+#include <core/printk.h>
 #include <core/spinlock.h>
 #include <core/time.h>
 #include <lib/errno.h>
@@ -540,8 +541,11 @@ static int idle_main(void *arg)
 {
     (void)arg;
     /* sti; hlt is atomic with respect to interrupts: no wakeup is missed. */
-    for (;;)
+    for (;;) {
+        cpu_irq_enable();
+        console_drain(); /* output logged with interrupts off reaches the screen */
         __asm__ volatile("sti; hlt" ::: "memory");
+    }
     return 0;
 }
 

@@ -21,6 +21,7 @@
 #include <core/sections.h>
 #include <core/time.h>
 #include <drivers/qemu.h>
+#include <drivers/screen.h>
 #include <drivers/serial.h>
 #include <lib/cmdline.h>
 #include <lib/string.h>
@@ -192,6 +193,7 @@ __noreturn void kmain(u64 boot_info_phys)
     mm_init(boot_info_phys);
     boot_info = phys_to_virt(boot_info_phys);
 
+    screen_init(boot_info); /* replays everything logged so far */
     acpi_init(boot_info);
     irq_init();
     time_init();
@@ -200,6 +202,7 @@ __noreturn void kmain(u64 boot_info_phys)
     syscall_init();
     sched_init();
     cpu_irq_enable();
+    console_go_live(); /* screen drawing leaves interrupts on from here */
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
     kprintf("loader: %s\n", boot_info->loader == BOOT_LOADER_UEFI ? "UEFI" : "BIOS");

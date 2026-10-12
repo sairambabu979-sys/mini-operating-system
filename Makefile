@@ -3,7 +3,8 @@
 # Top-level, non-recursive build. Everything lands in $(BUILD).
 #
 #   make                 build the kernel and disk images
-#   make run             boot build/<config>/disk.img in QEMU (CMDLINE="..." to pass options)
+#   make run             boot build/<config>/disk.img in QEMU (CMDLINE="..." to pass options;
+#                        QEMU_DISPLAY=gtk to see the screen console too)
 #   make debug           same, halted at reset waiting for gdb on :1234
 #   make test            host unit tests, binary checks, in-kernel tests under QEMU
 #   make check           check-format + lint + test: what CI runs (gate commits on it)
@@ -333,7 +334,10 @@ all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH
 # --------------------------------------------------------------------------
 
 QEMU       := qemu-system-x86_64
-QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display none -monitor none \
+# The console is on stdio either way; QEMU_DISPLAY=gtk (or sdl) also opens a
+# window showing the screen console (VGA text under BIOS, framebuffer under UEFI).
+QEMU_DISPLAY ?= none
+QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display $(QEMU_DISPLAY) -monitor none \
               -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
               -drive file=$(DISK_IMG),format=raw,if=ide
 
@@ -364,7 +368,8 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 # --------------------------------------------------------------------------
 
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
-	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c
+	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c \
+	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 

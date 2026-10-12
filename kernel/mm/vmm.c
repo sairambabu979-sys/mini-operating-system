@@ -87,6 +87,8 @@ static u64 leaf_bits(unsigned flags)
         bits |= pte_global;
     if (flags & VM_NOCACHE)
         bits |= PTE_PCD | PTE_PWT;
+    else if (flags & VM_WC)
+        bits |= cpu_features()->pat ? PTE_PWT : PTE_PCD | PTE_PWT; /* PAT entry 1 */
     if (flags & VM_IOMAP)
         bits |= PTE_SW_IOMAP;
     return bits;
@@ -375,6 +377,13 @@ void vmm_init(const struct mem_region *regions, usize nregions, const struct boo
 
     /* NXE before loading tables that use bit 63; WP so ring 0 honors R/O. */
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_NXE);
+    /*
+     * Only entry 1 changes (WT -> WC), and no mapping uses it yet: the
+     * loader's tables and these new ones never set PWT alone, so no stale
+     * entry or cache line can have the old type.
+     */
+    if (cpu->pat)
+        wrmsr(MSR_PAT, PAT_KERNEL);
     write_cr0(read_cr0() | CR0_WP);
 
     u64 cr4 = read_cr4();

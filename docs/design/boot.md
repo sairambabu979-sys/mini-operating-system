@@ -85,7 +85,9 @@ masked. One kernel binary therefore runs under both firmwares, and
 `make test` boots the full in-kernel suite and the `init` demo both ways.
 `boot_info.loader` records which loader ran (`boot_info` version 2), and
 `boot_info.acpi_rsdp` carries the ACPI RSDP from the EFI configuration
-table (version 3; the BIOS loader leaves it 0 and the kernel scans for it).
+table (version 3; the BIOS loader leaves it 0 and the kernel scans for it),
+and `boot_info.framebuffer` the GOP framebuffer (version 4; see
+[console.md](console.md)).
 
 ```
 ESP (FAT32, built by tools/mkesp.py with mtools)
@@ -99,6 +101,7 @@ ESP (FAT32, built by tools/mkesp.py with mtools)
 | Claim memory | `AllocatePages(AllocateAddress)` for the kernel's physical range and the `boot_info` page. If the firmware owns either, the loader stops with a message instead of overwriting firmware memory. |
 | Load | Files are read through the volume the loader itself came from (LoadedImage → SimpleFileSystem). The kernel ELF gets the same checks as in stage 2, then is copied and its `.bss` zeroed **while boot services still run**. |
 | ACPI | The RSDP from the configuration table: the ACPI 2.0 GUID first, 1.0 accepted. |
+| Framebuffer | The Graphics Output Protocol's current mode, unchanged: base, size, pitch, and the channel layout (RGB, BGR, or byte-aligned bit masks). A Blt-only GOP, or none, leaves the console on serial. |
 | Page tables | 0–4 GiB identity (the loader keeps running after the CR3 switch, so its image and stack must lie below 4 GiB, which is checked) and 0–1 GiB at `-2 GiB`, with 2 MiB pages. |
 | Exit | The final `GetMemoryMap` is followed immediately by `ExitBootServices`, with nothing allocating or printing in between, retried if the map key went stale. |
 | Memory map | EFI descriptors become E820 entries. Loader and boot-services memory and conventional memory become usable; ACPI types are kept; runtime services, MMIO and everything unknown become reserved. Contiguous same-type runs are merged. |

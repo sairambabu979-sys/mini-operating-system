@@ -134,9 +134,12 @@ An area needs no metadata: it ends at the next unmapped page. `vfree()`
 of anything but an area's first page panics.
 
 **`iomap()`** maps physical ranges the direct map leaves out (device
-registers, firmware tables in reserved memory) into the same region,
-behind the same guard pages, never executable. Two rules:
-- An uncached request over RAM the direct map already caches is
+registers, framebuffers, firmware tables in reserved memory) into the same
+region, behind the same guard pages, never executable. Memory types:
+`VM_NOCACHE` is strong uncached, and `VM_WC` write-combining. For WC the
+kernel reprograms PAT entry 1 from write-through, which nothing used.
+Two rules:
+- An uncached or WC request over RAM the direct map already caches is
   refused. Mixed memory types for one frame are undefined (SDM 12.12.4).
 - Its PTEs carry a software-available bit, and `vfree()` panics on it.
   An iomap area has the same shape as a vmalloc area, and freeing one

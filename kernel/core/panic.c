@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 /*
  * panic(): the last thing the kernel does. It must work with the system in
- * any state, so it uses only polled serial output and touches no
- * allocator, lock or interrupt.
+ * any state, so it uses only polled output (COM1 and the screen console,
+ * both lock-free) and touches no allocator, lock or interrupt.
  */
 #include <arch/cpu.h>
 #include <arch/extable.h>

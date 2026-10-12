@@ -29,6 +29,7 @@ struct cpu_features {
     bool smap;    /* supervisor-mode access prevention */
     bool invariant_tsc;
     bool apic;   /* on-chip local APIC */
+    bool pat;    /* page attribute table (memory types per PTE) */
     bool x2apic; /* x2APIC mode available (MSR interface) */
     u32 phys_addr_bits;
     u32 virt_addr_bits;

@@ -513,7 +513,7 @@ or something the implementation taught us.
 
 | Item | Status |
 |------|--------|
-| klog ring buffer | Not built. Serial is the only sink and nothing reads logs back yet (no `dmesg`). |
+| klog ring buffer | Built after v1.0, with the screen console: a 16 KiB ring that the screen is fed from (it replays the boot) and that `console_log_read()` exposes. |
 | kmalloc redzones | Built after v1.0: debug builds put >= 8 guard bytes and a hidden size after every small object; `kfree()` reports overflows with the offending offset. |
 | gdb helpers (`ptwalk`, `tasks`) | Built after v1.0 as `minios-tasks` and `minios-ptwalk` (`tools/gdb/minios.py`), tested against a live kernel by `make gdb-test`. |
 | ADR files in `docs/adr/` | Not written. Rationale lives in §2 and the design docs. |
@@ -524,6 +524,7 @@ or something the implementation taught us.
 | Item | Notes |
 |------|-------|
 | UEFI loader | Promoted from stretch goal 6. Same `boot_info` hand-off as the BIOS path (version 2 adds `loader`), so the whole suite runs under both firmwares in `make test`. |
+| Screen console | Not in the plan, which assumed serial everywhere. Real machines rarely have a serial port, so a first hardware boot would show nothing. UEFI GOP framebuffer (write-combining through the PAT) or BIOS VGA text, both on a pure, host-fuzzed text grid. Drawing never happens with interrupts off once they run. See [design/console.md](design/console.md). |
 | LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. See [design/interrupts.md](design/interrupts.md). |
 | Runner self-tests | `check_runner.py` boots kernels that hang and triple-fault, and requires `run_tests.py` to reject them. |
 
@@ -552,6 +553,10 @@ or something the implementation taught us.
   the stale loader's version). Every assembly file had the same gap.
   Dependencies now come from a separate `-M` pass, and touching
   `asm-offsets.inc` was checked to rebuild them all.
+- Drawing the console inside its lock, with interrupts off, took up to
+  8.4 ms per line on a framebuffer once it scrolled (measured under TCG):
+  enough to lose timer ticks, which are the clock. The screen is now fed
+  outside the lock, and a test proves no render runs with interrupts off.
 - Stress-running the APIC tests (8 QEMUs at once) failed two of them 1 run
   in 12. Both asserted emulator timing, not kernel behavior. Register
   read-back is now the exact check, and rate checks only catch factor

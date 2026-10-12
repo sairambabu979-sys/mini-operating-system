@@ -110,7 +110,7 @@ void *iomap(u64 phys, usize size, unsigned flags)
 {
     u64 first = ALIGN_DOWN(phys, PAGE_SIZE_4K);
 
-    if (size == 0 || (flags & ~(VM_WRITE | VM_NOCACHE)) || phys + size < phys ||
+    if (size == 0 || (flags & ~(VM_WRITE | VM_NOCACHE | VM_WC)) || phys + size < phys ||
         phys + size - 1 >= 1ull << cpu_features()->phys_addr_bits)
         return NULL;
     usize npages = (ALIGN_UP(phys + size, PAGE_SIZE_4K) - first) / PAGE_SIZE_4K;
@@ -119,7 +119,7 @@ void *iomap(u64 phys, usize size, unsigned flags)
      * Two mappings of one frame with different memory types are undefined
      * (SDM Vol. 3A, 12.12.4): device memory must not also be cached RAM.
      */
-    if (flags & VM_NOCACHE)
+    if (flags & (VM_NOCACHE | VM_WC))
         for (usize i = 0; i < npages; i++)
             if (first + i * PAGE_SIZE_4K < HHDM_SIZE &&
                 page_mapped((uptr)phys_to_virt(first + i * PAGE_SIZE_4K)))

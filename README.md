@@ -13,7 +13,8 @@ $ make run
 1234567
 cpu: AuthenticAMD, 40-bit physical / 57-bit virtual; nx=1 pge=1 1g=1 smep=1 smap=1 apic=1 x2apic=0
 vmm: direct map: 127 MiB at 0xffff800000000000
-pmm: 125 MiB managed, 768 KiB metadata at 0x19e000, highest frame 0x7fdf000
+pmm: 125 MiB managed, 768 KiB metadata at 0x1ac000, highest frame 0x7fdf000
+screen: VGA text mode 3, 80x25 at 0xb8000
 acpi: RSDP at 0xf5290: revision 0, OEM "BOCHS ", RSDT at 0x7fe1c52
 acpi: 4 tables: FACP APIC HPET WAET
 acpi: MADT: 1 CPU(s), 1 I/O APIC(s), local APIC at 0xfee00000, 8259 present
@@ -64,10 +65,24 @@ make check      # format + lint + test: exactly what CI checks; run before commi
 |--------|--------|
 | `CONFIG=release` | optimized build, no kernel UBSan |
 | `V=1` | show full commands |
-| `CMDLINE="..."` | kernel options for `make run`, e.g. `loglevel=debug` |
+| `CMDLINE="..."` | kernel options for `make run` (see below) |
+| `QEMU_DISPLAY=gtk` | also open a window showing the screen console (`none` by default) |
 | `make bench` | microbenchmarks |
 | `make debug` | QEMU waits for gdb on `:1234` (`gdb -x tools/gdb/gdbinit build/debug/kernel.elf`); adds `minios-tasks` and `minios-ptwalk ADDR` |
 | `make lint` / `make format` | clang-tidy, clang-format |
+
+Kernel command line (`CMDLINE=` for `make run`; on the ESP, `/minios/cmdline`):
+
+| Option | Effect |
+|--------|--------|
+| `loglevel=debug\|info\|warn\|err` | console verbosity |
+| `console=serial` | no screen console, COM1 only |
+| `noapic` | 8259 PIC and PIT tick instead of the I/O APIC and LAPIC timer |
+| `nohpet` | calibrate against PIT channel 2 instead of the HPET |
+| `ktest` | run the in-kernel test suite, report TAP, exit QEMU |
+| `bench` | run the microbenchmarks, exit QEMU |
+| `exit-after-init` | exit QEMU with `init`'s status |
+| `selftest=panic\|hang\|triplefault` | deliberately fail, to test the crash path and the test runner |
 
 ## What is in it
 
@@ -76,6 +91,7 @@ make check      # format + lint + test: exactly what CI checks; run before commi
 | **Boot** | Own UEFI loader (PE32+, no SDK) and own BIOS loader, with an identical hand-off: one kernel binary, one test suite, both firmwares. BIOS path: own MBR + stage 2. A20 by three methods, each verified. E820 map. Unreal-mode kernel load. Real mode straight to long mode. ELF64 loading with full bounds checks. A versioned `boot_info` ABI defined once in C, with NASM offsets generated from it. |
 | **Traps** | GDT/TSS with IST stacks for `#DF`, NMI and `#MC`. 256 generated entry stubs, one trap-frame layout. Decoded panics with symbolized backtraces (two-pass symbol-table link). Exception-table fixups. |
 | **Memory** | E820 sanitizer. Buddy allocator (pure, fuzzed on the host). Own page tables bootstrapped without an allocator. Direct map of RAM only: non-executable, with the kernel image read-only through it. NX, WP, SMEP, SMAP. Guard-paged `vmalloc`. Slab `kmalloc` with use-after-free and double-free detection. |
+| **Console** | COM1, plus a screen: UEFI GOP framebuffer (write-combining) or BIOS VGA text, so a real machine without a serial port shows the boot and any panic. A log ring replays the boot onto the screen. Drawing never runs with interrupts off once they are on, because a slow scroll would cost the clock ticks. |
 | **Interrupts** | ACPI discovery (RSDP, RSDT/XSDT, MADT, HPET; parser fuzzed on the host). Local APIC + I/O APIC with interrupt source overrides honored. LAPIC timer and TSC calibrated against the HPET (or PIT channel 2), with each endpoint bracketed so a preemption cannot skew it. The 8259 + PIT path kept as a tested fallback (`noapic`). IRQ-safe spinlocks that report recursive locking instead of deadlocking. |
 | **Scheduling** | Preemptive round robin. Preemption on interrupt exit, only when no lock is held. Wait queues that cannot lose wakeups, even when preempted mid-wait. Sleeping mutexes, sleep, exit codes, orphan adoption. |
 | **Processes** | Per-process address spaces, ELF loader, syscall/sysret. SYSRET avoided for non-canonical returns (CVE-2012-0217), with recovery when `iretq` itself faults. Validated user copies. Eager FPU switching. Faults kill only the faulting process. |
@@ -95,7 +111,7 @@ make check      # format + lint + test: exactly what CI checks; run before commi
  │   core/    panic + ksyms, klog, irq, time, UBSan, ktest, bench        │
  │   arch/    GDT/TSS, IDT + isr.asm, syscall.asm, FPU, per-CPU, LAPIC   │
  │   acpi/    RSDP/RSDT/XSDT discovery, MADT + HPET parsing (pure)       │
- │   drivers/ serial, I/O APIC, HPET, PIT, PIC (8259), QEMU debug exit   │
+ │   drivers/ serial, screen, I/O APIC, HPET, PIT, PIC, QEMU debug exit  │
  ├───────────────────────────────────────────────────────────────────────┤
  │  boot/   stage1 (MBR) → stage2: A20, E820, unreal mode, long mode, ELF │
  │          efi/loader.c: UEFI → same boot_info, same page tables          │
@@ -117,9 +133,9 @@ Virtual memory:
 
 | Layer | What runs | Where |
 |-------|-----------|-------|
-| Host unit tests | Kernel code built for Linux under ASan + UBSan. printf against glibc (20k random formats); memory-map sanitizer against brute force; buddy allocator fuzz with full verification; ELF validator and ACPI table parser against hostile and randomly corrupted input. | `tests/host/` |
+| Host unit tests | Kernel code built for Linux under ASan + UBSan. printf against glibc (20k random formats); memory-map sanitizer against brute force; buddy allocator fuzz with full verification; ELF validator and ACPI table parser against hostile and randomly corrupted input; the console's text grid against a reference terminal model on random output, and its pixel drawing exact to the byte. | `tests/host/` |
 | Binary checks | No SSE/AVX in kernel code; W^X segment layout; entry point. Build-time guard for `-mno-red-zone`, `-mgeneral-regs-only`, `-mcmodel=kernel`. | `tools/check_kernel.py`, `Makefile` |
-| In-kernel tests | 92 `KTEST()`s, TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with and without an HPET, and on the legacy 8259 path. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
+| In-kernel tests | 98 `KTEST()`s, TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with and without an HPET, and on the legacy 8259 path. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
 | Crash path | A deliberate kernel page fault; the panic decode and backtrace are matched against patterns. | `disk-panic.img` |
 | Whole system | Boots the real `init`, which runs 11 programs and passes only if each ends as expected. | `disk-demo.img` |
 | UEFI | The whole in-kernel suite and the `init` demo again, booted through OVMF and the UEFI loader. | `disk-uefi-*.img` |
@@ -170,7 +186,7 @@ These are deliberate scope cuts (see [`docs/PLAN.md`](docs/PLAN.md)):
 - **No filesystem.** User programs are embedded in the kernel image and
   started by name; there is `spawn`, but no `fork`/`exec`.
 - **No signals, pipes or IPC.** Processes talk only through exit statuses.
-- **Console only:** serial output, no input driver.
+- **Output only:** serial and screen, but no keyboard driver yet.
 - **Not physically relocatable.** Both loaders place the kernel at 1 MiB. The
   UEFI loader asks the firmware for that range and fails cleanly if it is
   taken, which some real firmware may do.
@@ -188,6 +204,7 @@ These are deliberate scope cuts (see [`docs/PLAN.md`](docs/PLAN.md)):
 - [`docs/design/boot.md`](docs/design/boot.md): BIOS and UEFI boot paths, memory layout, debugging
 - [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers, legacy IRQs, locks
 - [`docs/design/interrupts.md`](docs/design/interrupts.md): ACPI discovery, local APIC, I/O APIC, HPET, calibration
+- [`docs/design/console.md`](docs/design/console.md): log ring, screen consoles, drawing without losing ticks
 - [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, page tables, heaps
 - [`docs/design/scheduler.md`](docs/design/scheduler.md): context switch, preemption, lost-wakeup safety
 - [`docs/design/usermode.md`](docs/design/usermode.md): processes, syscall entry/exit, SYSRET hazard, user memory access
@@ -202,7 +219,8 @@ kernel/core/     kmain, panic, klog, irq, time, ksyms, UBSan, ktest, bench
 kernel/mm/       memmap, buddy, pmm, vmm, vmalloc, kmalloc
 kernel/sched/    scheduler, mutex
 kernel/proc/     processes, ELF validation, syscalls
-kernel/drivers/  serial, I/O APIC, HPET, PIT, PIC, QEMU exit
+kernel/drivers/  serial, screen (framebuffer, VGA text), I/O APIC, HPET, PIT, PIC, QEMU exit
+kernel/lib/      printf, strings, cmdline, text grid, framebuffer drawing, font
 kernel/include/  headers (uapi/ is shared with user space)
 user/            crt0, libsys, programs/
 tests/           host/ (Linux), kernel/ (KTEST), qemu/run_tests.py
@@ -211,4 +229,5 @@ tools/           mkimage, mkesp, gen_ksyms, gen_user_images, check_kernel, gdb/
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE).
+MIT, see [`LICENSE`](LICENSE). The console font (`kernel/lib/font8x8.c`) is Daniel
+Hepper's public-domain font8x8, after the IBM VGA fonts.

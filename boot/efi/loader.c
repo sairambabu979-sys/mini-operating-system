@@ -46,6 +46,8 @@ static const struct efi_guid acpi20_guid = {
     0x8868E871, 0xE4F1, 0x11D3, {0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81}};
 static const struct efi_guid acpi10_guid = {
     0xEB9D2D30, 0x2D88, 0x11D3, {0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D}};
+static const struct efi_guid gop_guid = {
+    0x9042A9DE, 0x23DC, 0x4A38, {0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A}};
 
 /* --- output ----------------------------------------------------------------- */
 
@@ -286,6 +288,66 @@ static u64 find_acpi_rsdp(void)
     return v1;
 }
 
+/* A channel mask the kernel can draw with: 8 contiguous bits on a byte boundary. */
+static bool mask_shift(u32 mask, u8 *shift)
+{
+    for (u8 s = 0; s <= 24; s += 8) {
+        if (mask == 0xFFu << s) {
+            *shift = s;
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The firmware's current graphics mode, as is: changing modes is where
+ * firmware bugs live, and the kernel draws at any resolution.
+ */
+static void find_framebuffer(struct boot_framebuffer *fb)
+{
+    struct efi_graphics_output *gop = NULL;
+
+    if (bs->locate_protocol(&gop_guid, NULL, (void **)&gop) != EFI_SUCCESS || !gop || !gop->mode ||
+        !gop->mode->info) {
+        efi_log("no graphics output protocol; serial console only\n");
+        return;
+    }
+    const struct efi_gop_mode_info *info = gop->mode->info;
+    u8 r, g, b;
+
+    switch (info->pixel_format) {
+    case EFI_PIXEL_RGB_RESERVED_8BIT:
+        r = 0, g = 8, b = 16;
+        break;
+    case EFI_PIXEL_BGR_RESERVED_8BIT:
+        r = 16, g = 8, b = 0;
+        break;
+    case EFI_PIXEL_BIT_MASK:
+        if (mask_shift(info->red_mask, &r) && mask_shift(info->green_mask, &g) &&
+            mask_shift(info->blue_mask, &b))
+            break;
+        efi_log("framebuffer channel masks %#x/%#x/%#x unsupported\n", info->red_mask,
+                info->green_mask, info->blue_mask);
+        return;
+    default:
+        efi_log("graphics output has no linear framebuffer\n");
+        return;
+    }
+    *fb = (struct boot_framebuffer){
+        .phys = gop->mode->frame_buffer_base,
+        .width = info->width,
+        .height = info->height,
+        .pitch = info->pixels_per_scan_line * 4,
+        .bpp = 32,
+        .red_shift = r,
+        .green_shift = g,
+        .blue_shift = b,
+    };
+    efi_log("framebuffer %ux%u at %#llx\n", info->width, info->height,
+            (unsigned long long)fb->phys);
+}
+
 /* 0-4 GiB identity (this loader keeps running after the switch) and 0-1 GiB at
  * KERNEL_VMA, exactly the windows stage 2 provides. 2 MiB pages. */
 static u64 build_page_tables(void)
@@ -413,6 +475,7 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
     bi->acpi_rsdp = find_acpi_rsdp();
     if (!bi->acpi_rsdp)
         efi_log("no ACPI RSDP in the configuration table\n");
+    find_framebuffer(&bi->framebuffer);
 
     efi_log("kernel %#llx-%#llx, entry %#llx, cmdline \"%s\"\n",
             (unsigned long long)bi->kernel_phys_start, (unsigned long long)bi->kernel_phys_end,
