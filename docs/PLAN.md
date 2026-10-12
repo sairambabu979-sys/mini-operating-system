@@ -514,7 +514,7 @@ or something the implementation taught us.
 | Item | Status |
 |------|--------|
 | klog ring buffer | Not built. Serial is the only sink and nothing reads logs back yet (no `dmesg`). |
-| kmalloc redzones | Not built. Debug builds poison freed memory and detect double frees; overflows into a neighbouring object are not detected. |
+| kmalloc redzones | Built after v1.0: debug builds put >= 8 guard bytes and a hidden size after every small object; `kfree()` reports overflows with the offending offset. |
 | gdb helpers (`ptwalk`, `tasks`) | Not built. `tools/gdb/gdbinit` only connects and breaks at `kmain`. |
 | ADR files in `docs/adr/` | Not written. Rationale lives in §2 and the design docs. |
 | `-mno-red-zone` checked in CI | Done differently: the Makefile refuses to build without `-mno-red-zone`, `-mgeneral-regs-only` and `-mcmodel=kernel`, and `check_kernel.py` rejects vector registers in the binary. |

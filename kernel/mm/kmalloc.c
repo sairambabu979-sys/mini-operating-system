@@ -11,6 +11,14 @@
  * them apart from large (page-aligned) allocations without extra metadata.
  * Empty slabs are returned to the PMM, except one per class kept warm.
  *
+ * Debug builds also give every small object a redzone: the size class is
+ * chosen with room for >= 8 guard bytes plus a hidden u16 holding the
+ * requested size at the object's very end. kfree() verifies the guard
+ * bytes, so writing past the end of an allocation is reported (with the
+ * offset) instead of silently corrupting the neighbouring object:
+ *
+ *     [ requested bytes ][ 0xCC redzone ... >= 8 bytes ][ u16 size ]
+ *
  * Locking: heap_lock protects all slab state; it nests outside pmm_lock.
  * Misuse checks unlock before panicking so a caught panic (tests) leaves
  * the heap usable.
@@ -25,6 +33,14 @@
 
 #define SLAB_MAGIC   0x534C4142u /* "SLAB" */
 #define POISON_FREE  KMALLOC_POISON
+#define REDZONE_BYTE KMALLOC_REDZONE
+
+#ifdef CONFIG_DEBUG
+#define REDZONE_MIN    8
+#define DEBUG_OVERHEAD (REDZONE_MIN + sizeof(u16))
+#else
+#define DEBUG_OVERHEAD 0
+#endif
 #define SLAB_HDR_SZ  64
 #define NUM_CLASSES  8 /* 16, 32, ..., 2048 */
 #define MIN_CLASS_SH 4
@@ -172,13 +188,22 @@ void *kmalloc(usize size)
     if (size == 0)
         return NULL;
 
-    int idx = class_for(size);
+    int idx = class_for(size + DEBUG_OVERHEAD);
 
     if (idx >= 0) {
         irqflags_t flags = spin_lock_irqsave(&heap_lock);
-        void *p = alloc_small(idx, flags);
+        u8 *p = alloc_small(idx, flags);
 
         spin_unlock_irqrestore(&heap_lock, flags);
+#ifdef CONFIG_DEBUG
+        if (p) {
+            usize cls = classes[idx].obj_size;
+            u16 requested = (u16)size;
+
+            memset(p + size, REDZONE_BYTE, cls - sizeof(u16) - size);
+            memcpy(p + cls - sizeof(u16), &requested, sizeof(requested));
+        }
+#endif
         return p;
     }
 
@@ -227,6 +252,24 @@ static void free_small(struct slab *s, void *ptr, irqflags_t flags)
         if (f == obj) {
             spin_unlock_irqrestore(&heap_lock, flags);
             panic("kfree: double free of %p (%zu-byte class)", ptr, c->obj_size);
+        }
+    }
+
+    /* Redzone: everything between the requested size and the size tail. */
+    u16 requested;
+    const u8 *bytes = ptr;
+
+    memcpy(&requested, bytes + c->obj_size - sizeof(u16), sizeof(requested));
+    if (requested > c->obj_size - DEBUG_OVERHEAD) {
+        spin_unlock_irqrestore(&heap_lock, flags);
+        panic("kfree: heap overflow: size tail of %p overwritten (%zu-byte class)", ptr,
+              c->obj_size);
+    }
+    for (usize i = requested; i < c->obj_size - sizeof(u16); i++) {
+        if (bytes[i] != REDZONE_BYTE) {
+            spin_unlock_irqrestore(&heap_lock, flags);
+            panic("kfree: heap overflow: %u-byte object %p written past its end at offset %zu",
+                  requested, ptr, i);
         }
     }
     memset(obj, POISON_FREE, c->obj_size);
