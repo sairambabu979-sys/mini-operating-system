@@ -10,4 +10,7 @@
 /* Valid after kmain() has validated it; never NULL afterwards. */
 const struct boot_info *boot_info_get(void);
 
+/* RFLAGS as the bootloader handed over control (IF must be clear). */
+u64 boot_entry_rflags(void);
+
 #endif /* MINIOS_CORE_BOOT_H */

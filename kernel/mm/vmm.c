@@ -27,7 +27,7 @@
 static u8 early_pt_pool[EARLY_PT_PAGES][PAGE_SIZE_4K] __aligned(PAGE_SIZE_4K);
 static unsigned early_pt_used;
 
-static struct address_space kernel_as;
+static struct address_space kernel_as = {.lock = SPINLOCK_INIT("kernel page tables")};
 static bool active; /* running on our tables: tables reachable via HHDM */
 static bool kernel_half_frozen;
 static u64 pte_global; /* PTE_GLOBAL if the CPU supports it */
@@ -181,24 +181,36 @@ int vmm_map(struct address_space *as, uptr va, u64 pa, usize size, unsigned flag
         return -EINVAL;
     if ((flags & VM_WRITE) && (flags & VM_EXEC))
         return -EINVAL; /* W^X */
-    return map_range(as, va, pa, size, flags, false);
+
+    irqflags_t irq = spin_lock_irqsave(&as->lock);
+    int err = map_range(as, va, pa, size, flags, false);
+
+    spin_unlock_irqrestore(&as->lock, irq);
+    return err;
 }
 
 int vmm_unmap_page(struct address_space *as, uptr va, u64 *pa)
 {
     int err = 0;
+    irqflags_t irq = spin_lock_irqsave(&as->lock);
     u64 *entry = walk(as, va, 1, false, &err);
 
-    if (!entry)
-        return err;
-    if (!(*entry & PTE_PRESENT))
-        return -ENOENT;
-    *pa = *entry & PTE_ADDR;
-    *entry = 0;
-    flush(as, va);
-    return 0;
+    if (entry && !(*entry & PTE_PRESENT))
+        err = -ENOENT;
+    if (entry && err == 0) {
+        *pa = *entry & PTE_ADDR;
+        *entry = 0;
+        flush(as, va);
+    }
+    spin_unlock_irqrestore(&as->lock, irq);
+    return err;
 }
 
+/*
+ * Lock-free: entries are read with single aligned loads, and kernel-half
+ * tables are never freed. A caller racing an unmap of the same page must
+ * synchronize itself.
+ */
 bool vmm_translate(const struct address_space *as, uptr va, u64 *pa, u64 *pte)
 {
     u64 *table = table_virt(as->pml4_phys);

@@ -14,6 +14,7 @@
 
 #include <boot/boot_info.h>
 #include <compiler.h>
+#include <core/spinlock.h>
 #include <mm/memmap.h>
 #include <types.h>
 
@@ -28,6 +29,7 @@ enum vm_flags {
 
 struct address_space {
     u64 pml4_phys;
+    struct spinlock lock; /* serializes page-table updates */
 };
 
 struct address_space *vmm_kernel_space(void);

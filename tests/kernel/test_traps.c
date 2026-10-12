@@ -6,6 +6,7 @@
  */
 #include <arch/cpu.h>
 #include <arch/extable.h>
+#include <arch/irqflags.h>
 #include <arch/segments.h>
 #include <arch/setjmp.h>
 #include <arch/trap.h>
@@ -114,6 +115,9 @@ KTEST(double_fault_runs_on_ist_stack)
     struct kjmp_buf jb;
     struct trap_expectation e;
 
+    /* No timer IRQ while RSP is bogus: keep the fault sequence deterministic. */
+    irqflags_t flags = arch_irq_save();
+
     trap_expect(&e, VEC_DOUBLE_FAULT, &jb);
     if (ksetjmp(&jb) == 0) {
         __asm__ volatile("movq %0, %%rsp\n\t"
@@ -124,6 +128,7 @@ KTEST(double_fault_runs_on_ist_stack)
         __builtin_unreachable();
     }
     trap_expect_clear();
+    arch_irq_restore(flags);
 
     uptr top = ist_stack_top(IST_DOUBLE_FAULT);
 

@@ -15,12 +15,15 @@
  */
 #include <arch/paging.h>
 #include <core/panic.h>
+#include <core/spinlock.h>
 #include <lib/string.h>
 #include <mm/pmm.h>
 #include <mm/vmalloc.h>
 #include <mm/vmm.h>
 
 static uptr next_va = VMALLOC_BASE;
+/* Protects next_va only: once reserved, an area belongs to its caller. */
+static struct spinlock va_lock = SPINLOCK_INIT("vmalloc");
 
 static bool page_mapped(uptr va)
 {
@@ -36,11 +39,16 @@ void *vmalloc(usize size)
     usize npages = ALIGN_UP(size, PAGE_SIZE_4K) / PAGE_SIZE_4K;
     usize span = (npages + 1) * PAGE_SIZE_4K; /* + guard */
 
-    if (span > VMALLOC_BASE + VMALLOC_SIZE - next_va)
+    irqflags_t flags = spin_lock_irqsave(&va_lock);
+
+    if (span > VMALLOC_BASE + VMALLOC_SIZE - next_va) {
+        spin_unlock_irqrestore(&va_lock, flags);
         return NULL;
+    }
     uptr base = next_va + PAGE_SIZE_4K; /* the first page stays unmapped */
 
     next_va += span;
+    spin_unlock_irqrestore(&va_lock, flags);
     for (usize i = 0; i < npages; i++) {
         u64 frame = pmm_alloc_page();
         uptr va = base + i * PAGE_SIZE_4K;
@@ -69,11 +77,11 @@ void vfree(void *ptr)
 
     if (ptr == NULL)
         return;
-    if (va < VMALLOC_BASE + PAGE_SIZE_4K || va >= next_va || !IS_ALIGNED(va, PAGE_SIZE_4K) ||
-        page_mapped(va - PAGE_SIZE_4K) || !page_mapped(va))
+    if (va < VMALLOC_BASE + PAGE_SIZE_4K || va >= __atomic_load_n(&next_va, __ATOMIC_RELAXED) ||
+        !IS_ALIGNED(va, PAGE_SIZE_4K) || page_mapped(va - PAGE_SIZE_4K) || !page_mapped(va))
         panic("vfree: %p is not the start of a live vmalloc area", ptr);
 
-    while (va < next_va && page_mapped(va)) {
+    while (page_mapped(va)) {
         u64 pa;
 
         BUG_ON(vmm_unmap_page(vmm_kernel_space(), va, &pa) != 0);

@@ -14,6 +14,9 @@ struct trap_frame;
 __noreturn void panic(const char *fmt, ...) __printf(1, 2);
 __noreturn void panic_trap(const struct trap_frame *f, const char *reason);
 
+/* True once a panic has started printing (locks are bypassed from then on). */
+bool panic_in_progress(void);
+
 /* After this, panic() ends the QEMU run with a failure code (test mode). */
 void panic_set_exit_on_panic(bool exit_qemu);
 

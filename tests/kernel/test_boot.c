@@ -96,11 +96,8 @@ KTEST(a20_line_is_enabled)
     *low = saved;
 }
 
-KTEST(interrupts_disabled_and_direction_clear)
+KTEST(loader_handed_over_with_interrupts_disabled)
 {
-    u64 rflags;
-
-    __asm__ volatile("pushfq; popq %0" : "=r"(rflags));
-    KEXPECT_EQ(rflags & (1u << 9), 0);  /* IF */
-    KEXPECT_EQ(rflags & (1u << 10), 0); /* DF */
+    KEXPECT_EQ(boot_entry_rflags() & RFLAGS_IF, 0);
+    KEXPECT_EQ(read_rflags() & RFLAGS_DF, 0); /* the ABI requires DF clear */
 }

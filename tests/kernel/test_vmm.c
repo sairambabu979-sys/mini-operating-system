@@ -6,6 +6,7 @@
 #include <arch/cpu.h>
 #include <arch/cpuid.h>
 #include <arch/extable.h>
+#include <arch/irqflags.h>
 #include <arch/msr.h>
 #include <arch/paging.h>
 #include <arch/setjmp.h>
@@ -249,10 +250,13 @@ KTEST(kernel_stack_overflow_hits_guard_page)
     struct trap_expectation e;
 
     KEXPECT(stack != NULL);
+    irqflags_t flags = arch_irq_save();
+
     trap_expect(&e, VEC_DOUBLE_FAULT, &jb);
     if (ksetjmp(&jb) == 0)
         call_on_stack(recurse_forever, NULL, stack + STACK);
     trap_expect_clear();
+    arch_irq_restore(flags);
     KEXPECT(e.hit);
     KEXPECT(e.cr2 >= (uptr)stack - PAGE_SIZE_4K && e.cr2 < (uptr)stack); /* in the guard */
     vfree(stack);

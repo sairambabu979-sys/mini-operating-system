@@ -39,7 +39,7 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 | M2 Kernel foundation: GDT/TSS/IDT, exceptions, panic, UBSan | ✅ |
 | M3 Physical memory: E820 sanitizer, buddy allocator | ✅ |
 | M4 Virtual memory: own page tables, direct map, W^X, vmalloc, kmalloc | ✅ |
-| M5 Interrupts and time: PIC, PIT | planned |
+| M5 Interrupts and time: PIC, PIT, TSC calibration, IRQ-safe locks | ✅ |
 | M6 Scheduler: preemptive kernel threads | planned |
 | M7 User mode: ring 3, syscalls, process isolation | planned |
 

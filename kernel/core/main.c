@@ -9,11 +9,13 @@
 #include <arch/trap.h>
 #include <boot/boot_info.h>
 #include <core/boot.h>
+#include <core/irq.h>
 #include <core/klog.h>
 #include <core/ktest.h>
 #include <core/panic.h>
 #include <core/printk.h>
 #include <core/sections.h>
+#include <core/time.h>
 #include <drivers/qemu.h>
 #include <drivers/serial.h>
 #include <lib/cmdline.h>
@@ -24,10 +26,16 @@
 __noreturn void kmain(u64 boot_info_phys);
 
 static const struct boot_info *boot_info;
+static u64 entry_rflags;
 
 const struct boot_info *boot_info_get(void)
 {
     return boot_info;
+}
+
+u64 boot_entry_rflags(void)
+{
+    return entry_rflags;
 }
 
 static const char *e820_type_name(u32 type)
@@ -124,6 +132,7 @@ static void run_selftest(const char *cmdline)
 
 __noreturn void kmain(u64 boot_info_phys)
 {
+    entry_rflags = read_rflags(); /* the loader's hand-off state, for tests */
     serial_init();
     boot_info = validate_boot_info(boot_info_phys);
     apply_cmdline(boot_info->cmdline);
@@ -137,6 +146,10 @@ __noreturn void kmain(u64 boot_info_phys)
     cpu_detect_features();
     mm_init(boot_info_phys);
     boot_info = phys_to_virt(boot_info_phys);
+
+    irq_init();
+    time_init();
+    cpu_irq_enable();
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
     kprintf("cmdline: \"%s\"\n", boot_info->cmdline);

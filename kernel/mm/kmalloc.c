@@ -10,9 +10,14 @@
  * objects are therefore never page-aligned, which is how kfree() tells
  * them apart from large (page-aligned) allocations without extra metadata.
  * Empty slabs are returned to the PMM, except one per class kept warm.
+ *
+ * Locking: heap_lock protects all slab state; it nests outside pmm_lock.
+ * Misuse checks unlock before panicking so a caught panic (tests) leaves
+ * the heap usable.
  */
 #include <arch/paging.h>
 #include <core/panic.h>
+#include <core/spinlock.h>
 #include <lib/list.h>
 #include <lib/string.h>
 #include <mm/kmalloc.h>
@@ -49,9 +54,11 @@ struct size_class {
 };
 
 static struct size_class classes[NUM_CLASSES];
+static struct spinlock heap_lock = SPINLOCK_INIT("kmalloc");
 static u64 small_live, large_live;
 static bool initialized;
 
+/* Runs once, before the first allocation (single-threaded boot). */
 static void init_classes(void)
 {
     for (int i = 0; i < NUM_CLASSES; i++) {
@@ -74,15 +81,17 @@ static int class_for(usize size)
 
 #ifdef CONFIG_DEBUG
 /* Byte 0..7 hold the free-list link; the rest must still be poison. */
-static void check_poison(const struct slab *s, const void *obj, usize size)
+static void check_poison(const struct slab *s, const void *obj, usize size, irqflags_t flags)
 {
     const u8 *bytes = obj;
 
     for (usize i = sizeof(struct free_obj); i < size; i++) {
-        if (bytes[i] != POISON_FREE)
+        if (bytes[i] != POISON_FREE) {
+            spin_unlock_irqrestore(&heap_lock, flags);
             panic("kmalloc: use after free: %zu-byte object %p modified at offset %zu "
                   "(slab %p)",
                   size, obj, i, (const void *)s);
+        }
     }
 }
 #endif
@@ -115,7 +124,8 @@ static struct slab *new_slab(int idx)
     return s;
 }
 
-static void *alloc_small(int idx)
+/* `flags` is what heap_lock was taken with: debug checks unlock before panicking. */
+static void *alloc_small(int idx, __maybe_unused irqflags_t flags)
 {
     struct size_class *c = &classes[idx];
     struct slab *s;
@@ -134,7 +144,7 @@ static void *alloc_small(int idx)
     BUG_ON(obj == NULL);
 #ifdef CONFIG_DEBUG
     /* Before unlinking, so a detected corruption leaves the slab intact. */
-    check_poison(s, obj, c->obj_size);
+    check_poison(s, obj, c->obj_size, flags);
 #endif
     s->free_list = obj->next;
     s->free_count--;
@@ -164,8 +174,13 @@ void *kmalloc(usize size)
 
     int idx = class_for(size);
 
-    if (idx >= 0)
-        return alloc_small(idx);
+    if (idx >= 0) {
+        irqflags_t flags = spin_lock_irqsave(&heap_lock);
+        void *p = alloc_small(idx, flags);
+
+        spin_unlock_irqrestore(&heap_lock, flags);
+        return p;
+    }
 
     unsigned order = order_for(size);
 
@@ -175,7 +190,7 @@ void *kmalloc(usize size)
 
     if (phys == PMM_ALLOC_FAILED)
         return NULL;
-    large_live++;
+    __atomic_add_fetch(&large_live, 1, __ATOMIC_RELAXED);
     return phys_to_virt(phys);
 }
 
@@ -197,18 +212,22 @@ void *kcalloc(usize n, usize size)
     return kzalloc(total);
 }
 
-static void free_small(struct slab *s, void *ptr)
+static void free_small(struct slab *s, void *ptr, irqflags_t flags)
 {
     struct size_class *c = &classes[s->class_idx];
     usize offset = (usize)((u8 *)ptr - ((u8 *)s + SLAB_HDR_SZ));
     struct free_obj *obj = ptr;
 
-    if (offset % c->obj_size != 0 || offset / c->obj_size >= s->capacity)
+    if (offset % c->obj_size != 0 || offset / c->obj_size >= s->capacity) {
+        spin_unlock_irqrestore(&heap_lock, flags);
         panic("kfree: %p is not an object boundary in its slab", ptr);
+    }
 #ifdef CONFIG_DEBUG
     for (struct free_obj *f = s->free_list; f; f = f->next) {
-        if (f == obj)
+        if (f == obj) {
+            spin_unlock_irqrestore(&heap_lock, flags);
             panic("kfree: double free of %p (%zu-byte class)", ptr, c->obj_size);
+        }
     }
     memset(obj, POISON_FREE, c->obj_size);
 #endif
@@ -247,23 +266,30 @@ void kfree(void *ptr)
 
         if (order < 0)
             panic("kfree: %p is not a live allocation", ptr);
-        large_live--;
+        __atomic_sub_fetch(&large_live, 1, __ATOMIC_RELAXED);
         pmm_free_pages(virt_to_phys_hhdm(ptr), (unsigned)order);
         return;
     }
 
     struct slab *s = (struct slab *)ALIGN_DOWN(va, PAGE_SIZE_4K);
+    irqflags_t flags = spin_lock_irqsave(&heap_lock);
 
-    if (s->magic != SLAB_MAGIC || s->class_idx >= NUM_CLASSES)
+    if (s->magic != SLAB_MAGIC || s->class_idx >= NUM_CLASSES) {
+        spin_unlock_irqrestore(&heap_lock, flags);
         panic("kfree: %p is not in a slab (bad magic)", ptr);
-    free_small(s, ptr);
+    }
+    free_small(s, ptr, flags);
+    spin_unlock_irqrestore(&heap_lock, flags);
 }
 
 void kmalloc_get_stats(struct kmalloc_stats *out)
 {
+    irqflags_t flags = spin_lock_irqsave(&heap_lock);
+
     out->small_live = small_live;
     out->large_live = large_live;
     out->slabs = 0;
     for (int i = 0; i < NUM_CLASSES; i++)
         out->slabs += classes[i].slabs;
+    spin_unlock_irqrestore(&heap_lock, flags);
 }

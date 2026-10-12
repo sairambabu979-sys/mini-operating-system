@@ -16,6 +16,7 @@
 #include <arch/io.h>
 #include <arch/setjmp.h>
 #include <arch/trap.h>
+#include <core/irq.h>
 #include <core/klog.h>
 #include <core/panic.h>
 
@@ -136,7 +137,10 @@ void trap_dispatch(struct trap_frame *f)
         handle_exception(f);
         return;
     }
-    /* No interrupt sources are unmasked before the IRQ layer (M5) exists. */
+    if (f->vector < VEC_FIRST_IRQ + 16) {
+        irq_dispatch(f);
+        return;
+    }
     pr_warn("unexpected interrupt, vector %llu\n", (unsigned long long)f->vector);
 }
 

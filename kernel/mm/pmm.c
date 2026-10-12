@@ -8,14 +8,14 @@
  *   2. hand every usable frame to the buddy allocator except the reserved
  *      ranges: low 1 MiB, kernel image, and the page array itself.
  *
- * Locking: none yet. Nothing runs concurrently until interrupts handlers
- * and threads exist (M5/M6), which add the lock in the same change.
+ * Locking: one IRQ-safe spinlock around every buddy operation.
  */
 #define pr_fmt(fmt) "pmm: " fmt
 
 #include <arch/paging.h>
 #include <core/klog.h>
 #include <core/panic.h>
+#include <core/spinlock.h>
 #include <mm/pmm.h>
 
 struct phys_range {
@@ -23,6 +23,7 @@ struct phys_range {
 };
 
 static struct buddy buddy;
+static struct spinlock pmm_lock = SPINLOCK_INIT("pmm");
 static const struct mem_region *regions;
 static usize nregions;
 static u64 metadata_bytes;
@@ -116,31 +117,49 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
 
 u64 pmm_alloc_pages(unsigned order)
 {
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
     u64 pfn = buddy_alloc(&buddy, order);
+
+    spin_unlock_irqrestore(&pmm_lock, flags);
 
     return pfn == BUDDY_NONE ? PMM_ALLOC_FAILED : pfn << PAGE_SHIFT;
 }
 
 void pmm_free_pages(u64 phys, unsigned order)
 {
-    if (!IS_ALIGNED(phys, PAGE_SIZE) || buddy_free(&buddy, pfn_of(phys), order) != 0)
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+    int err = IS_ALIGNED(phys, PAGE_SIZE) ? buddy_free(&buddy, pfn_of(phys), order) : -1;
+
+    spin_unlock_irqrestore(&pmm_lock, flags);
+    if (err != 0)
         panic("pmm: invalid free of %#llx (order %u): double free or wrong order?",
               (unsigned long long)phys, order);
 }
 
 int pmm_block_order(u64 phys)
 {
-    return IS_ALIGNED(phys, PAGE_SIZE) ? buddy_block_order(&buddy, pfn_of(phys)) : -1;
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+    int order = IS_ALIGNED(phys, PAGE_SIZE) ? buddy_block_order(&buddy, pfn_of(phys)) : -1;
+
+    spin_unlock_irqrestore(&pmm_lock, flags);
+    return order;
 }
 
 void pmm_get_stats(struct pmm_stats *out)
 {
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+
     out->managed_frames = buddy.managed_frames;
     out->free_frames = buddy.free_frames;
     out->metadata_bytes = metadata_bytes;
+    spin_unlock_irqrestore(&pmm_lock, flags);
 }
 
 int pmm_verify(const char **reason)
 {
-    return buddy_verify(&buddy, reason);
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+    int err = buddy_verify(&buddy, reason);
+
+    spin_unlock_irqrestore(&pmm_lock, flags);
+    return err;
 }

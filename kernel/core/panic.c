@@ -33,6 +33,11 @@ void panic_expect_clear(void)
     expectation = NULL;
 }
 
+bool panic_in_progress(void)
+{
+    return panicking;
+}
+
 void panic_set_exit_on_panic(bool exit_qemu)
 {
     exit_on_panic = exit_qemu;
