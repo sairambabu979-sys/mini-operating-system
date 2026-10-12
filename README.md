@@ -38,7 +38,7 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 | M1 Bootloader: MBR → long mode → ELF load | ✅ |
 | M2 Kernel foundation: GDT/TSS/IDT, exceptions, panic, UBSan | ✅ |
 | M3 Physical memory: E820 sanitizer, buddy allocator | ✅ |
-| M4 Virtual memory: own page tables, W^X, kmalloc | planned |
+| M4 Virtual memory: own page tables, direct map, W^X, vmalloc, kmalloc | ✅ |
 | M5 Interrupts and time: PIC, PIT | planned |
 | M6 Scheduler: preemptive kernel threads | planned |
 | M7 User mode: ring 3, syscalls, process isolation | planned |
@@ -49,12 +49,12 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 |-------|------|-------|
 | Host unit tests | Kernel library code under ASan + UBSan; printf differentially tested against glibc | `tests/host/` |
 | Binary checks | No SSE/AVX in kernel code; W^X segment layout; entry point | `tools/check_kernel.py` |
-| In-kernel tests | `KTEST()` cases, TAP over serial, judged by exit code and TAP count | `tests/kernel/`, `tests/qemu/run_tests.py` |
+| In-kernel tests | `KTEST()` cases, TAP over serial, judged by exit code and TAP count; run at 128 MiB and 4 GiB | `tests/kernel/`, `tests/qemu/run_tests.py` |
 | Crash path | Deliberate kernel page fault; panic decode and symbolized backtrace matched against patterns | `disk-panic.img` |
 
 ## Documentation
 
 - [`docs/PLAN.md`](docs/PLAN.md): architecture, decisions, milestones, risks
 - [`docs/design/boot.md`](docs/design/boot.md): boot sequence, memory layout, debugging
-- [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, PMM
+- [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, page tables, heaps
 - [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers
