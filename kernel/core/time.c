@@ -68,6 +68,23 @@ void time_init(void)
             (unsigned long long)(tsc_freq_khz % 1000));
 }
 
+u16 pit_divisor(void)
+{
+    return PIT_DIVISOR;
+}
+
+u16 pit_read_counter(void)
+{
+    irqflags_t flags = arch_irq_save(); /* lo/hi reads must not be split */
+
+    outb(PIT_CMD, 0x00); /* latch channel 0 */
+    u8 lo = inb(PIT_CH0_DATA);
+    u8 hi = inb(PIT_CH0_DATA);
+
+    arch_irq_restore(flags);
+    return (u16)(hi << 8 | lo);
+}
+
 u64 time_ticks(void)
 {
     return ticks;

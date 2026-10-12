@@ -10,6 +10,7 @@
 #include <arch/setjmp.h>
 #include <arch/trap.h>
 #include <boot/boot_info.h>
+#include <sched/sched.h>
 
 #define DEFINE(sym, val)      __asm__ volatile("\n.ascii \"->" #sym " %c0\"" : : "i"((u64)(val)))
 #define OFFSET(sym, str, mem) DEFINE(sym, __builtin_offsetof(struct str, mem))
@@ -58,4 +59,7 @@ void asm_offsets(void)
     OFFSET(KJMP_R15, kjmp_buf, r15);
     OFFSET(KJMP_RSP, kjmp_buf, rsp);
     OFFSET(KJMP_RIP, kjmp_buf, rip);
+
+    /* Tasks (sched/sched.h) */
+    OFFSET(TASK_SAVED_RSP, task, saved_rsp);
 }

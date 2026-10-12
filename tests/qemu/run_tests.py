@@ -42,6 +42,9 @@ def qemu_command(image: Path, memory: str, extra: list[str]) -> list[str]:
         "-monitor", "none",
         "-serial", "stdio",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        # -snapshot: writes go to a temporary overlay, so concurrent runs of
+        # one image never contend for its write lock and never modify it.
+        "-snapshot",
         "-drive", f"file={image},format=raw,if=ide",
         *extra,
     ]
@@ -80,10 +83,10 @@ def main() -> int:
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout)
         status, timed_out = proc.returncode, False
-        output = proc.stdout
+        output, stderr = proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as e:
         status, timed_out = None, True
-        output = e.stdout or b""
+        output, stderr = e.stdout or b"", e.stderr or b""
     elapsed = time.monotonic() - start
 
     text = output.decode("utf-8", errors="replace").replace("\r\n", "\n")
@@ -105,6 +108,8 @@ def main() -> int:
         problems.append("kernel reported failure (QEMU_EXIT_FAILURE)")
     elif status != EXIT_SUCCESS:
         problems.append(f"QEMU exited with status {status}: crash or triple fault?")
+    if status not in (EXIT_SUCCESS, EXIT_FAILURE) and stderr.strip():
+        problems.append("QEMU stderr: " + stderr.decode("utf-8", errors="replace").strip())
 
     pos = 0
     for pattern in args.expect:

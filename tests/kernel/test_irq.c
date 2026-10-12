@@ -35,9 +35,28 @@ KTEST(timer_interrupts_are_delivered)
     KEXPECT(irq_count(0) >= irqs + 20);
 }
 
-KTEST(tick_rate_matches_tsc)
+/*
+ * The tick rate is a property of the PIT programming, which is checked
+ * exactly: in mode 2 the counter runs from the divisor down to 1. The TSC
+ * comparison is only a sanity bound (it catches a wrong divisor, which is
+ * off by integer factors). It cannot be tight: under emulation, timer
+ * interrupts delayed by host scheduling are delivered back to back, and
+ * 100 ticks have been measured anywhere from 91.6 to 102.6 ms of TSC time.
+ */
+KTEST(pit_is_programmed_for_the_tick_rate)
 {
-    /* Over 100 ticks (~100 ms) the TSC must agree within 5%. */
+    u16 lo = 0xFFFF, hi = 0;
+
+    KEXPECT_EQ(pit_divisor(), 1193); /* 1193182 Hz / 1000 */
+    for (int i = 0; i < 2000; i++) {
+        u16 c = pit_read_counter();
+
+        lo = c < lo ? c : lo;
+        hi = c > hi ? c : hi;
+    }
+    KEXPECT(lo >= 1 && hi <= pit_divisor());
+    KEXPECT(hi - lo > pit_divisor() / 2); /* it is actually counting */
+
     KEXPECT(wait_ticks(1));
     u64 t0 = rdtsc(), s = time_ticks();
 
@@ -45,9 +64,8 @@ KTEST(tick_rate_matches_tsc)
     u64 elapsed_us = (rdtsc() - t0) * 1000 / tsc_khz();
     u64 ticks = time_ticks() - s;
 
-    KEXPECT(ticks >= 100);
-    KEXPECT(elapsed_us * 100 >= ticks * 1000 * 95);
-    KEXPECT(elapsed_us * 100 <= ticks * 1000 * 105);
+    KEXPECT(elapsed_us * 100 >= ticks * 1000 * 70);
+    KEXPECT(elapsed_us * 100 <= ticks * 1000 * 130);
 }
 
 KTEST(time_ns_tracks_ticks)

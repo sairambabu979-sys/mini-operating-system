@@ -31,6 +31,10 @@ static inline u64 rdtsc(void)
     return ((u64)hi << 32) | lo;
 }
 
+/* The divisor programmed into PIT channel 0, and a latched read of its counter. */
+u16 pit_divisor(void);
+u16 pit_read_counter(void);
+
 /* TSC frequency measured at boot, in kHz. */
 u64 tsc_khz(void);
 

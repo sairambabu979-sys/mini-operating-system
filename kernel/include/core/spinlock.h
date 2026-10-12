@@ -43,8 +43,27 @@ static inline __must_check irqflags_t spin_lock_irqsave(struct spinlock *lock)
 static inline void spin_unlock_irqrestore(struct spinlock *lock, irqflags_t flags)
 {
     __atomic_store_n(&lock->locked, 0, __ATOMIC_RELEASE);
-    preempt_enable();
+    preempt_enable_no_resched();
     arch_irq_restore(flags);
+    preempt_check_resched(); /* only now can a pending reschedule happen */
+}
+
+/*
+ * Raw variants for the scheduler, which hands a held lock across a context
+ * switch: no IRQ state is saved or restored, and unlocking never
+ * reschedules. Callers manage interrupts themselves.
+ */
+static inline void spin_lock_raw(struct spinlock *lock)
+{
+    preempt_disable();
+    if (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE) != 0)
+        spinlock_recursion(lock);
+}
+
+static inline void spin_unlock_raw(struct spinlock *lock)
+{
+    __atomic_store_n(&lock->locked, 0, __ATOMIC_RELEASE);
+    preempt_enable_no_resched();
 }
 
 static inline bool spin_is_locked(const struct spinlock *lock)

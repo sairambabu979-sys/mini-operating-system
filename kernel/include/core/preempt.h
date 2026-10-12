@@ -21,6 +21,12 @@ static __always_inline void preempt_disable(void)
     barrier();
 }
 
+/* Set by the timer when the current task's time slice is used up. */
+extern volatile bool need_resched;
+
+/* Reschedules if one is pending and the context allows it. */
+void preempt_check_resched(void);
+
 /* Re-enables preemption; reschedules now if the timer asked for it. */
 void preempt_enable(void);
 

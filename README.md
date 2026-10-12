@@ -40,7 +40,7 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 | M3 Physical memory: E820 sanitizer, buddy allocator | ✅ |
 | M4 Virtual memory: own page tables, direct map, W^X, vmalloc, kmalloc | ✅ |
 | M5 Interrupts and time: PIC, PIT, TSC calibration, IRQ-safe locks | ✅ |
-| M6 Scheduler: preemptive kernel threads | planned |
+| M6 Scheduler: preemptive round robin, wait queues, sleep, mutexes | ✅ |
 | M7 User mode: ring 3, syscalls, process isolation | planned |
 
 ## Testing
@@ -57,4 +57,5 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 - [`docs/PLAN.md`](docs/PLAN.md): architecture, decisions, milestones, risks
 - [`docs/design/boot.md`](docs/design/boot.md): boot sequence, memory layout, debugging
 - [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, page tables, heaps
-- [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers
+- [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers, IRQs, locks
+- [`docs/design/scheduler.md`](docs/design/scheduler.md): context switch, preemption, lost-wakeup safety

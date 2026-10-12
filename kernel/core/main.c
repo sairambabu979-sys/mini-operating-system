@@ -21,6 +21,7 @@
 #include <lib/cmdline.h>
 #include <lib/string.h>
 #include <mm/mm.h>
+#include <sched/sched.h>
 #include <version.h>
 
 __noreturn void kmain(u64 boot_info_phys);
@@ -149,6 +150,7 @@ __noreturn void kmain(u64 boot_info_phys)
 
     irq_init();
     time_init();
+    sched_init();
     cpu_irq_enable();
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
