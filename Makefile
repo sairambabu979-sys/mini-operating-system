@@ -15,6 +15,8 @@
 .DEFAULT_GOAL := all
 .SUFFIXES:
 .DELETE_ON_ERROR:
+# Keep chained intermediates (e.g. crt0.asm.o): deleting them forces relinks on every build.
+.SECONDARY:
 MAKEFLAGS += --no-builtin-rules --no-builtin-variables
 
 CONFIG  ?= debug
@@ -59,6 +61,11 @@ KERNEL_CFLAGS := \
 	-Wvla -Wcast-align -Wpointer-arith -Wundef -Wimplicit-fallthrough \
 	-ffile-prefix-map=$(CURDIR)/= \
 	$(KERNEL_INCLUDES)
+
+# Flags whose absence compiles cleanly but corrupts state at run time.
+# (Interrupts clobber the red zone; SSE would clobber user FPU state.)
+$(foreach f,-mno-red-zone -mgeneral-regs-only -mcmodel=kernel, \
+  $(if $(filter $(f),$(KERNEL_CFLAGS)),,$(error kernel build requires $(f))))
 
 ifeq ($(CONFIG),debug)
 KERNEL_CFLAGS += -O2 -g -DCONFIG_DEBUG=1
@@ -236,6 +243,12 @@ CMDLINE  ?=
 
 PANIC_IMG := $(BUILD)/disk-panic.img
 DEMO_IMG  := $(BUILD)/disk-demo.img
+BENCH_IMG := $(BUILD)/disk-bench.img
+
+$(BENCH_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
+	$(call msg,IMAGE,$@)
+	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
+	  --kernel $(KERNEL_STRIPPED) --cmdline "bench" -o $@
 
 $(DEMO_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
 	$(call msg,IMAGE,$@)
@@ -263,7 +276,7 @@ $(TEST_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
 	  --kernel $(KERNEL_STRIPPED) --cmdline "ktest" -o $@
 
 .PHONY: all
-all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(KERNEL_ELF)
+all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -274,7 +287,11 @@ QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display none -monitor n
               -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
               -drive file=$(DISK_IMG),format=raw,if=ide
 
-.PHONY: run debug
+.PHONY: run debug bench
+# Numbers under TCG reflect the emulator too; use QEMU_EXTRA="-enable-kvm -cpu host" for real ones.
+bench: $(BENCH_IMG)
+	$(Q)$(QEMU) $(subst $(DISK_IMG),$(BENCH_IMG),$(QEMU_FLAGS)) $(QEMU_EXTRA) | grep --line-buffered 'bench:' || true
+
 run: $(DISK_IMG)
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_EXTRA)
 
@@ -321,7 +338,7 @@ host-test: $(HOST_TEST_BIN)
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
-qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG)
+qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG)
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
@@ -337,6 +354,9 @@ qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG)
 	  --expect 'init: pid [0-9]+, starting 11 programs' \
 	  --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BENCH_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --expect 'bench: context switch' --expect 'bench: syscall round trip' \
+	  --expect 'user benchmark exit 0'
 
 # Static checks on the linked kernel (e.g. no SSE instructions slipped in).
 check-binary: $(KERNEL_ELF)

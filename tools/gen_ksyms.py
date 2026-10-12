@@ -72,10 +72,9 @@ def main() -> int:
         return 0
 
     symbols = [] if args.empty else text_symbols(args.inputs[0])
-    content = render(symbols)
-    # Rewrite only on change, so unchanged tables don't trigger relinks.
-    if not args.output.exists() or args.output.read_text() != content:
-        args.output.write_text(content)
+    # Always write: make decides when this runs, and an output left older than
+    # its inputs would be regenerated on every build.
+    args.output.write_text(render(symbols))
     return 0
 
 

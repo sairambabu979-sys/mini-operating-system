@@ -1,6 +1,9 @@
 # Mini Operating System — Engineering Plan
 
-> Status: **Proposed** · Scope: v1.0 · Target: x86_64, single core, QEMU first
+> Status: **v1.0 implemented** (M0–M8) · Target: x86_64, single core, QEMU first
+>
+> This is the plan as written before any code, kept as the record of what was
+> intended. §11 lists every place the build differed from it, and why.
 
 This document is the design and execution plan for a small, from-scratch x86_64
 kernel: our own bootloader, 4-level paging, a full interrupt/exception layer, and
@@ -43,7 +46,7 @@ Anything not listed under Goals is out of scope until v1.0 is tagged.
 
 ## 2. Key decisions
 
-Each decision gets a short ADR in `docs/adr/` when it is implemented.
+The rationale for each decision lives in this table and in `docs/design/` (see §11).
 
 | Decision | Choice | Why | Rejected alternative |
 |----------|--------|-----|----------------------|
@@ -124,11 +127,10 @@ Dependency rule: arrows only point downward. `arch/` exposes a narrow interface
 ├── tools/
 │   ├── mkimage.py            # assembles disk.img, patches the stage2 header with LBA/size
 │   ├── gen_ksyms.py          # symbol table for backtraces (multi-pass link)
-│   └── gdb/                  # .gdbinit, pretty-printers for task/page tables
+│   └── gdb/                  # gdbinit
 ├── docs/
 │   ├── PLAN.md               # this file
-│   ├── design/               # boot.md  memory.md  interrupts.md  scheduler.md  syscalls.md
-│   └── adr/                  # 0001-x86_64.md, 0002-custom-bootloader.md, ...
+│   └── design/               # boot.md traps.md memory.md scheduler.md usermode.md
 ├── .github/workflows/ci.yml
 ├── .clang-format  .clang-tidy  .editorconfig
 ├── Makefile
@@ -476,13 +478,59 @@ M6 carry most of the schedule risk.
 
 ## 10. Definition of done (v1.0)
 
-- [ ] `make run` boots to a user-space `init` that spawns demo processes, which then print,
-      sleep, fault, and exit, while the kernel stays up.
-- [ ] `make test` runs host, in-kernel, and QEMU suites. All are green in CI on every commit.
-- [ ] No warnings at `-Wall -Wextra -Werror`. clang-tidy is clean. Formatting is enforced.
-- [ ] Every subsystem has a design doc that states its invariants and the reasons behind
+- [x] `make run` boots to a user-space `init` that spawns demo processes, which then print,
+      sleep, fault, and exit, while the kernel stays up. (Itself tested: `disk-demo.img`.)
+- [x] `make test` runs host, in-kernel, and QEMU suites. All are green in CI on every commit.
+- [x] No warnings at `-Wall -Wextra -Werror`. clang-tidy is clean. Formatting is enforced.
+- [x] Every subsystem has a design doc that states its invariants and the reasons behind
       its choices.
-- [ ] Every hardware-facing struct has `static_assert`ed layout. Every asm routine has a
+- [x] Every hardware-facing struct has `static_assert`ed layout. Every asm routine has a
       register contract.
-- [ ] README: a one-paragraph pitch, a quickstart (3 commands), the architecture diagram,
+- [x] README: a one-paragraph pitch, a quickstart (3 commands), the architecture diagram,
       the memory map, a test matrix, benchmarks, and known limitations.
+- [ ] Tag `v1.0.0`: left to the repository owner.
+
+---
+
+## 11. How the build differed from the plan
+
+Recorded so the plan stays honest. Each item is a deliberate change, a cut,
+or something the implementation taught us.
+
+**Changed during implementation**
+
+| Plan said | Built | Why |
+|-----------|-------|-----|
+| Stage 2 goes 16 → 32 → 64-bit | real mode → long mode in one step | Setting CR0.PE and CR0.PG together with EFER.LME is architecturally valid and removes an entire 32-bit stage. |
+| `boot_info.inc` generated from the header | `asm-offsets.inc`, one generated file | The same mechanism also serves trap-frame, task and per-CPU offsets. |
+| PMM placed metadata in the 1 GiB boot window | metadata behind the direct map | M4 brought the direct map up before the PMM, which lifted the 1 GiB limit. The suite now also runs with 4 GiB. |
+| `init` from the start, 7 syscalls | 8 syscalls (`time_ms` added) | User programs needed a clock for the spinner and sleeper tests. |
+| Tick rate within ±2% of the TSC (KVM only) | PIT divisor verified by counter read-back; ±30% TSC sanity bound | The TSC comparison measured emulator timing (100 ticks took 91.6–102.6 ms); the read-back tests what the kernel actually controls. |
+| Scheduler fairness within ±10% | ±25% | Emulated timer jitter. Still catches any broken preemption, which shows up as 0% or 100%. |
+| "SYSRET hazard → #GP in ring 0" test | accepts #GP (hardware) or user #PF (TCG); fixup tested with a bad SS | TCG does not check RIP canonicality in `iretq`; the bad-SS frame exercises the same recovery path on every CPU. |
+
+**Planned but not built**
+
+| Item | Status |
+|------|--------|
+| klog ring buffer | Not built. Serial is the only sink and nothing reads logs back yet (no `dmesg`). |
+| kmalloc redzones | Not built. Debug builds poison freed memory and detect double frees; overflows into a neighbouring object are not detected. |
+| gdb helpers (`ptwalk`, `tasks`) | Not built. `tools/gdb/gdbinit` only connects and breaks at `kmain`. |
+| ADR files in `docs/adr/` | Not written. Rationale lives in §2 and the design docs. |
+| `-mno-red-zone` checked in CI | Done differently: the Makefile refuses to build without `-mno-red-zone`, `-mgeneral-regs-only` and `-mcmodel=kernel`, and `check_kernel.py` rejects vector registers in the binary. |
+
+**Learned the hard way** (each one is now covered by a test or a check)
+
+- The early page-table pool sits in the kernel image, whose direct-map
+  alias is read-only by design. Writing tables through the direct map
+  faulted on the first M4 boot.
+- An out-of-bounds UBSan test wrote past a stack array; the stack
+  protector caught the smashed canary. Both nets fired, in order.
+- Concurrent QEMU runs contended for the disk image's write lock, which
+  looked like a kernel crash (status 1, empty log). The runner now uses
+  `-snapshot` and prints QEMU's stderr.
+- Generated files that skipped rewriting identical output stayed older
+  than their inputs, so the build never reached a no-op state. They now
+  always write.
+- Freed task structs read by the tests themselves were caught by the
+  kmalloc poison (`0x6b6b6b6b` where a pid was expected).

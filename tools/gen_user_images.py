@@ -31,9 +31,7 @@ def main() -> None:
         out.append(f"    dq name{i}, img{i}, img{i}_end - img{i}")
     out += ["global user_images_count", f"user_images_count: dq {len(entries)}",
             "section .note.GNU-stack noalloc noexec nowrite progbits"]
-    content = "\n".join(out) + "\n"
-    if not args.output.exists() or args.output.read_text() != content:
-        args.output.write_text(content)
+    args.output.write_text("\n".join(out) + "\n")
 
 
 if __name__ == "__main__":
