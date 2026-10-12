@@ -153,7 +153,8 @@ KTEST(kmalloc_detects_heap_overflow)
     KEXPECT(e.hit);
     KEXPECT(strncmp(e.message, "kfree: heap overflow", 20) == 0);
 
-    p[40] = KMALLOC_REDZONE; /* repair, then the free must succeed */
+    /* The caught kfree() panicked before freeing; repair, then free for real. */
+    p[40] = KMALLOC_REDZONE; // NOLINT(clang-analyzer-unix.Malloc): not freed, see above
     kfree(p);
 }
 
