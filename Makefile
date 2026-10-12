@@ -6,6 +6,7 @@
 #   make run             boot build/<config>/disk.img in QEMU (CMDLINE="..." to pass options)
 #   make debug           same, halted at reset waiting for gdb on :1234
 #   make test            host unit tests, binary checks, in-kernel tests under QEMU
+#   make check           check-format + lint + test: what CI runs (gate commits on it)
 #   make lint            clang-tidy over kernel sources
 #   make format          reformat all C sources in place
 #   make check-format    fail if any C source is not clang-formatted
@@ -421,6 +422,11 @@ check-binary: $(KERNEL_ELF)
 # --------------------------------------------------------------------------
 
 FORMAT_SRCS := $(shell find boot kernel tests user -name '*.c' -o -name '*.h')
+
+# Everything CI checks for this configuration, in CI's order. Run before every commit.
+.PHONY: check
+check: check-format lint
+	$(Q)$(MAKE) --no-print-directory test
 
 .PHONY: format check-format lint
 format:

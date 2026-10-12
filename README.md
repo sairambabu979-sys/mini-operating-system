@@ -47,7 +47,8 @@ and for UEFI `ovmf` and `mtools`. On Ubuntu 24.04:
 make            # bootloader, kernel, user programs, disk images  -> build/debug/
 make run        # boot in QEMU, console on stdio (Ctrl-C to quit)
 make run-uefi   # the same kernel through OVMF and the UEFI loader
-make test       # everything below, as CI runs it
+make test       # every test suite below
+make check      # format + lint + test: exactly what CI checks; run before committing
 ```
 
 | Option | Effect |
