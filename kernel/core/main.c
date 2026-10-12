@@ -16,6 +16,7 @@
 #include <drivers/serial.h>
 #include <lib/cmdline.h>
 #include <lib/string.h>
+#include <mm/pmm.h>
 #include <version.h>
 
 __noreturn void kmain(u64 boot_info_phys);
@@ -130,6 +131,8 @@ __noreturn void kmain(u64 boot_info_phys)
     idt_init();
     nmi_enable();
     run_selftest(boot_info->cmdline);
+
+    pmm_init(boot_info);
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
     kprintf("cmdline: \"%s\"\n", boot_info->cmdline);

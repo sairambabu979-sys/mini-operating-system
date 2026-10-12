@@ -37,7 +37,7 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 | M0 Scaffolding: build, CI, host tests | ✅ |
 | M1 Bootloader: MBR → long mode → ELF load | ✅ |
 | M2 Kernel foundation: GDT/TSS/IDT, exceptions, panic, UBSan | ✅ |
-| M3 Physical memory: buddy allocator | planned |
+| M3 Physical memory: E820 sanitizer, buddy allocator | ✅ |
 | M4 Virtual memory: own page tables, W^X, kmalloc | planned |
 | M5 Interrupts and time: PIC, PIT | planned |
 | M6 Scheduler: preemptive kernel threads | planned |
@@ -56,4 +56,5 @@ make test       # host unit tests + binary checks + in-kernel tests under QEMU
 
 - [`docs/PLAN.md`](docs/PLAN.md): architecture, decisions, milestones, risks
 - [`docs/design/boot.md`](docs/design/boot.md): boot sequence, memory layout, debugging
+- [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, PMM
 - [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers

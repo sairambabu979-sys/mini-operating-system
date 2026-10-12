@@ -228,7 +228,8 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 # Host unit tests: pure kernel modules compiled for Linux under ASan/UBSan.
 # --------------------------------------------------------------------------
 
-HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c
+HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
+	kernel/mm/memmap.c kernel/mm/buddy.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 
