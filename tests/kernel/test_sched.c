@@ -3,6 +3,7 @@
  * Scheduler tests. They run in the boot task ("kmain") with preemption
  * live, so each one also stresses the code it is not directly about.
  */
+#include <arch/irqflags.h>
 #include <arch/lapic.h>
 #include <arch/setjmp.h>
 #include <arch/trap.h>
@@ -70,37 +71,61 @@ static int spinner(void *opaque)
     return 0;
 }
 
+static bool all_zombies(struct task *const *ts, int n)
+{
+    bool all = true;
+    irqflags_t flags = arch_irq_save();
+
+    for (int i = 0; i < n; i++)
+        all &= ts[i]->state == TASK_ZOMBIE;
+    arch_irq_restore(flags);
+    return all;
+}
+
 /*
  * Busy threads that never yield must all make progress, and the boot task
  * must get the CPU back from them to stop the test at all: both are only
  * possible with working preemption.
+ *
+ * Fairness is judged in ticks of CPU time, which is what round robin
+ * divides: every slice is exactly TIME_SLICE_TICK ticks, so no thread can
+ * be more than one slice behind another. Loop counts are no measure of it
+ * under emulation: iterations per tick follow the host, and a +-25% bound
+ * on them failed once on a cold 4 GiB run (host faulting in guest RAM)
+ * while instrumented runs showed the ticks exactly equal.
  */
 KTEST(cpu_bound_threads_are_preempted_fairly)
 {
     enum { N = 4 };
     volatile bool stop = false;
     struct spin_arg args[N];
-    u64 total = 0;
+    struct task *ts[N];
+    u64 deadline = time_ticks() + 2000;
 
     for (int i = 0; i < N; i++) {
         args[i] = (struct spin_arg){.stop = &stop, .count = 0};
-        KEXPECT(kthread_create(spinner, &args[i], "spinner", 0) != NULL);
+        ts[i] = kthread_create(spinner, &args[i], "spinner", 0);
+        KEXPECT(ts[i] != NULL);
+        if (!ts[i])
+            return;
     }
-    sleep_ms(400); /* ~40 slices each */
+    sleep_ms(400); /* ~10 slices each */
     stop = true;
-    for (int i = 0; i < N; i++)
-        KEXPECT(task_wait(-1, NULL) > 0);
+    while (!all_zombies(ts, N) && time_ticks() < deadline)
+        sleep_ms(1);
+    KEXPECT(all_zombies(ts, N));
 
-    for (int i = 0; i < N; i++)
-        total += args[i].count;
-    u64 mean = total / N;
+    u64 lo = ~0ull, hi = 0;
 
     for (int i = 0; i < N; i++) {
         KEXPECT(args[i].count > 0);
-        /* Round robin with equal slices: every share within 25% of the mean. */
-        KEXPECT(args[i].count * 100 >= mean * 75);
-        KEXPECT(args[i].count * 100 <= mean * 125);
+        lo = MIN(lo, ts[i]->runtime_ticks);
+        hi = MAX(hi, ts[i]->runtime_ticks);
     }
+    KEXPECT(lo >= 5ull * TIME_SLICE_TICK); /* each had several slices of the 400 ms */
+    KEXPECT(hi - lo <= TIME_SLICE_TICK);
+    for (int i = 0; i < N; i++)
+        KEXPECT(task_wait(-1, NULL) > 0);
 }
 
 /*
