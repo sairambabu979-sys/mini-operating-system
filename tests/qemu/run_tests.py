@@ -164,10 +164,12 @@ def main() -> int:
 
     skipped = sum(ok and "# SKIP" in name for ok, _, name in results)
     passed = sum(ok for ok, _, _ in results) - skipped
+    # On a FAIL the problems below say what happened; the summary must not claim success.
     if args.expect_panic:
-        what = "panicked as expected"
+        what = "expected a panic" if problems else "panicked as expected"
     elif args.no_tap:
-        what = f"exited cleanly, {len(args.expect)} expectations met"
+        what = (f"{len(args.expect)} expectations" if problems
+                else f"exited cleanly, {len(args.expect)} expectations met")
     else:
         what = f"{passed}/{plan or 0} passed ({skipped} skipped)"
     config = args.memory + (f", {' '.join(args.qemu_args)}" if args.qemu_args else "")

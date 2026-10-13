@@ -246,6 +246,15 @@ $(BUILD)/boot/%.bin: boot/%.asm | $(ASM_OFFSETS)
 	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS),$(@:.bin=.d),$@,$<)
 	$(Q)$(NASM) $(BOOT_ASFLAGS) $< -o $@
 
+# Stage 2 test builds: A20 off first, then back on by one method only.
+A20_METHODS := bios kbc fast
+
+$(BUILD)/boot/stage2-a20-%.bin: boot/stage2.asm | $(ASM_OFFSETS)
+	@mkdir -p $(@D)
+	$(call msg,NASM,$(@F))
+	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS) -DA20_SELFTEST=$*,$(@:.bin=.d),$@,$<)
+	$(Q)$(NASM) $(BOOT_ASFLAGS) -DA20_SELFTEST=$* $< -o $@
+
 # Same kernel binary in both images; only the command line differs, so the
 # tests exercise exactly what `make run` boots.
 DISK_IMG := $(BUILD)/disk.img
@@ -274,6 +283,13 @@ $(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
 $(eval $(call bios_image,$(BENCH_IMG),bench))
 $(eval $(call bios_image,$(HANG_IMG),selftest=hang))
 $(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
+
+A20_IMGS := $(A20_METHODS:%=$(BUILD)/disk-a20-%.img)
+
+$(BUILD)/disk-a20-%.img: $(STAGE1) $(BUILD)/boot/stage2-a20-%.bin $(KERNEL_STRIPPED) tools/mkimage.py
+	$(call msg,IMAGE,$@)
+	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(BUILD)/boot/stage2-a20-$*.bin \
+	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
 
 # --------------------------------------------------------------------------
 # UEFI loader (boot/efi) and UEFI boot images
@@ -327,7 +343,8 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 
 .PHONY: all
 all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
-	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(KERNEL_ELF)
+	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) \
+	$(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -411,7 +428,7 @@ host-test: $(HOST_TEST_BIN)
 # that gate it off), no reference clock at all (must panic, not hang), and the
 # legacy 8259 + PIT ("noapic").
 qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
-	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG)
+	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
@@ -441,6 +458,11 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) 
 	  --expect 'init: pid [0-9]+, starting 11 programs' \
 	  --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
+	$(Q)for m in $(A20_METHODS); do \
+	  $(PYTHON) tests/qemu/run_tests.py --image $(BUILD)/disk-a20-$$m.img --log-dir $(BUILD)/logs \
+	    --no-tap --expect "A20 test: off, then on by $$m" \
+	    --expect 'init exited with status 0' || exit 1; \
+	done
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
 	  --skips 1 --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
