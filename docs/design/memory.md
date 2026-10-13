@@ -61,15 +61,20 @@ the merge address is caught by the verifier or by ASan.
 
 ## PMM
 
-`pmm_init()` sizes the page array for the highest usable frame and places
-it in the first usable RAM above the kernel image. It then gives the
-allocator every usable frame except three reserved ranges:
+`pmm_init()` sizes the page array for the highest usable frame below
+512 GiB and places it in the first usable RAM above the kernel image. It
+then gives the allocator every usable frame below 512 GiB except three
+reserved ranges:
 
 | Range | Why |
 |-------|-----|
-| `0x0 – 0x100000` | IVT, BIOS data, EBDA, `boot_info`, boot page tables, loader, ROM shadows |
+| `0x0 – 0x100000` | IVT, BIOS data, EBDA, the BIOS loader's `boot_info`, boot page tables, loader, ROM shadows |
 | kernel image | `[kernel_phys_start, kernel_phys_end)` from `boot_info` |
 | page array | the allocator's own metadata |
+
+The kernel works from its own copy of `boot_info`, made at entry, so the
+UEFI loader's `boot_info` page (anywhere below 1 GiB) needs no
+reservation: it is ordinary RAM.
 
 The raw ELF staging area at 16 MiB is *not* reserved: by then the kernel
 has been copied out of it, so it is ordinary free memory.
@@ -84,6 +89,21 @@ the array spans 5 GiB of frames (30 MiB). A sparse-memory model would save
 that, at the cost of a lookup on every frame-to-page conversion. Not worth
 it at this scale.
 
+**Only RAM below 512 GiB.** Every frame the PMM hands out is used through
+the direct map, which is 512 GiB long, so frames above it are not managed
+at all: the page array stops there, and `pmm_init()` warns how much RAM
+it left out (`pmm: <n> MiB of RAM above the 512 GiB direct map left
+unused`). Without the clamp such frames were handed out, and the first
+use through the direct map faulted.
+
+**Owner tags.** The head `struct page` of each block carries a 16-bit
+`owner`, reset to `PMM_OWNER_NONE` (0) on every allocation and free.
+`pmm_set_owner()` tags an allocated block, and `pmm_block_owner()` reads
+the tag back (-1 if the address is not the head of an allocated block).
+kmalloc tags its large blocks `PMM_OWNER_KMALLOC`, so that `kfree()` can
+refuse a live PMM block it did not hand out, such as a page table or a
+user frame. The tag fits in the 24-byte `struct page`.
+
 ## Page tables (VMM)
 
 **Bootstrapping without an allocator.** The page tables are built before
@@ -93,6 +113,12 @@ Pool frames belong to the kernel image, so they are always written through
 the (writable) `.bss` mapping, never through their read-only direct-map
 alias. The first boot of M4 faulted exactly there, which showed the alias
 protection works.
+
+The pool covers the kernel image plus the whole 512 GiB direct map when
+the CPU has 1 GiB pages. Without them the direct map needs one page
+directory per GiB, and the pool covers only about 24 GiB of RAM. Running
+out is a panic that says so (`vmm: early page-table pool exhausted (32
+pages): without 1 GiB pages, about 24 GiB of RAM fit`), not corruption.
 
 **Kernel image.** Each section class gets its own 4 KiB mappings, matching
 the PT_LOAD segments `tools/check_kernel.py` verifies:
@@ -124,14 +150,27 @@ synchronization later.
 [guard][area 0 ...][guard][area 1 ......][guard][area 2] ...
 ```
 
-Virtual addresses come from a bump pointer and are **never reused**:
-- 512 GiB is room for millions of kernel stacks,
-- a dangling pointer into a freed area always faults instead of aliasing
-  a new allocation,
-- an SMP kernel would otherwise need TLB shootdowns on reuse.
+Virtual addresses come from a bump pointer. A freed area's range is
+reused, but only by an allocation of exactly the same number of pages,
+and only once 16 newer freed ranges wait behind it
+(`VMALLOC_QUARANTINE`). Until then a dangling pointer into a freed area
+keeps faulting instead of aliasing a new allocation. Freed ranges wait in
+a FIFO ring of 512 slots (`VMALLOC_REUSE_SLOTS`), and an allocation takes
+the oldest eligible one before it bumps the pointer. When the ring is
+full, the oldest range is dropped and its VA is never used again.
+
+Reuse is what bounds the page tables. `vfree()` never frees a page table,
+because `vmm_translate()` walks kernel tables without a lock. With fresh
+VA for every kernel stack, as in the first version, each task creation
+slowly cost page-table memory for good: about one frame per 100 tasks,
+which any user program that spawns in a loop could drive. Kernel stacks
+are the only regular vmalloc users, and the scheduler checks at build time
+that `TASK_MAX` plus the quarantine fits in the ring, so stack VA stays
+bounded. (On SMP, reuse will also need a TLB shootdown.)
 
 An area needs no metadata: it ends at the next unmapped page. `vfree()`
-of anything but an area's first page panics.
+of anything but an area's first page panics. A failed `vmalloc()` or
+`iomap()` abandons its VA range.
 
 **`iomap()`** maps physical ranges the direct map leaves out (device
 registers, framebuffers, firmware tables in reserved memory) into the same
@@ -148,10 +187,18 @@ Two rules:
 ## kmalloc
 
 Size classes 16 B – 2 KiB use one-page slabs with a 64-byte header. Larger
-requests take whole buddy blocks through the direct map. Slab objects are
-never page-aligned, while large allocations always are, so `kfree()` tells
-them apart with no extra metadata. Empty slabs go back to the PMM, except
-one kept warm per class.
+requests take whole buddy blocks through the direct map, so the largest
+allocation is one block of the highest order: `KMALLOC_MAX`, 4 MiB. Any
+larger size returns NULL. The check comes first, which also keeps the
+arithmetic honest: without it, a size near `SIZE_MAX` plus the debug
+redzone overhead wrapped to a 16-byte object, and the block-order search
+never finished for sizes above 2^63.
+
+Slab objects are never page-aligned, while large allocations always are,
+so `kfree()` tells them apart with no extra metadata. A page-aligned
+pointer must be the head of a live PMM block tagged `PMM_OWNER_KMALLOC`;
+anything else panics before the block is touched. Empty slabs go back to
+the PMM, except one kept warm per class.
 
 Debug builds add three checks:
 - freed objects are filled with `0x6B`, and the poison is verified on reuse
@@ -165,8 +212,29 @@ Debug builds add three checks:
 
 ## Locking
 
-None yet. Nothing runs concurrently until interrupt handlers and threads
-arrive (M5/M6); the allocator locks come in the same change.
+Each allocator has its own spinlock, always taken with
+`spin_lock_irqsave`. An interrupt cannot arrive while one is held, so the
+allocators may be called from IRQ handlers as well as from tasks (not
+from the NMI handler: an NMI can arrive while a lock is held).
+
+| Lock | Where | Protects |
+|------|-------|----------|
+| `kmalloc` (`heap_lock`) | `kmalloc.c` | all slab state; large allocations take only `pmm` |
+| `vmalloc` (`va_lock`) | `vmalloc.c` | the VA bump pointer and the ring of freed ranges; an area, once reserved, belongs to its caller |
+| `kernel page tables`, `user page tables` | `vmm.c`, one per address space | that address space's tables, in `vmm_map()` and `vmm_unmap_page()` |
+| `pmm` (`pmm_lock`) | `pmm.c` | every buddy operation, owner tags included |
+
+The order, outer first, is `kmalloc`, `vmalloc`, page tables, `pmm`. Only
+two nestings occur, both ending in `pmm`: `kmalloc` takes it when a slab
+grows or shrinks, and a page-table lock takes it for a new table.
+`vmalloc` holds its lock only around its own state, and maps pages after
+dropping it. So nothing may call `kmalloc` or `vmalloc` while holding a
+page-table or `pmm` lock. kmalloc's misuse checks and the PMM's bad-free
+check drop their lock before panicking, so a panic caught in a test
+leaves the allocator usable. `vmm_translate()` takes no lock: it reads
+entries with single aligned loads, and kernel-half tables are never
+freed. The full table, with the scheduler, I/O APIC and console locks,
+is in [traps.md](traps.md).
 
 ## Tests
 
@@ -174,9 +242,10 @@ arrive (M5/M6); the allocator locks come in the same change.
 |------|--------|
 | `tests/host/test_memmap.c` | sorting, merging, overlap resolution, page shrinking, unknown types, top-of-address-space wrap, randomized brute-force check |
 | `tests/host/test_buddy.c` | carving, split/merge round trip, alignment and disjointness, exhaustion, bad frees, reserved islands, 20k-step fuzz |
-| `tests/kernel/test_pmm.c` | consistency after init; managed = usable minus known reservations; allocations avoid reserved memory; drain-and-restore through every frame; double free panics |
-| `tests/kernel/test_vmm.c` | each forbidden access attempted and its `#PF` decoded; translate permissions; map/unmap round trip; guard pages; **a real kernel stack overflow** caught as `#DF` on IST1 with CR2 in the guard |
-| `tests/kernel/test_kmalloc.c` | alignment, disjointness, reuse, large allocations, `kcalloc` overflow, stats; double free, use after free and foreign-pointer frees (via `panic_expect()`) |
+| `tests/kernel/test_pmm.c` | consistency after init; managed = usable RAM below the 512 GiB direct map minus known reservations; allocations avoid reserved memory; drain-and-restore through every frame; double free panics |
+| `tests/kernel/test_vmm.c` | each forbidden access attempted and its `#PF` decoded; translate permissions; map/unmap round trip; guard pages, and a freed area that faults; **a real kernel stack overflow** caught as `#DF` on IST1 with CR2 in the guard |
+| `tests/kernel/test_kmalloc.c` | alignment, disjointness, reuse, large allocations, `kcalloc` overflow, stats; sizes above `KMALLOC_MAX` and near `SIZE_MAX` refused; foreign-pointer frees, including a live PMM block kmalloc did not allocate, which stays allocated (via `panic_expect()`); in debug builds only, double free, use after free and heap overflow |
+| `tests/kernel/test_sched.c`, `test_user.c` | after a warm-up, 200 threads and 40 processes created and reaped give back every frame, with no slack (before VA reuse, the tests allowed 8 and 4 frames for vmalloc's page tables); reaping 8 zombies frees at most 5 frames each, a kernel stack and a task struct |
 
 The suite runs with 128 MiB and with 4 GiB of guest RAM. The 4 GiB run puts
 memory above the PCI hole, so the sanitizer, direct map and buddy allocator

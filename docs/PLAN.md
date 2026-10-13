@@ -3,7 +3,7 @@
 > Status: **v1.0 implemented** (M0–M8) · Target: x86_64, single core, QEMU first
 >
 > This is the plan as written before any code, kept as the record of what was
-> intended. §11 lists every place the build differed from it, and why.
+> intended. §11 records where the build is known to differ from it, and why.
 
 This document is the design and execution plan for a small, from-scratch x86_64
 kernel: our own bootloader, 4-level paging, a full interrupt/exception layer, and
@@ -505,9 +505,14 @@ or something the implementation taught us.
 | `boot_info.inc` generated from the header | `asm-offsets.inc`, one generated file | The same mechanism also serves trap-frame, task and per-CPU offsets. |
 | PMM placed metadata in the 1 GiB boot window | metadata behind the direct map | M4 brought the direct map up before the PMM, which lifted the 1 GiB limit. The suite now also runs with 4 GiB. |
 | `init` from the start, 7 syscalls | 8 syscalls (`time_ms` added) | User programs needed a clock for the spinner and sleeper tests. |
-| Tick rate within ±2% of the TSC (KVM only) | PIT divisor verified by counter read-back; ±30% TSC sanity bound | The TSC comparison measured emulator timing (100 ticks took 91.6–102.6 ms); the read-back tests what the kernel actually controls. |
-| Scheduler fairness within ±10% | ±25% | Emulated timer jitter. Still catches any broken preemption, which shows up as 0% or 100%. |
+| Tick rate within ±2% of the TSC (KVM only) | PIT divisor verified exactly by counter read-back; 100 ticks within 50–400 ms of TSC time (8259 path) or 94–400 ms of HPET time (HPET reference). Separately, the TSC rate against the test's own PIT channel 2 window, and the LAPIC timer rate against the TSC, each within 2% plus the measured uncertainty of the endpoints | Counting ticks measured emulator timing (100 ticks took 91.6–102.6 ms, and well over 130 ms on a loaded host); the read-back tests what the kernel actually controls. Clock-against-clock checks need no interrupt to arrive on time, so they can be tight. |
+| Scheduler fairness within ±10% | CPU time in ticks within one slice | Loop counts measured the emulator: ±25% of them failed once on a cold 4 GiB run while the ticks were exactly equal. Ticks are what round robin divides, so the check is now exact. |
 | "SYSRET hazard → #GP in ring 0" test | accepts #GP (hardware) or user #PF (TCG); fixup tested with a bad SS | TCG does not check RIP canonicality in `iretq`; the bad-SS frame exercises the same recovery path on every CPU. |
+| IST stacks, "each with its own guard page" (§5.3) | three adjacent 16 KiB stacks in `.bss`, no guard pages | The goal, a clean `#DF` on a kernel stack overflow, comes from the guard pages under every vmalloc'd task stack (tested). An overflow of one IST stack itself would run into the next. |
+| A reaper thread frees kernel threads; orphans go to init (§5.7) | detached threads are freed by the next task to run (`finish_switch`), others by their parent's `wait()`; orphans go to `kmain`, the boot task, which reaps whatever it is given | No thread needed: the first moment a dead task's stack is provably unused is the switch away from it. `kmain` already loops on `wait`. |
+| Kernel stack and address space freed by the reaper (§5.7) | address space and FPU area freed at exit; only the task struct and kernel stack wait for the parent's `wait()` (or, for a detached thread, the next switch) | A parent that never waits must not pin its children's memory. |
+| `FMASK` masks IF, DF, TF, AC (§5.8) | `FMASK` clears every flag ring 3 can set, NT and AC included | A user-set NT survived `SYSCALL`, reached another task's `iretq` and raised `#GP` there (see below). |
+| A user-mode fault kills the process (§5.3) | except NMI (counted, the process continues) and `#MC` (panics) | Neither is caused by the running process. |
 
 **Planned but not built**
 
@@ -517,6 +522,12 @@ or something the implementation taught us.
 | kmalloc redzones | Built after v1.0: debug builds put >= 8 guard bytes and a hidden size after every small object; `kfree()` reports overflows with the offending offset. |
 | gdb helpers (`ptwalk`, `tasks`) | Built after v1.0 as `minios-tasks` and `minios-ptwalk` (`tools/gdb/minios.py`), tested against a live kernel by `make gdb-test`. |
 | ADR files in `docs/adr/` | Not written. Rationale lives in §2 and the design docs. |
+| VGA text as a mirror of serial (§1, §5.2) | Not in v1.0. Built after v1.0 as the screen console (below), which also draws on UEFI framebuffers. |
+| klog tick timestamps (§5.2) | Not built: messages carry a level tag only. |
+| A page-table walk in `#PF` panics (§5.3) | Not built. The panic decodes CR2 and the error bits; `minios-ptwalk` (gdb) walks the tables of a live kernel. |
+| `might_sleep()` (§5.6) | Not built. `schedule()` panics when called while atomic or from an IRQ handler instead. |
+| A kernel image larger than 1 MiB to test INT 13h chunking (§9) | Not done. The stripped kernel is about 520 KiB in debug and 330 KiB in release, and nothing pads it. Loads do span many 32 KiB chunks. |
+| A KTEST that spawns and reaps 10k threads (§9) | Scaled down: 200 threads after a 200-thread warm-up round, and 40 processes, each run required to give back every frame. |
 | `-mno-red-zone` checked in CI | Done differently: the Makefile refuses to build without `-mno-red-zone`, `-mgeneral-regs-only` and `-mcmodel=kernel`, and `check_kernel.py` rejects vector registers in the binary. |
 
 **Built after v1.0** (beyond the original scope)
@@ -524,8 +535,8 @@ or something the implementation taught us.
 | Item | Notes |
 |------|-------|
 | UEFI loader | Promoted from stretch goal 6. Same `boot_info` hand-off as the BIOS path (version 2 adds `loader`), so the whole suite runs under both firmwares in `make test`. |
-| Screen console | Not in the plan, which assumed serial everywhere. Real machines rarely have a serial port, so a first hardware boot would show nothing. UEFI GOP framebuffer (write-combining through the PAT) or BIOS VGA text, both on a pure, host-fuzzed text grid. Drawing never happens with interrupts off once they run. See [design/console.md](design/console.md). |
-| LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. See [design/interrupts.md](design/interrupts.md). |
+| Screen console | The plan had only a VGA text mirror of serial, and v1.0 shipped without it. Real machines rarely have a serial port, so a first hardware boot would show nothing. UEFI GOP framebuffer (write-combining through the PAT) or BIOS VGA text, both on a pure, host-fuzzed text grid. Drawing never happens with interrupts off once they run. See [design/console.md](design/console.md). |
+| LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. Since hardened for real hardware: an x2APIC hand-off is kept, every calibration wait is bounded, a dead HPET falls back to the PIT, and no working clock is a clear panic (tested with `pit=off` and `pit=off,hpet=off`). The `x2apic` option switches to x2APIC mode, and `make test-x2apic` runs the whole suite that way under QEMU 9 (CI builds 9.2.0; Ubuntu 24.04's 8.2 cannot emulate x2APIC under TCG). See [design/interrupts.md](design/interrupts.md). |
 | Runner self-tests | `check_runner.py` boots kernels that hang and triple-fault, and requires `run_tests.py` to reject them. |
 
 **Learned the hard way** (each one is now covered by a test or a check)
@@ -561,3 +572,55 @@ or something the implementation taught us.
   in 12. Both asserted emulator timing, not kernel behavior. Register
   read-back is now the exact check, and rate checks only catch factor
   errors.
+- The UEFI loader keeps running across its own CR3 switch, and its tables
+  identity-mapped only 0-4 GiB, so it refused to run from anywhere higher.
+  OVMF loads it at 5 GiB on a machine with 8 GiB of RAM. The loader now
+  identity-maps its own image and stack wherever they are, and `make test`
+  boots the UEFI demo with 8 GiB.
+- The two calibration rate tests (below) failed 4 of 16 runs under 8-way
+  parallel load. The tests were wrong, not the kernel: one bound of the PIT
+  edge was read on the wrong side of a poll, and the LAPIC reads were not
+  bracketed. Both are now bracketed, and the tolerance includes the
+  measured uncertainty.
+- The UEFI loader claimed physical page `0x1000` for `boot_info`, and the
+  kernel accepted it nowhere else. Low pages are what UEFI firmware tends
+  to keep, so the loader now takes any free page below 1 GiB and the
+  kernel copies `boot_info` at entry.
+- The scheduler fairness test (from M6) compared loop counts, and failed
+  once on a cold 4 GiB release run: under emulation, iterations per tick
+  follow the host. It now compares CPU time in ticks, which round robin
+  divides exactly (instrumented runs: 110 ticks for each of four threads).
+
+**Found by an adversarial audit** of the code after the APIC work. Each fix
+has a test:
+
+- A ring-3 program could set RFLAGS.NT, which `FMASK` did not clear. The
+  kernel does not save RFLAGS across context switches, so the flag reached
+  another task's `iretq`, which raised `#GP`: other processes died, or the
+  kernel panicked. `FMASK` now clears every flag ring 3 can set (`flagbomb`).
+- AC set in ring 3, or by a user copy an interrupt landed in, stayed set in
+  the interrupt handler and in any task it switched to, with SMAP off.
+  `trap_dispatch()` now runs `clac` when the CPU has SMAP.
+- An interrupt could wake the very task it interrupted, between
+  `sched_prepare_wait()` and the condition check, and queued it although it
+  was running. Had it then exited, its zombie would have been scheduled.
+  `wake_locked()` no longer queues the running task.
+- The NMI handler printed, so an NMI landing inside the console lock could
+  deadlock. It now only counts, and the next maskable interrupt reports.
+- Two tests could not fail. The loader IF/DF check read RFLAGS after
+  `_start`'s own `cli; cld`. The churn tests allowed a few frames of slack,
+  which hid that vmalloc never reused VA and so leaked page tables, about
+  one frame per 100 tasks. `_start` now saves RFLAGS first, vmalloc reuses
+  freed ranges, and the churn tests require every frame back.
+- An injected 2x calibration error passed every other test. Two tests now
+  measure the TSC against their own PIT channel 2 window, and the LAPIC
+  timer against the TSC, within 2% plus the measured endpoint uncertainty.
+- SeaBIOS hands over with A20 already on, so none of stage 2's three A20
+  methods ever ran under test, and deleting the call passed CI. Three test
+  builds of stage 2 now turn A20 off, check that addresses wrap, and let
+  only one method turn it back on; `make test` boots each.
+- OVMF leaves values in the XMM registers, and the FPU template every
+  process starts from was a snapshot of them. BIOS boots also ran with
+  `CR0.NE` clear, so x87 errors never raised `#MF`.
+- `sleep_ms(1)` could return 130 µs after it was called. Sleeps now add a
+  tick, so the requested time is a minimum.

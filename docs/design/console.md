@@ -120,7 +120,7 @@ A VT100 subset, enough for a log:
 |-------|------|
 | `tests/host/test_textgrid.c` | Hand-checked cases (wrap, pending wrap, tabs, backspace, scroll), draw counts proving the diff, and 20,000 random streams against an **independent reference model**, rendered at random moments. The display built from the draw calls must equal the model's screen. |
 | `tests/host/test_fbrender.c` | Exact pixels of plain and scaled glyphs; row padding never written; clipping at every edge in exactly-sized buffers under ASan, including the exact pixels of the visible part of a clipped glyph. |
-| `tests/kernel/test_console.c` | The log ring. The screen matches the loader. Printed text is in the grid **and in video memory**: VGA cells, or every framebuffer pixel of the first two glyphs read back. Scrolling. Output printed with interrupts off is logged but not drawn until they are back on, and no render ever ran with them off. The PAT holds WC at entry 1, and a `VM_WC` mapping uses it. |
+| `tests/kernel/test_console.c` | The log ring. The screen matches the loader. Printed text is drawn by the time `kprintf` returns, with no drain: it is in the grid, in what the grid last rendered (`shown`), **and in video memory**: VGA cells, or every framebuffer pixel of the first two glyphs read back. Scrolling, with the last line rendered. Output printed with interrupts off is logged but not drawn until they are back on, and no render ever ran with them off. The PAT holds WC at entry 1, and a `VM_WC` mapping uses it. |
 
 Each layer was mutation-checked by planting bugs, and every one was
 caught:
@@ -144,6 +144,14 @@ now checks the scroll count too.
 
 ## Limits
 
+- **COM1 is polled with interrupts off.** Bytes go to the UART under the
+  console lock, waiting for the transmitter before each one, so a message
+  keeps interrupts off for its whole transmission. On a real UART at
+  115200 baud (8N1) that is about 87 µs per byte, and a `\n` is sent as
+  two bytes. One 256-byte chunk of a `write()` call takes about 22 ms (up
+  to 44 ms if it is all newlines). Of the ticks that fall due meanwhile,
+  one stays pending and the rest are lost to the clock.
+  Draining COM1 from a buffer, as the screen is fed, would fix it.
 - **Panics before the memory manager is up** (GDT/IDT setup, the CPU
   checks, `mm_init` itself) reach COM1 only. The screen is mapped through
   `iomap()`. An early console drawn through the loader's identity map

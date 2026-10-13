@@ -24,7 +24,23 @@ A task never frees its own kernel stack, since it is running on it:
 - **Detached** tasks (`KTHREAD_DETACHED`) are freed by whichever task runs
   next (see below).
 
+A process's address space and FPU area go back at exit, not at reaping.
+`task_exit()` first calls `sched_arch_task_exit()`, which detaches both,
+moves the task onto the kernel's page tables (interrupts off for that
+step, so a preemption can only switch it back in on the kernel's tables),
+and then frees both. A zombie holds only its task struct and its 16 KiB
+kernel stack, so a parent that never waits pins little.
+
 Orphans are re-parented to `kmain`.
+
+**At most `TASK_MAX` (256) tasks.** The count (`sched_stats.allocated`)
+runs from allocation to the final free, so it includes zombies, tasks
+being built or freed, and the boot and idle tasks. Creation beyond it
+fails: `kthread_create()` returns NULL and `spawn` returns `-EAGAIN`. A
+spawn loop in user mode therefore cannot take every frame for kernel
+stacks and address spaces. A build-time check keeps `TASK_MAX` plus
+vmalloc's quarantine within its reuse ring, so kernel stacks recycle
+freed VA instead of growing the page tables (see [memory.md](memory.md)).
 
 ## The context switch
 
@@ -88,6 +104,15 @@ sched_finish_wait(wq);       /* leave wq, state = RUNNING */
 A waker that runs after `prepare_wait` finds the task on the queue and
 makes it runnable, so the wakeup cannot fall in the gap.
 
+**A wakeup can find its target still running.** An interrupt that arrives
+between `prepare_wait` and `schedule()` may wake the very task it
+interrupted. That task is still on the CPU, so `wake_locked()` only makes
+it RUNNING again and does not queue it. Queueing it would leave a stale
+run-queue entry once it carried on, and if it then exited, the zombie
+would be scheduled (or a freed task left queued). If the task still calls
+`schedule()`, a RUNNING task there is simply a yield. `task_exit()` checks
+the rule: an exiting task found on the run queue is a `BUG_ON`.
+
 **The subtle case is preemption.** If the timer preempts a task between
 `prepare_wait` and `schedule()`, the task is BLOCKED. A naive scheduler
 would leave it off the run queue, and if the wakeup had already happened
@@ -100,6 +125,13 @@ would leave it off the run queue, and if the wakeup had already happened
 `sleep_ms()` loops on its deadline for the same reason: a preemption can
 make `schedule()` return early, but never the sleep. The sleep list is
 sorted by deadline, so the tick only ever inspects its head.
+
+**Sleeps are a minimum.** `sleep_ms(ms)` waits for `ms` rounded up to whole
+ticks, plus one. The current tick is already partly over when the sleep
+starts, so `n` tick deliveries can come just over `n - 1` tick periods
+later: without the extra tick, `sleep_ms(1)` returned as little as 130 µs
+after it was called. (`sleep_ticks(n)` itself counts tick deliveries and
+adds nothing.)
 
 ## Sleeping mutex
 
@@ -115,13 +147,14 @@ context all panic.
 | Test | What it proves |
 |------|----------------|
 | exit code through `task_wait`; `-ECHILD` | lifecycle and reaping |
-| four CPU-bound threads that never yield, each within ±25% of the mean | preemption works, and round robin is fair |
-| `sleep_ms(30)` lasts ≥ 30 ticks; sleepers wake in deadline order | sleep list |
+| four CPU-bound threads that never yield all make progress, and their CPU time in ticks is within one slice of each other | preemption works, and round robin is fair (loop counts are no measure under emulation: they follow the host) |
+| `sleep_ms(30)` lasts ≥ 30 ticks (and, loosely, < 80); `sleep_ms(1)`, started at 20 points within a tick, always spans ≥ 2 tick deliveries; sleepers wake in deadline order | sleep list, sleep rounding |
+| a waiter whose wait condition sends a self-IPI, so the interrupt handler wakes it while it is still running, 4 times; the waiter checks it is not queued, then exits | the `wake_locked()` rule (needs a local APIC) |
 | producer/consumer through a 4-slot buffer, 3000 items | no lost wakeups (a lost one hangs the test, which the runner fails on timeout) |
 | 4 threads doing read-*yield*-write on a counter under a mutex: exactly 1200 | mutual exclusion under forced interleaving |
 | mutex misuse; `schedule()` while atomic | misuse is caught, not hung |
 | orphan adopted and reaped by `kmain` | re-parenting |
-| 400 threads created and reaped; detached threads | all memory is returned |
+| 200 threads created and reaped, after a warm-up round of 200; detached threads | all memory is returned: every frame and heap object; a detached thread frees itself |
 
 The timing-sensitive tests were run 18 times with 6 QEMU instances
 competing for 4 host cores, with no failures. Two harness bugs turned up
@@ -129,7 +162,15 @@ along the way:
 - concurrent runs contended for the disk image's write lock (fixed with
   `-snapshot`),
 - the original TSC-vs-PIT test was asserting emulator timing fidelity;
-  it now checks the PIT programming exactly.
+  it now checks the PIT programming exactly. Rate checks for the TSC and
+  the LAPIC timer were added later, against the test's own PIT window
+  and with a measured error bound (see [interrupts.md](interrupts.md)).
+
+`tests/kernel/test_user.c` covers the rest of the lifecycle: zombies that
+hold no user memory (reaping 8 of them frees at most a kernel stack and a
+task struct each), and creation stopping at exactly `TASK_MAX`, where
+`kthread_create()` returns NULL and `spawn` returns `-EAGAIN`, then
+working again once tasks are reaped.
 
 Two use-after-frees in the first draft of these tests were caught by the
 kmalloc poison: they read `t->pid` after `task_wait()` had freed `t`.
