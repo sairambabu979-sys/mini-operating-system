@@ -7,7 +7,9 @@
 #                        QEMU_DISPLAY=gtk to see the screen console too)
 #   make debug           same, halted at reset waiting for gdb on :1234
 #   make test            host unit tests, binary checks, in-kernel tests under QEMU
-#   make check           check-format + lint + test: what CI runs (gate commits on it)
+#   make check           check-format + lint + test for one CONFIG (gate commits on it);
+#                        CI runs it for debug and release, plus make test-x2apic
+#   make test-x2apic     the suite in x2APIC mode; needs QEMU >= 9.0 (QEMU=/path/to/binary)
 #   make lint            clang-tidy over kernel sources
 #   make format          reformat all C sources in place
 #   make check-format    fail if any C source is not clang-formatted

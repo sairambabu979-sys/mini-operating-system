@@ -116,7 +116,7 @@ KTEST(kmalloc_refuses_sizes_beyond_its_largest_block)
     KEXPECT(kmalloc(KMALLOC_MAX + 1) == NULL);
     KEXPECT(kmalloc(~(usize)0) == NULL); /* would wrap to a 16-byte object */
     KEXPECT(kmalloc(~(usize)0 - 4) == NULL);
-    KEXPECT(kmalloc((usize)1 << 63) == NULL); /* order_for() would never end */
+    KEXPECT(kmalloc((usize)1 << 63) == NULL); /* order 51; one more and order_for() never ends */
     KEXPECT(kzalloc(~(usize)0) == NULL);
     KEXPECT(kcalloc(1, ~(usize)0) == NULL);
 

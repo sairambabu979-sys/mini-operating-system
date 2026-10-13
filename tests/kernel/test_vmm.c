@@ -203,7 +203,7 @@ KTEST(vmalloc_areas_have_guard_pages)
     KEXPECT(e.hit);
     KEXPECT_EQ(e.cr2, (uptr)p - 8);
     vfree(p);
-    KEXPECT(try_read((uptr)p).hit); /* freed VA is never reused: always faults */
+    KEXPECT(try_read((uptr)p).hit); /* freed VA is quarantined, not reused at once: it faults */
 }
 
 KTEST(vfree_rejects_foreign_pointers)

@@ -7,7 +7,7 @@
  *   - #BP: report and continue (a breakpoint is not an error)
  *   - NMI: report and continue
  *   - anything else in kernel mode: panic with a full decode
- *   - user mode: arrives with processes (M7); until then, panic
+ *   - user mode: kill the process (process_kill_on_fault); #MC panics
  */
 #define pr_fmt(fmt) "traps: " fmt
 

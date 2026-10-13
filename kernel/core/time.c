@@ -232,6 +232,7 @@ void time_init(void)
     bool apic = irq_mode() == IRQ_MODE_APIC;
 
     choose_reference();
+    bool hpet_tried = ref_clock == REF_HPET;
     struct calibration c = measure(apic);
 
     if (!c.ok && ref_clock == REF_HPET) {
@@ -243,7 +244,10 @@ void time_init(void)
     if (!c.ok)
         panic("no working reference clock: the %s did not time a %u ms window, so the tick "
               "and the TSC cannot be calibrated",
-              acpi_hpet() ? "HPET and PIT channel 2 both" : "PIT (no HPET)", CALIBRATION_MS);
+              hpet_tried    ? "HPET and PIT channel 2 both"
+              : acpi_hpet() ? "PIT (HPET not used)"
+                            : "PIT (no HPET)",
+              CALIBRATION_MS);
     tsc_freq_khz = c.tsc * 1000000 / c.elapsed_ns;
     if (apic) {
         lapic_freq_hz = c.lapic * 1000000000ull / c.elapsed_ns;
