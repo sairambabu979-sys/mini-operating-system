@@ -9,8 +9,10 @@
  * AEPIC Leak mitigation), and then that transition raises #GP. Linux
  * stopped reverting for this reason.
  *
- * Only the xAPIC path runs in the test suite: QEMU's TCG cannot emulate
- * x2APIC. The register layout is the same apart from three differences,
+ * The "x2apic" command-line option switches to x2APIC mode when the CPU
+ * has it, through xAPIC (the transition the SDM allows), so the suite can
+ * run the MSR path too: firmware on recent Intel machines hands over in
+ * it. The register layout is the same apart from three differences,
  * handled below: the ID is a full 32 bits, the ICR is a single 64-bit MSR,
  * and there is no delivery-status bit to poll.
  */
@@ -22,8 +24,10 @@
 #include <arch/msr.h>
 #include <arch/paging.h>
 #include <arch/trap.h>
+#include <core/boot.h>
 #include <core/klog.h>
 #include <core/panic.h>
+#include <lib/cmdline.h>
 #include <mm/vmalloc.h>
 #include <mm/vmm.h>
 
@@ -139,6 +143,17 @@ void lapic_init(const struct acpi_madt_info *madt)
     u64 msr = rdmsr(MSR_APIC_BASE);
     u64 base = msr & ~0xFFFull & ((1ull << cpu_features()->phys_addr_bits) - 1);
 
+    const char *why = "left on by the firmware";
+
+    if (!(msr & APIC_BASE_X2APIC) && cpu_features()->x2apic &&
+        cmdline_has_flag(boot_info_get()->cmdline, "x2apic")) {
+        /* Disabled -> x2APIC directly would #GP: enable xAPIC first. */
+        msr |= APIC_BASE_ENABLE;
+        wrmsr(MSR_APIC_BASE, msr);
+        msr |= APIC_BASE_X2APIC;
+        wrmsr(MSR_APIC_BASE, msr);
+        why = "switched on by the x2apic option";
+    }
     if (msr & APIC_BASE_X2APIC) {
         x2apic = true; /* stay: leaving may #GP (see the top of this file) */
     } else {
@@ -190,8 +205,8 @@ void lapic_init(const struct acpi_madt_info *madt)
     lapic_write(LAPIC_LVT_ERROR, VEC_APIC_ERROR);
 
     if (x2apic)
-        pr_info("id %u, version %#x, %u LVT entries, x2APIC mode (left on by the firmware)\n",
-                lapic_id(), version & 0xFF, max_lvt + 1);
+        pr_info("id %u, version %#x, %u LVT entries, x2APIC mode (%s)\n", lapic_id(),
+                version & 0xFF, max_lvt + 1, why);
     else
         pr_info("id %u, version %#x, %u LVT entries, at %#llx\n", lapic_id(), version & 0xFF,
                 max_lvt + 1, (unsigned long long)base);

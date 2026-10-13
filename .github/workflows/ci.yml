@@ -53,3 +53,41 @@ jobs:
             build/${{ matrix.config }}/*.elf
             build/${{ matrix.config }}/logs/
           if-no-files-found: ignore
+
+  # The suite in x2APIC mode, the mode recent Intel firmware hands over in.
+  # Ubuntu 24.04's QEMU (8.2) cannot emulate x2APIC under TCG; 9.0 can, so
+  # this job builds 9.2.0 once and caches it.
+  x2apic:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm nasm gcc make python3 \
+            ninja-build meson libglib2.0-dev libpixman-1-dev flex bison
+      - name: Cache QEMU
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-9.2.0-x86_64-softmmu-ubuntu-24.04
+      - name: Build QEMU 9.2.0
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v9.2.0 https://github.com/qemu/qemu "$RUNNER_TEMP/qemu-src"
+          cd "$RUNNER_TEMP/qemu-src"
+          ./configure --prefix="$HOME/qemu" --target-list=x86_64-softmmu --disable-docs \
+            --disable-tools --disable-gtk --disable-sdl --disable-vnc --disable-slirp \
+            --disable-werror --disable-plugins --disable-user
+          ninja -C build install
+      - name: Test in x2APIC mode
+        run: make -j"$(nproc)" test-x2apic QEMU="$HOME/qemu/bin/qemu-system-x86_64"
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: minios-x2apic
+          path: build/debug/logs/
+          if-no-files-found: ignore

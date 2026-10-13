@@ -19,6 +19,7 @@ whose output matches every --expect regex, in order.
 """
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -49,9 +50,13 @@ def ovmf_drives(workdir: Path) -> list[str]:
 TAP_RESULT = re.compile(r"^(not ok|ok) (\d+) - (.+)$")
 
 
+# $QEMU overrides the emulator, e.g. a newer build for the x2APIC run.
+QEMU = os.environ.get("QEMU") or "qemu-system-x86_64"
+
+
 def qemu_command(image: Path, memory: str, extra: list[str]) -> list[str]:
     return [
-        "qemu-system-x86_64",
+        QEMU,
         "-m", memory,
         "-cpu", "max",
         "-no-reboot",

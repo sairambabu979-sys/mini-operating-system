@@ -262,6 +262,7 @@ TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
 TEST_NOAPIC_IMG := $(BUILD)/disk-ktest-noapic.img
+TEST_X2APIC_IMG := $(BUILD)/disk-ktest-x2apic.img
 PANIC_IMG       := $(BUILD)/disk-panic.img
 DEMO_IMG        := $(BUILD)/disk-demo.img
 BENCH_IMG       := $(BUILD)/disk-bench.img
@@ -278,6 +279,7 @@ endef
 
 $(eval $(call bios_image,$(TEST_IMG),ktest))
 $(eval $(call bios_image,$(TEST_NOAPIC_IMG),ktest noapic))
+$(eval $(call bios_image,$(TEST_X2APIC_IMG),ktest x2apic))
 $(eval $(call bios_image,$(PANIC_IMG),selftest=panic))
 $(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
 $(eval $(call bios_image,$(BENCH_IMG),bench))
@@ -443,7 +445,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) 
 	  --log-suffix noclock --expect-panic \
 	  --expect 'no working reference clock: the PIT \(no HPET\) did not time a 50 ms window' \
 	  -- -machine pc,pit=off,hpet=off
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs --skips 8 \
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs --skips 9 \
 	  --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
@@ -474,6 +476,17 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) 
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BENCH_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --expect 'bench: context switch' --expect 'bench: syscall round trip' \
 	  --expect 'user benchmark exit 0'
+
+# The suite in x2APIC mode, the mode recent Intel firmware hands over in.
+# QEMU emulates x2APIC under TCG only from 9.0 (Ubuntu 24.04 ships 8.2),
+# so this run names its emulator: make test-x2apic QEMU=/path/to/qemu-system-x86_64.
+# CI builds QEMU 9.2 for it.
+.PHONY: test-x2apic
+test-x2apic: $(TEST_X2APIC_IMG)
+	$(Q)QEMU=$(QEMU) $(PYTHON) tests/qemu/run_tests.py --image $(TEST_X2APIC_IMG) \
+	  --log-dir $(BUILD)/logs --skips 1 \
+	  --expect 'x2APIC mode \(switched on by the x2apic option\)' \
+	  --expect 'calibrated against the HPET'
 
 # Static checks on the linked kernel (e.g. no SSE instructions slipped in).
 check-binary: $(KERNEL_ELF)
