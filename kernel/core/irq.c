@@ -95,6 +95,8 @@ static const char *apic_unusable_reason(void)
         return "the CPU has no local APIC";
     if (!acpi_madt())
         return "no MADT";
+    if (lapic_boot_id() > 0xFF)
+        return "APIC ID above 255: I/O APIC routing would need interrupt remapping";
     if (!ioapic_init(acpi_madt()))
         return "no usable I/O APIC";
     return NULL;
@@ -238,6 +240,7 @@ static void dispatch_local(struct trap_frame *frame)
     default:
         run_handler(&local_slots[vector - VEC_FIRST_LOCAL], frame, "local vector", vector);
         lapic_eoi();
+        trap_report_nmis(); /* safe here: no lock can be held across an enabled interrupt */
         irq_exit_hook();
         return;
     }
@@ -267,6 +270,7 @@ void irq_dispatch(struct trap_frame *frame)
     }
     run_handler(&slots[line], frame, "IRQ", line);
     chip->eoi(line);
+    trap_report_nmis();
 
     /* Only after EOI: a context switch here may not return for a while. */
     irq_exit_hook();

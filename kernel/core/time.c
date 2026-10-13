@@ -49,7 +49,12 @@ static void tick_interrupt(struct trap_frame *frame, void *ctx)
         tick_hook();
 }
 
+#define REF_TIMEOUT_CYCLES (1ull << 32) /* 1-4 s at any plausible TSC rate */
+#define TSC_MIN_KHZ        100000ull    /* 100 MHz */
+#define TSC_MAX_KHZ        20000000ull  /* 20 GHz */
+
 struct calibration {
+    bool ok; /* the reference completed the window and the rate is plausible */
     u64 elapsed_ns;
     u64 tsc;   /* TSC cycles in that time */
     u64 lapic; /* local APIC timer counts (divider 16), if it was running */
@@ -83,14 +88,29 @@ static struct sample take_sample(bool with_lapic)
     return s;
 }
 
+/* Waits for the HPET to count `target` ticks past start.ref. False if it never does. */
+static bool hpet_window(const struct sample *start, u64 target)
+{
+    u64 mask = hpet_counter_mask();
+
+    while (((hpet_counter() - start->ref) & mask) < target) {
+        if (rdtsc() - start->tsc > REF_TIMEOUT_CYCLES)
+            return false; /* the counter is stopped or crawling */
+        cpu_pause();
+    }
+    return true;
+}
+
 /*
  * Times one CALIBRATION_MS window on the reference clock. Interrupts are
  * off throughout: one arriving between two reads would stretch only one
- * side of the measurement.
+ * side of the measurement. A reference that never completes the window,
+ * or yields an implausible TSC rate, makes the result not ok: an
+ * unbounded wait here would hang the boot with nothing on the screen.
  */
 static struct calibration measure_once(bool with_lapic)
 {
-    struct calibration c;
+    struct calibration c = {0};
     struct sample start, end;
     irqflags_t flags = arch_irq_save();
 
@@ -98,14 +118,13 @@ static struct calibration measure_once(bool with_lapic)
         lapic_timer_start_oneshot(0xFFFFFFFFu);
 
     if (ref_clock == REF_HPET) {
-        u64 mask = hpet_counter_mask();
-        u64 target = CALIBRATION_MS * 1000000000000ull / hpet_period_fs();
-
         start = take_sample(with_lapic);
-        while (((hpet_counter() - start.ref) & mask) < target)
-            cpu_pause();
+        if (!hpet_window(&start, CALIBRATION_MS * 1000000000000ull / hpet_period_fs())) {
+            arch_irq_restore(flags);
+            return c;
+        }
         end = take_sample(with_lapic);
-        c.elapsed_ns = ((end.ref - start.ref) & mask) * hpet_period_fs() / 1000000;
+        c.elapsed_ns = ((end.ref - start.ref) & hpet_counter_mask()) * hpet_period_fs() / 1000000;
     } else {
         /* The count starts during the programming: bracket that instead. */
         u64 a = rdtsc();
@@ -115,11 +134,25 @@ static struct calibration measure_once(bool with_lapic)
         start.width = rdtsc() - a;
         start.tsc = a + start.width / 2;
 
-        /* The output rose between the last two polls: the end is their span. */
+        /*
+         * The output rose between the last two polls: the end is their
+         * span. Mode 0 drives it low as soon as it is programmed, so high
+         * at the first poll means no counting PIT (a missing one reads as
+         * 0xFF) or a stall longer than the window: either way, no result.
+         */
         struct sample prev = take_sample(with_lapic);
 
-        while (!(end = take_sample(with_lapic)).ref)
+        if (prev.ref) {
+            arch_irq_restore(flags);
+            return c;
+        }
+        while (!(end = take_sample(with_lapic)).ref) {
+            if (end.tsc - start.tsc > REF_TIMEOUT_CYCLES) {
+                arch_irq_restore(flags);
+                return c; /* channel 2 never ran out: clock-gated */
+            }
             prev = end;
+        }
         end.width = end.tsc + end.width / 2 - (prev.tsc - prev.width / 2);
         end.tsc = (prev.tsc + end.tsc) / 2;
         c.elapsed_ns = (u64)PIT_CALIBRATION_CNT * 1000000000ull / PIT_INPUT_HZ;
@@ -129,13 +162,18 @@ static struct calibration measure_once(bool with_lapic)
     c.tsc = end.tsc - start.tsc;
     c.lapic = with_lapic ? start.lapic - end.lapic : 0;
     c.skew = start.width + end.width;
+
+    u64 khz = c.elapsed_ns ? c.tsc * 1000000 / c.elapsed_ns : 0;
+
+    c.ok = khz >= TSC_MIN_KHZ && khz <= TSC_MAX_KHZ;
     return c;
 }
 
 /*
  * Up to five windows, keeping the first whose endpoints are pinned to
- * within 0.1% of its length (else the tightest seen). Without this, a
- * single preemption at an endpoint skews the TSC rate for the whole run.
+ * within 0.1% of its length (else the tightest good one seen). Without
+ * this, a single preemption at an endpoint skews the TSC rate for the
+ * whole run. Not ok only if no window succeeded at all.
  */
 static struct calibration measure(bool with_lapic)
 {
@@ -144,13 +182,16 @@ static struct calibration measure(bool with_lapic)
     for (int attempt = 0; attempt < 5; attempt++) {
         struct calibration c = measure_once(with_lapic);
 
-        if (attempt == 0 || c.skew < best.skew)
+        if (!c.ok)
+            continue;
+        if (!best.ok || c.skew < best.skew)
             best = c;
         if (c.skew * 1000 <= c.tsc)
             return c;
     }
-    pr_warn("calibration endpoints uncertain by %llu of %llu TSC cycles\n",
-            (unsigned long long)best.skew, (unsigned long long)best.tsc);
+    if (best.ok)
+        pr_warn("calibration endpoints uncertain by %llu of %llu TSC cycles\n",
+                (unsigned long long)best.skew, (unsigned long long)best.tsc);
     return best;
 }
 
@@ -193,14 +234,23 @@ void time_init(void)
     choose_reference();
     struct calibration c = measure(apic);
 
-    if (c.tsc == 0 || c.elapsed_ns == 0)
-        panic("TSC calibration failed: %llu cycles in %llu ns", (unsigned long long)c.tsc,
-              (unsigned long long)c.elapsed_ns);
+    if (!c.ok && ref_clock == REF_HPET) {
+        pr_warn("the HPET did not time a %u ms window; calibrating against the PIT\n",
+                CALIBRATION_MS);
+        ref_clock = REF_PIT;
+        c = measure(apic);
+    }
+    if (!c.ok)
+        panic("no working reference clock: the %s did not time a %u ms window, so the tick "
+              "and the TSC cannot be calibrated",
+              acpi_hpet() ? "HPET and PIT channel 2 both" : "PIT (no HPET)", CALIBRATION_MS);
     tsc_freq_khz = c.tsc * 1000000 / c.elapsed_ns;
     if (apic) {
         lapic_freq_hz = c.lapic * 1000000000ull / c.elapsed_ns;
         start_lapic_tick();
     } else {
+        if (!pit_present())
+            panic("no PIT: the 8259 path (\"noapic\" or no usable I/O APIC) has no other tick");
         start_pit_tick();
     }
 

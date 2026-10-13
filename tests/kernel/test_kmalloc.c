@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include <arch/paging.h>
 #include <arch/setjmp.h>
 #include <core/ktest.h>
 #include <core/panic.h>
@@ -96,6 +97,33 @@ KTEST(kfree_rejects_non_heap_pointers)
         kfree(&not_heap); // NOLINT(clang-analyzer-unix.Malloc): misuse is the test
     panic_expect_clear();
     KEXPECT(e.hit);
+
+    /* A live PMM block that kmalloc did not hand out: shaped like a large allocation. */
+    u64 frame = pmm_alloc_page();
+
+    KEXPECT(frame != PMM_ALLOC_FAILED);
+    panic_expect(&e, &jb);
+    if (ksetjmp(&jb) == 0)
+        kfree(phys_to_virt(frame)); // NOLINT(clang-analyzer-unix.Malloc): misuse is the test
+    panic_expect_clear();
+    KEXPECT(e.hit);
+    KEXPECT_EQ(pmm_block_order(frame), 0); /* and it was not freed */
+    pmm_free_page(frame);
+}
+
+KTEST(kmalloc_refuses_sizes_beyond_its_largest_block)
+{
+    KEXPECT(kmalloc(KMALLOC_MAX + 1) == NULL);
+    KEXPECT(kmalloc(~(usize)0) == NULL); /* would wrap to a 16-byte object */
+    KEXPECT(kmalloc(~(usize)0 - 4) == NULL);
+    KEXPECT(kmalloc((usize)1 << 63) == NULL); /* order_for() would never end */
+    KEXPECT(kzalloc(~(usize)0) == NULL);
+    KEXPECT(kcalloc(1, ~(usize)0) == NULL);
+
+    void *p = kmalloc(KMALLOC_MAX); /* the limit itself still works */
+
+    KEXPECT(p != NULL);
+    kfree(p);
 }
 
 #ifdef CONFIG_DEBUG

@@ -3,6 +3,7 @@
  * Architecture side of a context switch.
  */
 #include <arch/fpu.h>
+#include <arch/irqflags.h>
 #include <arch/paging.h>
 #include <arch/percpu.h>
 #include <arch/segments.h>
@@ -31,6 +32,27 @@ void sched_arch_switch(struct task *prev, struct task *next)
         fpu_save(prev->fpu_state);
     if (next->fpu_state)
         fpu_restore(next->fpu_state);
+}
+
+void sched_arch_task_exit(struct task *t)
+{
+    struct address_space *as = t->as;
+    void *fpu_state = t->fpu_state;
+    irqflags_t flags = arch_irq_save();
+
+    /*
+     * Detach first, then leave the tables: a preemption from here on
+     * switches this task back in on the kernel's tables, never on `as`.
+     */
+    t->as = NULL;
+    t->fpu_state = NULL;
+    if (as)
+        write_cr3(vmm_kernel_space()->pml4_phys);
+    arch_irq_restore(flags);
+
+    if (as)
+        vmm_destroy_user_space(as);
+    kfree(fpu_state);
 }
 
 void sched_arch_task_free(struct task *t)

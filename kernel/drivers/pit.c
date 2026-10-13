@@ -72,3 +72,9 @@ bool pit_oneshot_done(void)
 {
     return inb(PORT_B) & PORT_B_OUT2;
 }
+
+bool pit_present(void)
+{
+    pit_oneshot_start(0xFFFF); /* 55 ms: far longer than the check */
+    return !pit_oneshot_done();
+}

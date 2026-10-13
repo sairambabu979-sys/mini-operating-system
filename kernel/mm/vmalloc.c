@@ -6,12 +6,17 @@
  *
  *     [guard][area 0 ...][guard][area 1 ......][guard][area 2] ...
  *
- * Virtual addresses come from a bump pointer and are never reused: the
- * region is 512 GiB, enough for millions of kernel stacks, and never
- * reusing a VA means a stale TLB entry or dangling pointer into a freed
- * area always faults, never aliases a new allocation. (On SMP, reuse would
- * also require TLB shootdowns.) The extent of an area needs no metadata:
- * it ends at the next unmapped page, the following area's guard.
+ * Virtual addresses come from a bump pointer. A freed area's range is
+ * reused, but only by an allocation of the same size and only after
+ * QUARANTINE newer frees: a dangling pointer into a freed area keeps
+ * faulting for that long, rather than aliasing a new allocation. Reuse is
+ * what bounds the page tables. vfree() never frees one (vmm_translate()
+ * walks kernel tables without a lock), so with fresh VA for every kernel
+ * stack, each task creation used to cost page-table memory for good: one
+ * frame per ~100 tasks, from any user program that spawns in a loop.
+ * (On SMP, reuse will also need a TLB shootdown.) The extent of an area
+ * needs no metadata: it ends at the next unmapped page, the following
+ * area's guard.
  */
 #include <arch/cpuid.h>
 #include <arch/paging.h>
@@ -22,9 +27,52 @@
 #include <mm/vmalloc.h>
 #include <mm/vmm.h>
 
+#define FREED_MAX  VMALLOC_REUSE_SLOTS
+#define QUARANTINE VMALLOC_QUARANTINE
+
+struct freed_range {
+    uptr base; /* first page after the guard */
+    usize npages;
+};
+
 static uptr next_va = VMALLOC_BASE;
-/* Protects next_va only: once reserved, an area belongs to its caller. */
+static struct freed_range freed[FREED_MAX]; /* FIFO ring, oldest at freed_head */
+static unsigned freed_head, nfreed;
+/* Protects next_va and the ring: once reserved, an area belongs to its caller. */
 static struct spinlock va_lock = SPINLOCK_INIT("vmalloc");
+
+/* The oldest freed range of exactly `npages` past the quarantine, removed; or 0. */
+static uptr reuse_va_locked(usize npages)
+{
+    for (unsigned i = 0; i + QUARANTINE < nfreed; i++) {
+        struct freed_range *r = &freed[(freed_head + i) % FREED_MAX];
+
+        if (r->npages != npages)
+            continue;
+        uptr base = r->base;
+
+        /* Close the gap: shift the older entries up by one. */
+        for (unsigned j = i; j > 0; j--)
+            freed[(freed_head + j) % FREED_MAX] = freed[(freed_head + j - 1) % FREED_MAX];
+        freed_head = (freed_head + 1) % FREED_MAX;
+        nfreed--;
+        return base;
+    }
+    return 0;
+}
+
+static void release_va(uptr base, usize npages)
+{
+    irqflags_t flags = spin_lock_irqsave(&va_lock);
+
+    if (nfreed == FREED_MAX) {
+        freed_head = (freed_head + 1) % FREED_MAX;
+        nfreed--;
+    }
+    freed[(freed_head + nfreed) % FREED_MAX] = (struct freed_range){base, npages};
+    nfreed++;
+    spin_unlock_irqrestore(&va_lock, flags);
+}
 
 static bool page_mapped(uptr va)
 {
@@ -39,12 +87,17 @@ static uptr reserve_va(usize npages)
     usize span = (npages + 1) * PAGE_SIZE_4K; /* + guard */
     irqflags_t flags = spin_lock_irqsave(&va_lock);
 
-    if (npages == 0 || span / PAGE_SIZE_4K != npages + 1 ||
-        span > VMALLOC_BASE + VMALLOC_SIZE - next_va) {
+    if (npages == 0 || span / PAGE_SIZE_4K != npages + 1) {
         spin_unlock_irqrestore(&va_lock, flags);
         return 0;
     }
-    uptr base = next_va + PAGE_SIZE_4K; /* the first page stays unmapped */
+    uptr base = reuse_va_locked(npages);
+
+    if (base || span > VMALLOC_BASE + VMALLOC_SIZE - next_va) {
+        spin_unlock_irqrestore(&va_lock, flags);
+        return base;
+    }
+    base = next_va + PAGE_SIZE_4K; /* the first page stays unmapped */
 
     next_va += span;
     spin_unlock_irqrestore(&va_lock, flags);
@@ -97,6 +150,8 @@ void vfree(void *ptr)
     if (vmm_translate(vmm_kernel_space(), va, &frame, &pte) && (pte & PTE_SW_IOMAP))
         panic("vfree: %p is an iomap() mapping; its frames are not the PMM's", ptr);
 
+    uptr base = va;
+
     while (page_mapped(va)) {
         u64 pa;
 
@@ -104,6 +159,7 @@ void vfree(void *ptr)
         pmm_free_page(pa);
         va += PAGE_SIZE_4K;
     }
+    release_va(base, (va - base) / PAGE_SIZE_4K);
 }
 
 void *iomap(u64 phys, usize size, unsigned flags)

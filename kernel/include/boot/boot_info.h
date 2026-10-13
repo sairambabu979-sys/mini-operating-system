@@ -55,7 +55,7 @@ struct e820_entry {
     u64 base;
     u64 length;
     u32 type;
-    u32 acpi_attrs; /* bit 0 set = entry valid; loader drops invalid ones */
+    u32 acpi_attrs; /* always 1: both loaders ignore the (deprecated) ACPI 3.0 "enabled" bit */
 } __packed;
 
 struct boot_info {

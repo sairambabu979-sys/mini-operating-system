@@ -13,6 +13,14 @@
 #include <compiler.h>
 #include <types.h>
 
+/*
+ * A freed range is reused by an allocation of the same size once
+ * VMALLOC_QUARANTINE newer ones were freed, and up to VMALLOC_REUSE_SLOTS
+ * are kept (beyond that, the oldest range is abandoned). See vmalloc.c.
+ */
+#define VMALLOC_QUARANTINE  16
+#define VMALLOC_REUSE_SLOTS 512
+
 /* Allocates `size` bytes (rounded up to pages), zeroed. NULL on failure. */
 __must_check void *vmalloc(usize size);
 

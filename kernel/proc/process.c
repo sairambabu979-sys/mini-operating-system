@@ -130,10 +130,10 @@ int process_spawn(const char *name)
     if (err)
         return err;
 
-    struct task *t = sched_task_alloc(process_start, NULL, name);
+    struct task *t = sched_task_alloc(process_start, NULL, name, &err);
 
     if (!t)
-        return -ENOMEM;
+        return err;
     t->as = vmm_create_user_space();
     t->fpu_state = fpu_state_alloc();
     if (!t->as || !t->fpu_state) {

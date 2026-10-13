@@ -90,6 +90,9 @@ def main() -> int:
                     help="distinguishes the log of a run with different QEMU arguments")
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run must end in a kernel panic")
+    ap.add_argument("--skips", type=int,
+                    help="exact number of tests that must report # SKIP: a test that starts "
+                         "skipping (say, because hardware discovery broke) fails the run")
     ap.add_argument("--no-tap", action="store_true",
                     help="the run reports no TAP (judge by exit status and --expect only)")
     ap.add_argument("--expect", action="append", default=[],
@@ -153,6 +156,11 @@ def main() -> int:
     failed = [name for ok, _, name in results if not ok]
     if failed:
         problems.append("failed tests: " + ", ".join(failed))
+    if args.skips is not None and not args.expect_panic and not args.no_tap:
+        skipped_names = [name for ok, _, name in results if ok and "# SKIP" in name]
+        if len(skipped_names) != args.skips:
+            problems.append(f"expected {args.skips} skipped tests, got {len(skipped_names)}: "
+                            + "; ".join(skipped_names))
 
     skipped = sum(ok and "# SKIP" in name for ok, _, name in results)
     passed = sum(ok for ok, _, _ in results) - skipped

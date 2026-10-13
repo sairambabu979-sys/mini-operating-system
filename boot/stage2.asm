@@ -278,11 +278,10 @@ detect_memory:
     cmp     eax, SMAP
     jne     err_mmap
     jcxz    .skip                   ; ECX = bytes written
-    cmp     cl, 20
-    jbe     .accept                 ; legacy 20-byte entry: keep pre-set attribute
-    test    byte [es:di + E820_ACPI], 1
-    jz      .skip                   ; ACPI 3.0: bit 0 clear means "ignore me"
-.accept:
+    ; ACPI 3.0's "enabled" attribute (bit 0) was deprecated in ACPI 6.0, and
+    ; some BIOSes leave it clear on every entry: honoring it lost all of RAM
+    ; on those. Like Linux, ignore it (and record every entry as valid).
+    mov     dword [es:di + E820_ACPI], 1
     mov     ecx, [es:di + E820_LENGTH]
     or      ecx, [es:di + E820_LENGTH + 4]
     jz      .skip                   ; zero-length entry

@@ -407,16 +407,27 @@ host-test: $(HOST_TEST_BIN)
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
 # The interrupt paths: APICs calibrated by the HPET (default), APICs calibrated
-# by PIT channel 2 (no HPET table), and the legacy 8259 + PIT ("noapic").
+# by PIT channel 2 (no HPET table), APICs with no PIT at all (as on platforms
+# that gate it off), no reference clock at all (must panic, not hang), and the
+# legacy 8259 + PIT ("noapic").
 qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
 	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
+	  --expect 'calibrated against the HPET'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
+	  --memory 4G --expect 'calibrated against the HPET'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 3 \
+	  --log-suffix nohpet --expect 'calibrated against the PIT' -- -machine pc,hpet=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 4 \
+	  --log-suffix nopit --expect 'calibrated against the HPET' -- -machine pc,pit=off
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs \
-	  --log-suffix nohpet -- -machine pc,hpet=off
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs
+	  --log-suffix noclock --expect-panic \
+	  --expect 'no working reference clock: the PIT \(no HPET\) did not time a 50 ms window' \
+	  -- -machine pc,pit=off,hpet=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs --skips 8 \
+	  --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
 	  --expect 'KERNEL PANIC' \
@@ -430,7 +441,8 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) 
 	  --expect 'init: pid [0-9]+, starting 11 programs' \
 	  --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
+	  --skips 1 --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
 	  --no-tap --expect 'loader: UEFI' --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'

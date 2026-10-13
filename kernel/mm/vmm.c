@@ -20,8 +20,9 @@
 /*
  * Page tables needed before the PMM exists come from this pool. It lives in
  * .bss (zeroed by the loader) inside the kernel image, so the boot window
- * reaches it. 32 pages covers the kernel image plus a direct map of tens of
- * GiB; running out is a clear panic, not corruption.
+ * reaches it. 32 pages cover the kernel image plus the direct map: all 512
+ * GiB of it with 1 GiB pages, but only about 24 GiB of RAM on a CPU without
+ * them (one table per GiB). Running out is a clear panic, not corruption.
  */
 #define EARLY_PT_PAGES 32
 
@@ -63,7 +64,8 @@ static u64 alloc_table(void)
 {
     if (!active) {
         if (early_pt_used == EARLY_PT_PAGES)
-            panic("vmm: early page-table pool exhausted (%u pages)", EARLY_PT_PAGES);
+            panic("vmm: early page-table pool exhausted (%u pages)%s", EARLY_PT_PAGES,
+                  cpu_features()->page_1g ? "" : ": without 1 GiB pages, about 24 GiB of RAM fit");
         return (u64)(uptr)early_pt_pool[early_pt_used++] - KERNEL_VMA;
     }
     u64 phys = pmm_alloc_page();

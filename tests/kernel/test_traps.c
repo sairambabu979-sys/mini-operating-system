@@ -5,6 +5,7 @@
  * fixup (or klongjmp, when resuming in place is impossible).
  */
 #include <arch/cpu.h>
+#include <arch/cpuid.h>
 #include <arch/extable.h>
 #include <arch/irqflags.h>
 #include <arch/segments.h>
@@ -17,6 +18,13 @@
 /* Canonical, but outside the 1 GiB the bootloader maps. */
 #define UNMAPPED_ADDR 0x80000000ull
 #define NONCANONICAL  0x8000000000000000ull
+
+KTEST(machine_checks_are_exceptions)
+{
+    if (!cpu_features()->mce)
+        KTEST_SKIP("no MCE");
+    KEXPECT(read_cr4() & CR4_MCE); /* else a machine check is a silent reset */
+}
 
 KTEST(gdt_and_tss_are_loaded)
 {

@@ -7,8 +7,11 @@
 
 #include <sched/sched.h>
 
-/* Allocates a task with a kernel stack, ready to run fn(arg); not yet admitted. */
-struct task *sched_task_alloc(int (*fn)(void *), void *arg, const char *name);
+/*
+ * Allocates a task with a kernel stack, ready to run fn(arg); not yet
+ * admitted. NULL with *err set (-EAGAIN at TASK_MAX, else -ENOMEM).
+ */
+struct task *sched_task_alloc(int (*fn)(void *), void *arg, const char *name, int *err);
 
 /* Frees a task that was allocated but never admitted. */
 void sched_task_discard(struct task *t);
@@ -18,6 +21,12 @@ void sched_admit(struct task *t, unsigned flags);
 
 /* Per-switch architecture work: kernel stack for ring transitions, CR3, FPU. */
 void sched_arch_switch(struct task *prev, struct task *next);
+
+/*
+ * Frees the exiting task's user memory and FPU area, and moves it onto the
+ * kernel's tables. A zombie keeps only its task struct and kernel stack.
+ */
+void sched_arch_task_exit(struct task *t);
 
 /* Frees what sched_arch_* attached to a task (address space, FPU area). */
 void sched_arch_task_free(struct task *t);

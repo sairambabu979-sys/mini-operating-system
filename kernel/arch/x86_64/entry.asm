@@ -13,13 +13,16 @@ default rel
 
 section .text.entry
 global _start
+global loader_rflags
 extern kmain
 extern __stack_chk_guard
 
 _start:
+    lea     rsp, [boot_stack_top]   ; lea leaves RFLAGS alone
+    pushfq
+    pop     qword [loader_rflags]   ; the hand-off state, before cli/cld hide it (tests)
     cli
     cld
-    lea     rsp, [boot_stack_top]
     xor     ebp, ebp                ; terminates frame-pointer backtraces
 
     ; Seed the stack-protector canary before any protected C function runs.
@@ -38,6 +41,10 @@ _start:
     cli
     hlt
     jmp     .halt
+
+section .data
+align 8
+loader_rflags: dq 0
 
 section .bss
 align 16

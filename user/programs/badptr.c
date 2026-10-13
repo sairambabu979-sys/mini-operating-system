@@ -18,6 +18,8 @@ static void expect(const char *what, long got, long want)
     }
 }
 
+static const int read_only = 1; /* nonzero: .rodata, mapped but not writable */
+
 int main(void)
 {
     char buf[8] = "ok\n";
@@ -40,7 +42,11 @@ int main(void)
 
     expect("wait(kernel status pointer)", sys_wait((int)pid, (int *)0xFFFFFFFF80100000ull),
            -EFAULT);
-    expect("wait(hello) after a rejected wait", sys_wait((int)pid, &status), pid);
+    /* In range but unusable: the child must survive these too. */
+    expect("wait(unmapped status pointer)", sys_wait((int)pid, (int *)0x10000000ull), -EFAULT);
+    expect("wait(read-only status pointer)", sys_wait((int)pid, (int *)(unsigned long)&read_only),
+           -EFAULT);
+    expect("wait(hello) after rejected waits", sys_wait((int)pid, &status), pid);
     expect("hello's exit status", status, 42);
 
     printf("badptr: %d failure(s)\n", failures);

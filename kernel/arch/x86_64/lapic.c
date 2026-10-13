@@ -2,11 +2,17 @@
 /*
  * Local APIC. See <arch/lapic.h>.
  *
- * Only xAPIC (MMIO) mode is driven. A firmware that hands over in x2APIC
- * mode is taken back to xAPIC through the disabled state, the transition
- * the SDM allows (Vol. 3A, 11.12.5). That costs nothing for one CPU whose
- * APIC ID fits in 8 bits, and keeps a single register path, the one the
- * test suite runs. (QEMU's TCG cannot emulate x2APIC mode at all.)
+ * Driven in the mode the firmware left: xAPIC through the MMIO page, or
+ * x2APIC through MSRs (0x800 + offset / 16). An x2APIC hand-off is never
+ * reverted. The SDM allows going back to xAPIC through the disabled
+ * state, but firmware may lock x2APIC on (Intel parts with SGX, after the
+ * AEPIC Leak mitigation), and then that transition raises #GP. Linux
+ * stopped reverting for this reason.
+ *
+ * Only the xAPIC path runs in the test suite: QEMU's TCG cannot emulate
+ * x2APIC. The register layout is the same apart from three differences,
+ * handled below: the ID is a full 32 bits, the ICR is a single 64-bit MSR,
+ * and there is no delivery-status bit to poll.
  */
 #define pr_fmt(fmt) "lapic: " fmt
 
@@ -26,31 +32,63 @@
 #define APIC_BASE_X2APIC (1ull << 10)
 #define APIC_BASE_ENABLE (1ull << 11)
 
+#define MSR_X2APIC_BASE    0x800u
+#define X2APIC_ICR         0x830u
 #define ICR_SELF           (1u << 18)
 #define ICR_ASSERT         (1u << 14)
 #define ICR_SEND_PENDING   (1u << 12)
 #define TIMER_DIVIDE_BY_16 0x3u
 
-static volatile u32 *regs;
+static volatile u32 *regs; /* xAPIC */
+static bool x2apic;
+static bool active;
 
 static void lapic_write(u32 reg, u32 value)
 {
-    regs[reg / 4] = value;
+    if (x2apic)
+        wrmsr(MSR_X2APIC_BASE + reg / 16, value);
+    else
+        regs[reg / 4] = value;
 }
 
 u32 lapic_read(u32 reg)
 {
-    return regs[reg / 4];
+    return x2apic ? (u32)rdmsr(MSR_X2APIC_BASE + reg / 16) : regs[reg / 4];
 }
 
 bool lapic_active(void)
 {
-    return regs != NULL;
+    return active;
+}
+
+bool lapic_x2apic_mode(void)
+{
+    return x2apic;
 }
 
 u32 lapic_id(void)
 {
-    return lapic_read(LAPIC_ID) >> 24;
+    return x2apic ? lapic_read(LAPIC_ID) : lapic_read(LAPIC_ID) >> 24;
+}
+
+u32 lapic_boot_id(void)
+{
+    if (rdmsr(MSR_APIC_BASE) & APIC_BASE_X2APIC)
+        return (u32)rdmsr(MSR_X2APIC_BASE + LAPIC_ID / 16);
+    return cpuid(1, 0).ebx >> 24;
+}
+
+/* An IPI to `dest`; in xAPIC mode, waits until the APIC has sent it. */
+static void send_ipi(u32 dest, u32 low)
+{
+    if (x2apic) {
+        wrmsr(X2APIC_ICR, (u64)dest << 32 | low); /* one write; no busy bit */
+        return;
+    }
+    lapic_write(LAPIC_ICR_HI, dest << 24);
+    lapic_write(LAPIC_ICR_LO, low);
+    while (lapic_read(LAPIC_ICR_LO) & ICR_SEND_PENDING)
+        cpu_pause();
 }
 
 void lapic_eoi(void)
@@ -65,7 +103,7 @@ bool lapic_in_service(u8 vector)
 
 u32 lapic_read_esr(void)
 {
-    lapic_write(LAPIC_ESR, 0); /* a write latches the errors seen so far */
+    lapic_write(LAPIC_ESR, 0); /* a write (of 0: x2APIC #GPs on others) latches the errors */
     u32 esr = lapic_read(LAPIC_ESR);
 
     lapic_write(LAPIC_ESR, 0);
@@ -102,17 +140,17 @@ void lapic_init(const struct acpi_madt_info *madt)
     u64 base = msr & ~0xFFFull & ((1ull << cpu_features()->phys_addr_bits) - 1);
 
     if (msr & APIC_BASE_X2APIC) {
-        pr_info("firmware left x2APIC mode on; returning to xAPIC\n");
-        wrmsr(MSR_APIC_BASE, msr & ~(APIC_BASE_X2APIC | APIC_BASE_ENABLE));
+        x2apic = true; /* stay: leaving may #GP (see the top of this file) */
+    } else {
+        wrmsr(MSR_APIC_BASE, msr | APIC_BASE_ENABLE);
+        if (base != madt->lapic_phys)
+            pr_warn("MADT says %#llx, the APIC base MSR %#llx; using the MSR\n",
+                    (unsigned long long)madt->lapic_phys, (unsigned long long)base);
+        regs = iomap(base, PAGE_SIZE_4K, VM_WRITE | VM_NOCACHE);
+        if (!regs)
+            panic("cannot map the local APIC at %#llx", (unsigned long long)base);
     }
-    wrmsr(MSR_APIC_BASE, base | (msr & APIC_BASE_BSP) | APIC_BASE_ENABLE);
-    if (base != madt->lapic_phys)
-        pr_warn("MADT says %#llx, the APIC base MSR %#llx; using the MSR\n",
-                (unsigned long long)madt->lapic_phys, (unsigned long long)base);
-
-    regs = iomap(base, PAGE_SIZE_4K, VM_WRITE | VM_NOCACHE);
-    if (!regs)
-        panic("cannot map the local APIC at %#llx", (unsigned long long)base);
+    active = true;
 
     u32 version = lapic_read(LAPIC_VERSION);
     u32 max_lvt = (version >> 16) & 0xFF;
@@ -151,8 +189,12 @@ void lapic_init(const struct acpi_madt_info *madt)
     (void)lapic_read_esr(); /* discard errors from before the reset */
     lapic_write(LAPIC_LVT_ERROR, VEC_APIC_ERROR);
 
-    pr_info("id %u, version %#x, %u LVT entries, at %#llx\n", lapic_id(), version & 0xFF,
-            max_lvt + 1, (unsigned long long)base);
+    if (x2apic)
+        pr_info("id %u, version %#x, %u LVT entries, x2APIC mode (left on by the firmware)\n",
+                lapic_id(), version & 0xFF, max_lvt + 1);
+    else
+        pr_info("id %u, version %#x, %u LVT entries, at %#llx\n", lapic_id(), version & 0xFF,
+                max_lvt + 1, (unsigned long long)base);
 }
 
 void lapic_timer_start_oneshot(u32 count)
@@ -179,10 +221,12 @@ void lapic_timer_set_masked(bool masked)
     lapic_write(LAPIC_LVT_TIMER, masked ? lvt | LAPIC_LVT_MASKED : lvt & ~LAPIC_LVT_MASKED);
 }
 
+void lapic_send_self_nmi(void)
+{
+    send_ipi(lapic_id(), ICR_ASSERT | LAPIC_LVT_NMI);
+}
+
 void lapic_send_self_ipi(u8 vector)
 {
-    lapic_write(LAPIC_ICR_HI, 0);
-    lapic_write(LAPIC_ICR_LO, ICR_SELF | ICR_ASSERT | vector);
-    while (lapic_read(LAPIC_ICR_LO) & ICR_SEND_PENDING)
-        cpu_pause();
+    send_ipi(0, ICR_SELF | ICR_ASSERT | vector);
 }

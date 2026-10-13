@@ -14,7 +14,11 @@
 #define MINIOS_MM_KMALLOC_H
 
 #include <compiler.h>
+#include <mm/buddy.h>
 #include <types.h>
+
+/* The largest allocation: one buddy block of the highest order (4 KiB << 10 = 4 MiB). */
+#define KMALLOC_MAX ((usize)4096 << BUDDY_MAX_ORDER)
 
 #define KMALLOC_MAX_SMALL 2048
 #define KMALLOC_POISON    0x6B /* fill byte of freed objects (debug builds) */

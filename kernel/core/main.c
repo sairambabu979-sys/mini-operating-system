@@ -33,7 +33,7 @@
 __noreturn void kmain(u64 boot_info_phys);
 
 static const struct boot_info *boot_info;
-static u64 entry_rflags;
+extern u64 loader_rflags; /* entry.asm: RFLAGS exactly as the loader jumped in */
 
 const struct boot_info *boot_info_get(void)
 {
@@ -42,7 +42,7 @@ const struct boot_info *boot_info_get(void)
 
 u64 boot_entry_rflags(void)
 {
-    return entry_rflags;
+    return loader_rflags;
 }
 
 static const char *e820_type_name(u32 type)
@@ -178,7 +178,6 @@ static __noreturn void run_init(const char *cmdline)
 
 __noreturn void kmain(u64 boot_info_phys)
 {
-    entry_rflags = read_rflags(); /* the loader's hand-off state, for tests */
     serial_init();
     boot_info = validate_boot_info(boot_info_phys);
     apply_cmdline(boot_info->cmdline);

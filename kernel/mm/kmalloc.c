@@ -185,7 +185,12 @@ void *kmalloc(usize size)
 {
     if (!initialized)
         init_classes();
-    if (size == 0)
+    /*
+     * The largest buddy block is the limit. Checking first also keeps the
+     * arithmetic below honest: size + DEBUG_OVERHEAD would wrap near
+     * SIZE_MAX (a 16-byte object), and order_for() would never finish.
+     */
+    if (size == 0 || size > KMALLOC_MAX)
         return NULL;
 
     int idx = class_for(size + DEBUG_OVERHEAD);
@@ -215,6 +220,7 @@ void *kmalloc(usize size)
 
     if (phys == PMM_ALLOC_FAILED)
         return NULL;
+    pmm_set_owner(phys, PMM_OWNER_KMALLOC);
     __atomic_add_fetch(&large_live, 1, __ATOMIC_RELAXED);
     return phys_to_virt(phys);
 }
@@ -304,11 +310,13 @@ void kfree(void *ptr)
         panic("kfree: %p is not a heap pointer", ptr);
 
     if (IS_ALIGNED(va, PAGE_SIZE_4K)) {
-        /* Large allocation: the PMM knows the block's order. */
+        /* Large allocation: the PMM knows the block's order, and who allocated it. */
         int order = pmm_block_order(virt_to_phys_hhdm(ptr));
 
         if (order < 0)
             panic("kfree: %p is not a live allocation", ptr);
+        if (pmm_block_owner(virt_to_phys_hhdm(ptr)) != PMM_OWNER_KMALLOC)
+            panic("kfree: %p is a PMM block kmalloc did not allocate", ptr);
         __atomic_sub_fetch(&large_live, 1, __ATOMIC_RELAXED);
         pmm_free_pages(virt_to_phys_hhdm(ptr), (unsigned)order);
         return;

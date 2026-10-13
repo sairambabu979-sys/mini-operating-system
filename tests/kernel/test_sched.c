@@ -3,7 +3,10 @@
  * Scheduler tests. They run in the boot task ("kmain") with preemption
  * live, so each one also stresses the code it is not directly about.
  */
+#include <arch/lapic.h>
 #include <arch/setjmp.h>
+#include <arch/trap.h>
+#include <core/irq.h>
 #include <core/ktest.h>
 #include <core/panic.h>
 #include <core/preempt.h>
@@ -98,6 +101,88 @@ KTEST(cpu_bound_threads_are_preempted_fairly)
         KEXPECT(args[i].count * 100 >= mean * 75);
         KEXPECT(args[i].count * 100 <= mean * 125);
     }
+}
+
+/*
+ * A sleep of n ms must span n whole tick periods, as a driver waiting out a
+ * hardware settle time relies on. The current tick is already partly over,
+ * so that takes n + 1 tick deliveries; waiting for only n let sleep_ms(1)
+ * return 130 us after it was called, if a tick edge followed at once.
+ *
+ * Counted in ticks, not TSC time: under emulation a tick due just before
+ * the call can be delivered late, just after it, so even a correct sleep
+ * can be short in host time (this test, written first against the TSC,
+ * failed on a loaded host). On hardware, interrupt latency is microseconds.
+ */
+KTEST(short_sleeps_span_whole_tick_periods)
+{
+    for (int i = 0; i < 20; i++) {
+        tsc_delay_us(37 * (u64)i % 1000); /* start at varied points within a tick */
+        u64 t0 = time_ticks();
+
+        sleep_ms(1);
+        KEXPECT(time_ticks() - t0 >= 2);
+    }
+}
+
+/*
+ * A wakeup from interrupt context can find its target still on the CPU:
+ * between sched_prepare_wait() (state BLOCKED) and the condition check.
+ * Here the condition itself raises the interrupt. The waiter must not end
+ * up on the run queue while it runs: when it then exits, a stale entry is
+ * a zombie scheduled again (panic) or a freed task still queued.
+ */
+static struct wait_queue irq_wq = WAIT_QUEUE_INIT(irq_wq);
+static volatile bool irq_woke, ipi_sent;
+
+static void waking_irq(struct trap_frame *frame, void *ctx)
+{
+    (void)frame;
+    (void)ctx;
+    irq_woke = true;
+    wake_up_one(&irq_wq);
+}
+
+/* The wait condition: on first evaluation, interrupt ourselves; the handler wakes us. */
+static bool ipi_then_check(void)
+{
+    if (!ipi_sent) {
+        ipi_sent = true;
+        lapic_send_self_ipi(VEC_APIC_TEST); /* interrupts are on: delivered here */
+    }
+    return irq_woke;
+}
+
+static int irq_woken_waiter(void *arg)
+{
+    (void)arg;
+    wait_event(&irq_wq, ipi_then_check());
+    KEXPECT(!task_current()->on_rq); /* running, so not queued */
+    return 7;
+}
+
+KTEST(irq_wakeup_of_a_running_waiter_does_not_queue_it)
+{
+    if (irq_mode() != IRQ_MODE_APIC)
+        KTEST_SKIP("needs a local APIC self-IPI");
+
+    int status = -1;
+
+    irq_woke = ipi_sent = false;
+    KEXPECT_EQ(irq_register_local(VEC_APIC_TEST, waking_irq, NULL), 0);
+    for (int i = 0; i < 4; i++) { /* the stale entry bites only when it heads the queue */
+        irq_woke = ipi_sent = false;
+        struct task *t = kthread_create(irq_woken_waiter, NULL, "irq-waiter", 0);
+
+        KEXPECT(t != NULL);
+        if (!t)
+            break;
+        int pid = t->pid;
+
+        KEXPECT_EQ(task_wait(pid, &status), pid);
+        KEXPECT_EQ(status, 7);
+    }
+    irq_unregister_local(VEC_APIC_TEST);
 }
 
 KTEST(sleep_lasts_at_least_its_duration)
@@ -307,9 +392,10 @@ static int nop_thread(void *arg)
 }
 
 /*
- * Creating and reaping hundreds of threads must give everything back.
- * A round first warms the slab caches; the slack covers page tables for
- * the vmalloc VA the stacks advance through (VA is never reused).
+ * Creating and reaping hundreds of threads must give everything back,
+ * to the frame. A round first warms the slab caches and fills vmalloc's
+ * reuse ring; after that, kernel stacks recycle VA and need no new page
+ * tables (fresh VA leaked one frame per ~100 tasks).
  */
 KTEST(thread_churn_returns_all_memory)
 {
@@ -335,7 +421,7 @@ KTEST(thread_churn_returns_all_memory)
     pmm_get_stats(&p1);
     kmalloc_get_stats(&k1);
     KEXPECT_EQ(k1.small_live, k0.small_live);
-    KEXPECT(p1.free_frames + 8 >= p0.free_frames);
+    KEXPECT_EQ(p1.free_frames, p0.free_frames);
 }
 
 static volatile int detached_ran;

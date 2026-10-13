@@ -96,6 +96,13 @@ void nmi_enable(void);
 /* Number of #BP traps handled; lets tests observe int3 without a debugger. */
 u64 trap_breakpoint_count(void);
 
+/* NMIs taken, and the report of any not yet logged (called from IRQ context). */
+u64 trap_nmi_count(void);
+void trap_report_nmis(void);
+
+/* Interrupts and exceptions that arrived with RFLAGS.AC set (cleared on entry). */
+u64 trap_ac_entries(void);
+
 /*
  * Test hook: while armed, the next exception with this vector is recorded
  * instead of being fatal, then execution resumes at an exception-table

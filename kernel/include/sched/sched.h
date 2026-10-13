@@ -26,6 +26,12 @@
 #define TASK_NAME_MAX   16
 #define KSTACK_SIZE     (16ul * 1024)
 #define TIME_SLICE_TICK 10
+/*
+ * Live tasks, zombies and the boot and idle tasks included. Creation
+ * beyond it fails (-EAGAIN from spawn), so a spawn loop in user mode
+ * cannot take every frame for kernel stacks and address spaces.
+ */
+#define TASK_MAX 256
 
 enum task_state {
     TASK_RUNNING,  /* on the CPU */
@@ -89,7 +95,7 @@ enum {
     KTHREAD_DETACHED = 1u << 0,
 };
 
-/* Creates a runnable kernel thread running fn(arg). NULL on out-of-memory. */
+/* Creates a runnable kernel thread running fn(arg). NULL on out-of-memory or at TASK_MAX. */
 __must_check struct task *kthread_create(int (*fn)(void *), void *arg, const char *name,
                                          unsigned flags);
 
@@ -134,7 +140,8 @@ void sched_finish_wait(struct wait_queue *wq);
 
 struct sched_stats {
     u64 context_switches;
-    u32 tasks;
+    u32 tasks;     /* in the task tree */
+    u32 allocated; /* counted against TASK_MAX: also those being built or freed */
     u32 runnable;
 };
 

@@ -65,7 +65,7 @@ KTEST(memory_map_is_sane)
         const struct e820_entry *e = &bi->mmap[i];
 
         KEXPECT(e->length != 0);
-        KEXPECT(e->acpi_attrs & 1);             /* loader drops entries marked invalid */
+        KEXPECT(e->acpi_attrs & 1);             /* loaders normalize the deprecated bit */
         KEXPECT(e->base + e->length > e->base); /* no wraparound */
         if (e->type == E820_USABLE && e->base <= bi->kernel_phys_start &&
             e->base + e->length >= bi->kernel_phys_end)
@@ -99,6 +99,7 @@ KTEST(a20_line_is_enabled)
 
 KTEST(loader_handed_over_with_interrupts_disabled)
 {
+    /* Captured as _start's first act, before its own cli/cld could hide a loader bug. */
     KEXPECT_EQ(boot_entry_rflags() & RFLAGS_IF, 0);
-    KEXPECT_EQ(read_rflags() & RFLAGS_DF, 0); /* the ABI requires DF clear */
+    KEXPECT_EQ(boot_entry_rflags() & RFLAGS_DF, 0); /* the ABI requires DF clear */
 }

@@ -73,12 +73,17 @@ KTEST(screen_shows_printed_text)
         KTEST_SKIP("no screen console");
     if (g->row == 0)
         kprintf("\n"); /* make sure the probe does not start on the top row */
+    /*
+     * No console_drain() here: with interrupts on and no other feeder able to
+     * be mid-feed (feeding is not preemptible), kprintf itself must have
+     * drawn the line by the time it returns. Rendered, not just stored.
+     */
     u32 row = print_probe(probe);
 
-    console_drain(); /* drawn even if another context was mid-feed */
-
-    for (u32 i = 0; i < sizeof(probe) - 1; i++)
+    for (u32 i = 0; i < sizeof(probe) - 1; i++) {
         KEXPECT_EQ(textgrid_cell(g, i, row), (u8)probe[i]);
+        KEXPECT_EQ(g->shown[row * g->cols + i], (u8)probe[i]);
+    }
 
     const volatile u16 *vga = screen_vga_text();
 
@@ -122,11 +127,13 @@ KTEST(screen_scrolls_without_losing_lines)
     KEXPECT(g->scrolls >= scrolls + 2);
     KEXPECT_EQ(g->row, g->rows - 1); /* parked on the last row */
 
-    /* The last line printed sits just above the cursor, intact. */
+    /* The last line printed sits just above the cursor, intact and rendered. */
     static const char last[] = "scroll-probe line ";
 
-    for (u32 i = 0; i < sizeof(last) - 1; i++)
+    for (u32 i = 0; i < sizeof(last) - 1; i++) {
         KEXPECT_EQ(textgrid_cell(g, i, g->rows - 2), (u8)last[i]);
+        KEXPECT_EQ(g->shown[(g->rows - 2) * g->cols + i], (u8)last[i]);
+    }
 }
 
 /*

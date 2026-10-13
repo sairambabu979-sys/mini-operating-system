@@ -29,6 +29,7 @@ KTEST(pmm_is_consistent_after_init)
     KEXPECT_EQ(pmm_verify(&why), 0);
 }
 
+/* All of it below the direct-map limit, that is: the PMM must not hand out frames above it. */
 KTEST(pmm_manages_nearly_all_usable_ram)
 {
     struct pmm_stats st;
@@ -37,8 +38,8 @@ KTEST(pmm_manages_nearly_all_usable_ram)
     u64 usable = 0;
 
     for (usize i = 0; i < n; i++) {
-        if (r[i].type == E820_USABLE)
-            usable += r[i].end - r[i].base;
+        if (r[i].type == E820_USABLE && r[i].base < HHDM_SIZE)
+            usable += MIN(r[i].end, HHDM_SIZE) - r[i].base;
     }
     pmm_get_stats(&st);
     u64 managed = st.managed_frames * PAGE_SIZE;
