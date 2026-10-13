@@ -22,6 +22,17 @@ KTEST(boot_info_is_valid)
     KEXPECT(bi->loader == BOOT_LOADER_BIOS || bi->loader == BOOT_LOADER_UEFI);
 }
 
+/*
+ * The kernel keeps its own copy: the UEFI loader's page is ordinary RAM
+ * the PMM hands out, and a test drains every free frame.
+ */
+KTEST(boot_info_is_the_kernels_own_copy)
+{
+    uptr bi = (uptr)boot_info_get();
+
+    KEXPECT(bi >= (uptr)__data_start && bi + sizeof(struct boot_info) <= (uptr)__data_end);
+}
+
 KTEST(kernel_loaded_at_link_address)
 {
     const struct boot_info *bi = boot_info_get();

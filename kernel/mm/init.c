@@ -22,15 +22,10 @@ const struct mem_region *mm_regions(usize *count)
     return regions;
 }
 
-void mm_init(u64 boot_info_phys)
+void mm_init(const struct boot_info *bi)
 {
-    const struct boot_info *bi = phys_to_kimage(boot_info_phys);
-
     nregions = memmap_sanitize(bi->mmap, bi->mmap_count, regions, ARRAY_SIZE(regions));
     vmm_init(regions, nregions, bi);
-
-    /* The boot window is gone; boot_info is reachable only through the direct map now. */
-    bi = phys_to_virt(boot_info_phys);
     pmm_init(regions, nregions, bi);
     vmm_init_late();
 }

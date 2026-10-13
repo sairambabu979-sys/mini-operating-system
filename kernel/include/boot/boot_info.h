@@ -18,7 +18,7 @@
 
 #define BOOT_INFO_MAGIC   0x4F464E49544F4F42ull /* "BOOTINFO" in little-endian */
 #define BOOT_INFO_VERSION 4u                    /* 4: `framebuffer` added */
-#define BOOT_INFO_PHYS    0x1000u               /* fixed: one page in conventional memory */
+#define BOOT_INFO_PHYS    0x1000u               /* where the BIOS loader puts it */
 #define BOOT_MMAP_MAX     128u
 #define BOOT_CMDLINE_MAX  128u
 

@@ -32,6 +32,12 @@
 
 __noreturn void kmain(u64 boot_info_phys);
 
+/*
+ * The kernel's own copy. The loader's page may be ordinary RAM (the UEFI
+ * loader takes any page below 1 GiB the firmware has free), which the
+ * PMM hands out once it runs.
+ */
+static struct boot_info boot_info_copy;
 static const struct boot_info *boot_info;
 extern u64 loader_rflags; /* entry.asm: RFLAGS exactly as the loader jumped in */
 
@@ -85,9 +91,15 @@ static void print_memory_map(const struct boot_info *bi)
  */
 static const struct boot_info *validate_boot_info(u64 phys)
 {
+    /* Read through the loaders' window onto the first GiB (phys_to_kimage). */
+    if (phys == 0 || !IS_ALIGNED(phys, 8) || phys + sizeof(struct boot_info) > BOOT_WINDOW_SIZE) {
+        kprintf("FATAL: boot_info at %#llx is outside the boot window\n", (unsigned long long)phys);
+        qemu_exit(QEMU_EXIT_FAILURE);
+    }
+
     const struct boot_info *bi = phys_to_kimage(phys);
 
-    if (phys != BOOT_INFO_PHYS || bi->magic != BOOT_INFO_MAGIC) {
+    if (bi->magic != BOOT_INFO_MAGIC) {
         kprintf("FATAL: no valid boot_info at %#llx\n", (unsigned long long)phys);
         qemu_exit(QEMU_EXIT_FAILURE);
     }
@@ -95,7 +107,8 @@ static const struct boot_info *validate_boot_info(u64 phys)
         kprintf("FATAL: boot_info version %u, kernel expects %u\n", bi->version, BOOT_INFO_VERSION);
         qemu_exit(QEMU_EXIT_FAILURE);
     }
-    return bi;
+    memcpy(&boot_info_copy, bi, sizeof(boot_info_copy));
+    return &boot_info_copy;
 }
 
 static void apply_cmdline(const char *cmdline)
@@ -189,8 +202,7 @@ __noreturn void kmain(u64 boot_info_phys)
     run_selftest(boot_info->cmdline);
 
     cpu_detect_features();
-    mm_init(boot_info_phys);
-    boot_info = phys_to_virt(boot_info_phys);
+    mm_init(boot_info);
 
     screen_init(boot_info); /* replays everything logged so far */
     acpi_init(boot_info);

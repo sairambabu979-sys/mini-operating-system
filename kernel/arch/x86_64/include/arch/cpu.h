@@ -111,9 +111,11 @@ static inline __noreturn void cpu_halt_forever(void)
 
 /*
  * Physical-to-virtual through the bootloader's kernel window, which maps
- * the first 1 GiB of physical memory at KERNEL_VMA. Valid only until
- * vmm_init() switches page tables; use phys_to_virt() after that.
+ * the first BOOT_WINDOW_SIZE of physical memory at KERNEL_VMA. Valid only
+ * until vmm_init() switches page tables; use phys_to_virt() after that.
  */
+#define BOOT_WINDOW_SIZE (1ull << 30)
+
 static inline void *phys_to_kimage(u64 phys)
 {
     return (void *)(uptr)(phys + KERNEL_VMA);

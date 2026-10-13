@@ -2,10 +2,13 @@
 /*
  * UEFI loader: BOOTX64.EFI.
  *
- * Gives the kernel exactly the hand-off the BIOS loader does (struct
- * boot_info at BOOT_INFO_PHYS, kernel at its link address, identity +
- * higher-half page tables, interrupts off), so one kernel binary, and one
- * test suite, covers both firmwares. See docs/design/boot.md.
+ * Gives the kernel the hand-off the BIOS loader does (struct boot_info
+ * passed in RDI, kernel at its link address, identity + higher-half page
+ * tables, interrupts off), so one kernel binary, and one test suite,
+ * covers both firmwares. See docs/design/boot.md. The BIOS loader puts
+ * boot_info at BOOT_INFO_PHYS; this one takes any free page below 1 GiB
+ * (the kernel reads it through its window onto that GiB, then copies it):
+ * a fixed low page may belong to the firmware.
  *
  *   1. read \minios\kernel.elf (and the optional \minios\cmdline) from the
  *      volume this loader was started from;
@@ -34,6 +37,7 @@
 #define PAGE            4096ull
 #define PAGE_2M         0x200000ull
 #define IDENTITY_LIMIT  (4ull << 30)
+#define BOOT_WINDOW     (1ull << 30) /* the kernel's BOOT_WINDOW_SIZE */
 #define COM1            0x3F8
 #define CR4_LA57        (1ull << 12)
 
@@ -515,12 +519,8 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
     if (cr4 & CR4_LA57)
         fail("firmware runs 5-level paging; this kernel uses 4-level\n");
 
-    /* boot_info lives at a fixed address the kernel checks. */
-    if (!claim_pages_at(BOOT_INFO_PHYS, 1))
-        fail("physical %#x (boot_info) is in use by the firmware\n", BOOT_INFO_PHYS);
-    struct boot_info *bi = (struct boot_info *)(uptr)BOOT_INFO_PHYS;
-
-    memset(bi, 0, sizeof(*bi));
+    /* Below 1 GiB: the kernel reads it through its window onto that GiB. */
+    struct boot_info *bi = alloc_pages_below(1, BOOT_WINDOW);
 
     struct efi_loaded_image *li = loaded_image(image);
     struct efi_file *root = open_boot_volume(li);
@@ -553,9 +553,9 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
         efi_log("no ACPI RSDP in the configuration table\n");
     find_framebuffer(&bi->framebuffer);
 
-    efi_log("kernel %#llx-%#llx, entry %#llx, cmdline \"%s\"\n",
+    efi_log("kernel %#llx-%#llx, entry %#llx, boot_info at %#llx, cmdline \"%s\"\n",
             (unsigned long long)bi->kernel_phys_start, (unsigned long long)bi->kernel_phys_end,
-            (unsigned long long)entry, bi->cmdline);
+            (unsigned long long)entry, (unsigned long long)(uptr)bi, bi->cmdline);
 
     /* The final memory map. Nothing may allocate (or print) between getting it and
      * ExitBootServices, and the map may still change once: retry on a stale key. */
