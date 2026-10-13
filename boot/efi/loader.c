@@ -13,7 +13,9 @@
  *      firmware (AllocateAddress), so firmware-owned memory is never
  *      overwritten: if it is taken, fail with a clear message;
  *   3. copy and zero the kernel's segments while boot services still work;
- *   4. build page tables (0-4 GiB identity, 0-1 GiB at -2 GiB);
+ *   4. build page tables (0-4 GiB identity, 0-1 GiB at -2 GiB, plus this
+ *      loader's own image and stack identity-mapped wherever the firmware
+ *      put them: it keeps running across the CR3 switch);
  *   5. fetch the final memory map, ExitBootServices (retrying if the map
  *      changed), convert the map to E820 form, publish boot_info (magic
  *      last), switch CR3 and jump.
@@ -30,6 +32,7 @@
 #define KERNEL_VMA      0xFFFFFFFF80000000ull
 #define KERNEL_PHYS_MIN 0x100000ull
 #define PAGE            4096ull
+#define PAGE_2M         0x200000ull
 #define IDENTITY_LIMIT  (4ull << 30)
 #define COM1            0x3F8
 #define CR4_LA57        (1ull << 12)
@@ -146,17 +149,20 @@ static void *alloc_pages_below(u64 pages, u64 limit)
     return (void *)(uptr)addr;
 }
 
-static struct efi_file *open_boot_volume(efi_handle image)
+static struct efi_loaded_image *loaded_image(efi_handle image)
 {
     struct efi_loaded_image *li;
-    struct efi_simple_file_system *fs;
-    struct efi_file *root;
 
     if (bs->handle_protocol(image, &loaded_image_guid, (void **)&li) != EFI_SUCCESS)
         fail("no LoadedImage protocol\n");
-    /* Everything after the CR3 switch runs identity-mapped: it must sit below 4 GiB. */
-    if ((uptr)li->image_base + li->image_size > IDENTITY_LIMIT)
-        fail("loader image above 4 GiB\n");
+    return li;
+}
+
+static struct efi_file *open_boot_volume(const struct efi_loaded_image *li)
+{
+    struct efi_simple_file_system *fs;
+    struct efi_file *root;
+
     if (bs->handle_protocol(li->device_handle, &simple_fs_guid, (void **)&fs) != EFI_SUCCESS)
         fail("boot device has no file system\n");
     if (fs->open_volume(fs, &root) != EFI_SUCCESS)
@@ -390,6 +396,27 @@ static void find_framebuffer(struct boot_framebuffer *fb)
         efi_log("no usable framebuffer (%s); serial console only\n", why);
 }
 
+/*
+ * Identity-maps [start, end) with 2 MiB pages, adding tables as needed.
+ * Firmware may load this loader, and put its stack, above 4 GiB (OVMF does
+ * from 8 GiB of RAM): the code after the CR3 switch must still be mapped.
+ */
+static void identity_map(u64 *pml4, u64 start, u64 end)
+{
+    for (u64 va = start & ~(PAGE_2M - 1); va < end; va += PAGE_2M) {
+        u64 *table = pml4;
+
+        for (int shift = 39; shift > 21; shift -= 9) {
+            u64 *e = &table[(va >> shift) & 511];
+
+            if (!(*e & 1))
+                *e = (uptr)alloc_pages_below(1, IDENTITY_LIMIT) | 0x3;
+            table = (u64 *)(uptr)(*e & ~0xFFFull);
+        }
+        table[(va >> 21) & 511] = va | 0x83; /* present, writable, 2 MiB */
+    }
+}
+
 /* 0-4 GiB identity (this loader keeps running after the switch) and 0-1 GiB at
  * KERNEL_VMA, exactly the windows stage 2 provides. 2 MiB pages. */
 static u64 build_page_tables(void)
@@ -485,8 +512,6 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
 
     __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    if (rsp > IDENTITY_LIMIT)
-        fail("firmware stack above 4 GiB\n");
     if (cr4 & CR4_LA57)
         fail("firmware runs 5-level paging; this kernel uses 4-level\n");
 
@@ -497,7 +522,8 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
 
     memset(bi, 0, sizeof(*bi));
 
-    struct efi_file *root = open_boot_volume(image);
+    struct efi_loaded_image *li = loaded_image(image);
+    struct efi_file *root = open_boot_volume(li);
     u64 kernel_size, cmdline_size;
     const u8 *kernel = read_file(root, u"\\minios\\kernel.elf", "kernel.elf", &kernel_size, true);
     const u8 *cmdline = read_file(root, u"\\minios\\cmdline", "cmdline", &cmdline_size, false);
@@ -513,6 +539,14 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
 
     u64 entry = load_kernel(kernel, kernel_size, bi);
     u64 pml4 = build_page_tables();
+    u64 image_base = (uptr)li->image_base;
+
+    efi_log("loader image at %#llx, stack near %#llx\n", (unsigned long long)image_base,
+            (unsigned long long)rsp);
+
+    /* The code and stack in use across the CR3 switch, wherever they are. */
+    identity_map((u64 *)(uptr)pml4, image_base, image_base + li->image_size);
+    identity_map((u64 *)(uptr)pml4, rsp - 2 * PAGE, rsp + PAGE);
 
     bi->acpi_rsdp = find_acpi_rsdp();
     if (!bi->acpi_rsdp)
