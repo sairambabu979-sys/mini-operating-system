@@ -37,6 +37,7 @@
 #define PTE_DIRTY    (1ull << 6)
 #define PTE_HUGE     (1ull << 7) /* PS: 2 MiB in a PD, 1 GiB in a PDPT */
 #define PTE_GLOBAL   (1ull << 8)
+#define PTE_SW_IOMAP (1ull << 9) /* software-available bit: set by iomap() */
 #define PTE_NX       (1ull << 63)
 #define PTE_ADDR     0x000FFFFFFFFFF000ull
 

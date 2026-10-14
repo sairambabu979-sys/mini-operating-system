@@ -19,6 +19,8 @@ void cpu_detect_features(void)
 
     r = cpuid(1, 0);
     features.pge = r.edx & (1u << 13);
+    features.apic = r.edx & (1u << 9);
+    features.x2apic = r.ecx & (1u << 21);
 
     if (max_leaf >= 7) {
         r = cpuid(7, 0);
@@ -44,9 +46,11 @@ void cpu_detect_features(void)
         features.virt_addr_bits = 48;
     }
 
-    pr_info("%s, %u-bit physical / %u-bit virtual; nx=%d pge=%d 1g=%d smep=%d smap=%d\n",
+    pr_info("%s, %u-bit physical / %u-bit virtual; nx=%d pge=%d 1g=%d smep=%d smap=%d apic=%d "
+            "x2apic=%d\n",
             features.vendor, features.phys_addr_bits, features.virt_addr_bits, features.nx,
-            features.pge, features.page_1g, features.smep, features.smap);
+            features.pge, features.page_1g, features.smep, features.smap, features.apic,
+            features.x2apic);
 }
 
 const struct cpu_features *cpu_features(void)

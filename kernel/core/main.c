@@ -2,6 +2,7 @@
 /*
  * Kernel C entry point and boot sequence.
  */
+#include <acpi/acpi.h>
 #include <arch/cpu.h>
 #include <arch/cpuid.h>
 #include <arch/fpu.h>
@@ -191,6 +192,7 @@ __noreturn void kmain(u64 boot_info_phys)
     mm_init(boot_info_phys);
     boot_info = phys_to_virt(boot_info_phys);
 
+    acpi_init(boot_info);
     irq_init();
     time_init();
     percpu_init();

@@ -87,6 +87,8 @@ static u64 leaf_bits(unsigned flags)
         bits |= pte_global;
     if (flags & VM_NOCACHE)
         bits |= PTE_PCD | PTE_PWT;
+    if (flags & VM_IOMAP)
+        bits |= PTE_SW_IOMAP;
     return bits;
 }
 

@@ -40,6 +40,7 @@ void asm_offsets(void)
     DEFINE(BOOT_LOADER_BIOS, BOOT_LOADER_BIOS);
     OFFSET(BI_CMDLINE, boot_info, cmdline);
     OFFSET(BI_MMAP, boot_info, mmap);
+    OFFSET(BI_ACPI_RSDP, boot_info, acpi_rsdp);
     OFFSET(E820_BASE, e820_entry, base);
     OFFSET(E820_LENGTH, e820_entry, length);
     OFFSET(E820_TYPE, e820_entry, type);

@@ -93,6 +93,11 @@ struct efi_boot_services {
     efi_status (*exit_boot_services)(efi_handle image, u64 map_key);
 };
 
+struct efi_configuration_table {
+    struct efi_guid vendor_guid;
+    void *vendor_table;
+};
+
 struct efi_system_table {
     struct efi_table_header hdr;
     char16 *firmware_vendor;
@@ -105,6 +110,8 @@ struct efi_system_table {
     void *std_err;
     void *runtime_services;
     struct efi_boot_services *boot_services;
+    u64 number_of_table_entries;
+    struct efi_configuration_table *configuration_table;
 };
 
 struct efi_loaded_image {
@@ -142,6 +149,8 @@ struct efi_simple_file_system {
 /* Offsets from the specification: a misplaced member would call the wrong service. */
 static_assert(__builtin_offsetof(struct efi_system_table, con_out) == 64, "UEFI 4.3");
 static_assert(__builtin_offsetof(struct efi_system_table, boot_services) == 96, "UEFI 4.3");
+static_assert(__builtin_offsetof(struct efi_system_table, configuration_table) == 112, "UEFI 4.3");
+static_assert(sizeof(struct efi_configuration_table) == 24, "UEFI 4.6");
 static_assert(__builtin_offsetof(struct efi_boot_services, allocate_pages) == 40, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_boot_services, get_memory_map) == 56, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_boot_services, handle_protocol) == 152, "UEFI 4.4");

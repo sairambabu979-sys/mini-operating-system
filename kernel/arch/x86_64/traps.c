@@ -142,11 +142,7 @@ void trap_dispatch(struct trap_frame *f)
         handle_exception(f);
         return;
     }
-    if (f->vector < VEC_FIRST_IRQ + 16) {
-        irq_dispatch(f);
-        return;
-    }
-    pr_warn("unexpected interrupt, vector %llu\n", (unsigned long long)f->vector);
+    irq_dispatch(f);
 }
 
 u64 trap_breakpoint_count(void)
