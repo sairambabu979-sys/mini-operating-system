@@ -490,9 +490,10 @@ M6 carry most of the schedule risk.
       register contract.
 - [x] README: a one-paragraph pitch, a quickstart (3 commands), the architecture diagram,
       the memory map, a test matrix, benchmarks, and known limitations.
-- [x] Tag `v1.0.0`: on `8cf9fa5`, the merge of M0–M8, tagged when v1.1.0 was released.
-      Its boot banner still reads `minios 0.1.0`: the version string was not raised
-      until v1.1.0.
+- [ ] Tag `v1.0.0` on `8cf9fa5`, the merge of M0–M8, with
+      [releases/v1.0.0.md](releases/v1.0.0.md) as its message: left to the repository
+      owner. That commit's boot banner still reads `minios 0.1.0`: the version string
+      was not raised until v1.1.0.
 
 ---
 
