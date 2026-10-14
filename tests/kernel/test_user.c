@@ -81,9 +81,10 @@ KTEST(sysret_to_noncanonical_rip_kills_only_the_process)
     KEXPECT_EQ(syscall_slow_exits, slow + 1);
     /*
      * ...and the process died. Real CPUs reject the non-canonical RIP in
-     * iretq itself (#GP in ring 0, recovered via the exception table);
-     * QEMU's TCG does not check, so the fault arrives one instruction
-     * later as a user-mode #PF. Either way only the process dies.
+     * iretq itself (#GP in ring 0, recovered via the exception table), and
+     * so does QEMU 9.2's TCG (the x2APIC runs take that path). QEMU 8.2's
+     * does not check, so the fault arrives one instruction later as a
+     * user-mode #PF. Either way only the process dies.
      */
     KEXPECT(status == EXIT_STATUS_FAULT(VEC_GENERAL_PROTECTION) ||
             status == EXIT_STATUS_FAULT(VEC_PAGE_FAULT));

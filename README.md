@@ -261,10 +261,11 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
   hand-off itself has not run either. A boot CPU whose APIC ID is above
   255 stays on the 8259: routing to it through the I/O APIC would need
   interrupt remapping. See [interrupts.md](docs/design/interrupts.md).
-- **Only partly tested under TCG.** On real CPUs a non-canonical RIP
-  in `iretq` raises `#GP` in ring 0, the path the exception-table
-  recovery handles. TCG skips that check, so that exact path is exercised
-  with a different bad frame (an invalid SS).
+- **The SYSRET hazard's real path runs only under QEMU 9.** On real CPUs a
+  non-canonical RIP in `iretq` raises `#GP` in ring 0, the path the
+  exception-table recovery handles. QEMU 8.2's TCG skips that check, so
+  `make test` exercises the path with a different bad frame (an invalid
+  SS); QEMU 9.2 checks it, so `make test-x2apic` takes the real one.
 
 ## Documentation
 

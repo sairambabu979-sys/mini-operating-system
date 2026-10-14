@@ -105,9 +105,11 @@ process (`user_bad_iret`). A test drives this deterministically by
 "returning" with an SS no CPU accepts, then checks that a later syscall
 still finds its stack through GS.
 
-QEMU's TCG does not check RIP canonicality in `iretq`. There the hazard
-program instead dies one instruction later, with a user-mode `#PF`. The
-test accepts either outcome and documents why.
+QEMU 8.2's TCG does not check RIP canonicality in `iretq`. There the
+hazard program instead dies one instruction later, with a user-mode
+`#PF`. QEMU 9.2's TCG does check, so the x2APIC runs (`make test-x2apic`)
+take the real `#GP` path, and the recovery works. The test accepts either
+outcome and documents why.
 
 ## System calls
 
