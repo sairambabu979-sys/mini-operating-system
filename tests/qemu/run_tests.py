@@ -15,7 +15,8 @@ A triple fault shows up as QEMU exiting 0 (thanks to -no-reboot) with a
 truncated log, so it can never be mistaken for success.
 
 With --expect-panic the run must instead end in a kernel panic (status 35)
-whose output matches every --expect regex, in order.
+whose output matches every --expect regex, in order. Any run fails if its
+output matches a --reject regex anywhere.
 """
 
 import argparse
@@ -102,6 +103,8 @@ def main() -> int:
                     help="the run reports no TAP (judge by exit status and --expect only)")
     ap.add_argument("--expect", action="append", default=[],
                     help="regex the output must match (in order); repeatable")
+    ap.add_argument("--reject", action="append", default=[],
+                    help="regex the output must not match anywhere; repeatable")
     ap.add_argument("qemu_args", nargs="*", help="extra QEMU arguments (after --)")
     args = ap.parse_args()
 
@@ -152,6 +155,9 @@ def main() -> int:
             problems.append(f"output does not match /{pattern}/ (after offset {pos})")
             break
         pos = m.end()
+    for pattern in args.reject:
+        if m := re.compile(pattern, re.MULTILINE).search(text):
+            problems.append(f"output matches rejected /{pattern}/: {m.group(0)!r}")
 
     if not args.expect_panic and not args.no_tap:
         if plan is None:
@@ -173,8 +179,9 @@ def main() -> int:
     if args.expect_panic:
         what = "expected a panic" if problems else "panicked as expected"
     elif args.no_tap:
-        what = (f"{len(args.expect)} expectations" if problems
-                else f"exited cleanly, {len(args.expect)} expectations met")
+        checks = len(args.expect) + len(args.reject)
+        what = (f"{checks} expectations" if problems
+                else f"exited cleanly, {checks} expectations met")
     else:
         what = f"{passed}/{plan or 0} passed ({skipped} skipped)"
     config = args.memory + (f", {' '.join(args.qemu_args)}" if args.qemu_args else "")
