@@ -289,6 +289,7 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 ## Documentation
 
 - [`docs/PLAN.md`](docs/PLAN.md): architecture, decisions, milestones, risks, and how the build differed from the plan
+- [`docs/releases/`](docs/releases/): release notes, which are also the annotated tag messages
 - [`docs/design/boot.md`](docs/design/boot.md): BIOS and UEFI boot paths, memory layout, debugging
 - [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers, legacy IRQs, locks
 - [`docs/design/interrupts.md`](docs/design/interrupts.md): ACPI discovery, local APIC, I/O APIC, HPET, calibration
