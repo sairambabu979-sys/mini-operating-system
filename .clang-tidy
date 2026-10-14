@@ -1,0 +1,22 @@
+# Static analysis for kernel sources (`make lint`).
+#
+# Disabled checks, and why:
+#   bugprone-reserved-identifier          kernel defines __attribute__ macros
+#   bugprone-easily-swappable-parameters  too noisy for (addr, len) style APIs
+#   clang-analyzer-security.insecureAPI.* targets libc misuse; we have no libc
+#   clang-analyzer-valist.Uninitialized   false positive on helpers that take a
+#                                         `va_list *` (they are analyzed as roots)
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-reserved-identifier,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.*,
+  -clang-analyzer-valist.Uninitialized,
+  misc-redundant-expression,
+  misc-misleading-identifier,
+  readability-misleading-indentation,
+  readability-non-const-parameter
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'kernel/.*'

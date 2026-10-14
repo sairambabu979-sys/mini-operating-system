@@ -1,0 +1,18 @@
+# Kernel C style. Run `make format`; CI enforces it with `make check-format`.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+BreakBeforeBraces: Linux
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AlignConsecutiveMacros: Consecutive
+AlignTrailingComments: true
+IndentCaseLabels: false
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+ReflowComments: false
