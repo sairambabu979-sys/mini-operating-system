@@ -36,6 +36,8 @@ enum irq_mode {
 void irq_init(void);
 enum irq_mode irq_mode(void);
 const char *irq_controller_name(void);
+/* Why irq_init() chose the 8259 ("noapic on the command line", "no MADT", ...); NULL on the APIC path. */
+const char *irq_pic_reason(void);
 
 /* Installs a handler and unmasks the line. -EBUSY if one is installed, -ENODEV if unwired. */
 __must_check int irq_register(unsigned line, irq_handler_t handler, void *ctx);

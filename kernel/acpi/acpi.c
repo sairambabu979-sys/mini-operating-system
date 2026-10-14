@@ -133,7 +133,7 @@ static void load_root(void)
         p += 4;
     }
     *p = '\0';
-    pr_info("%u tables: %s\n", ntables, list);
+    pr_info("%u table%s: %s\n", ntables, ntables == 1 ? "" : "s", list);
 }
 
 const void *acpi_find_table(const char *signature, usize *len)

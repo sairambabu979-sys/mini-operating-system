@@ -263,7 +263,7 @@ void time_init(void)
         start_lapic_tick();
     } else {
         if (!pit_present())
-            panic("no PIT: the 8259 path (\"noapic\" or no usable I/O APIC) has no other tick");
+            panic("no PIT: the 8259 path (%s) has no other tick", irq_pic_reason());
         start_pit_tick();
     }
 

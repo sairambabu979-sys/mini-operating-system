@@ -42,14 +42,25 @@ KTEST(screen_console_matches_the_loader)
     const struct boot_info *bi = boot_info_get();
     char value[16];
 
-    if (cmdline_get(bi->cmdline, "console", value, sizeof(value))) {
+    if (cmdline_get(bi->cmdline, "console", value, sizeof(value)) && strcmp(value, "serial") == 0) {
         KEXPECT(screen_grid() == NULL);
+        KEXPECT(console_screen() == NULL);
         return;
     }
-    /* QEMU's OVMF always reports a GOP framebuffer; SeaBIOS leaves text mode 3. */
+    /*
+     * Under UEFI the screen follows the loader: OVMF has a GOP framebuffer
+     * when QEMU has a display adapter with one, and none with -vga none. A
+     * loader that lost the GOP on the default machine still fails its run:
+     * the three screen tests below would skip, and the skip count is exact.
+     * SeaBIOS always leaves text mode 3.
+     */
     if (bi->loader == BOOT_LOADER_UEFI) {
-        KEXPECT(bi->framebuffer.phys != 0);
-        KEXPECT(screen_framebuffer() != NULL);
+        KEXPECT_EQ(screen_framebuffer() != NULL, bi->framebuffer.phys != 0);
+        if (bi->framebuffer.phys == 0) {
+            KEXPECT(screen_grid() == NULL);
+            KEXPECT(console_screen() == NULL);
+            return;
+        }
     } else {
         KEXPECT(screen_vga_text() != NULL);
     }

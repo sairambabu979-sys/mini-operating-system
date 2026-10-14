@@ -46,12 +46,18 @@ KTEST(acpi_tables_are_found_and_valid)
     KEXPECT(acpi_find_table("NONE", &len) == NULL);
 }
 
+/*
+ * The 8259 exactly when the command line says noapic or the CPU has no
+ * local APIC (QEMU's -cpu max,-apic). The other reasons, no MADT and no
+ * usable I/O APIC, already fail acpi_tables_are_found_and_valid.
+ */
 KTEST(controller_matches_the_command_line)
 {
-    bool noapic = cmdline_has_flag(boot_info_get()->cmdline, "noapic");
+    bool pic = cmdline_has_flag(boot_info_get()->cmdline, "noapic") || !cpu_features()->apic;
 
-    KEXPECT_EQ(irq_mode(), noapic ? IRQ_MODE_PIC : IRQ_MODE_APIC);
-    KEXPECT_EQ(time_tick_source(), noapic ? TICK_PIT : TICK_LAPIC);
+    KEXPECT_EQ(irq_mode(), pic ? IRQ_MODE_PIC : IRQ_MODE_APIC);
+    KEXPECT_EQ(time_tick_source(), pic ? TICK_PIT : TICK_LAPIC);
+    KEXPECT_EQ(irq_pic_reason() != NULL, pic);
 }
 
 KTEST(reference_clock_matches_the_platform)
@@ -122,7 +128,7 @@ static bool wait_ticks(u64 n)
     while (time_ticks() < target) {
         if (rdtsc() > deadline)
             return false;
-        cpu_halt();
+        cpu_pause(); /* not hlt: with no live interrupt source it would never return */
     }
     return true;
 }

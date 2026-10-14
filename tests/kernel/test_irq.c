@@ -22,7 +22,7 @@ static bool wait_ticks(u64 n)
     while (time_ticks() < target) {
         if (rdtsc() > deadline)
             return false;
-        cpu_halt();
+        cpu_pause(); /* not hlt: with no live interrupt source it would never return */
     }
     return true;
 }

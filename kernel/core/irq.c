@@ -102,6 +102,8 @@ static const char *apic_unusable_reason(void)
     return NULL;
 }
 
+static const char *pic_reason; /* why the 8259 was chosen; NULL on the APIC path */
+
 void irq_init(void)
 {
     pic_init(VEC_FIRST_IRQ);
@@ -110,6 +112,7 @@ void irq_init(void)
 
     if (reason) {
         chip = &pic_chip;
+        pic_reason = reason;
         pr_info("using the 8259 PIC (%s)\n", reason);
         return;
     }
@@ -124,6 +127,11 @@ void irq_init(void)
 enum irq_mode irq_mode(void)
 {
     return chip == &apic_chip ? IRQ_MODE_APIC : IRQ_MODE_PIC;
+}
+
+const char *irq_pic_reason(void)
+{
+    return pic_reason;
 }
 
 const char *irq_controller_name(void)
