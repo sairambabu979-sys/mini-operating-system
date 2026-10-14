@@ -19,6 +19,7 @@ whose output matches every --expect regex, in order.
 """
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -49,9 +50,13 @@ def ovmf_drives(workdir: Path) -> list[str]:
 TAP_RESULT = re.compile(r"^(not ok|ok) (\d+) - (.+)$")
 
 
+# $QEMU overrides the emulator, e.g. a newer build for the x2APIC run.
+QEMU = os.environ.get("QEMU") or "qemu-system-x86_64"
+
+
 def qemu_command(image: Path, memory: str, extra: list[str]) -> list[str]:
     return [
-        "qemu-system-x86_64",
+        QEMU,
         "-m", memory,
         "-cpu", "max",
         "-no-reboot",
@@ -90,6 +95,9 @@ def main() -> int:
                     help="distinguishes the log of a run with different QEMU arguments")
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run must end in a kernel panic")
+    ap.add_argument("--skips", type=int,
+                    help="exact number of tests that must report # SKIP: a test that starts "
+                         "skipping (say, because hardware discovery broke) fails the run")
     ap.add_argument("--no-tap", action="store_true",
                     help="the run reports no TAP (judge by exit status and --expect only)")
     ap.add_argument("--expect", action="append", default=[],
@@ -153,13 +161,20 @@ def main() -> int:
     failed = [name for ok, _, name in results if not ok]
     if failed:
         problems.append("failed tests: " + ", ".join(failed))
+    if args.skips is not None and not args.expect_panic and not args.no_tap:
+        skipped_names = [name for ok, _, name in results if ok and "# SKIP" in name]
+        if len(skipped_names) != args.skips:
+            problems.append(f"expected {args.skips} skipped tests, got {len(skipped_names)}: "
+                            + "; ".join(skipped_names))
 
     skipped = sum(ok and "# SKIP" in name for ok, _, name in results)
     passed = sum(ok for ok, _, _ in results) - skipped
+    # On a FAIL the problems below say what happened; the summary must not claim success.
     if args.expect_panic:
-        what = "panicked as expected"
+        what = "expected a panic" if problems else "panicked as expected"
     elif args.no_tap:
-        what = f"exited cleanly, {len(args.expect)} expectations met"
+        what = (f"{len(args.expect)} expectations" if problems
+                else f"exited cleanly, {len(args.expect)} expectations met")
     else:
         what = f"{passed}/{plan or 0} passed ({skipped} skipped)"
     config = args.memory + (f", {' '.join(args.qemu_args)}" if args.qemu_args else "")

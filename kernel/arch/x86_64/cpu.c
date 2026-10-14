@@ -20,6 +20,8 @@ void cpu_detect_features(void)
     r = cpuid(1, 0);
     features.pge = r.edx & (1u << 13);
     features.apic = r.edx & (1u << 9);
+    features.pat = r.edx & (1u << 16);
+    features.mce = r.edx & (1u << 7);
     features.x2apic = r.ecx & (1u << 21);
 
     if (max_leaf >= 7) {

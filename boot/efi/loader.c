@@ -2,18 +2,23 @@
 /*
  * UEFI loader: BOOTX64.EFI.
  *
- * Gives the kernel exactly the hand-off the BIOS loader does (struct
- * boot_info at BOOT_INFO_PHYS, kernel at its link address, identity +
- * higher-half page tables, interrupts off), so one kernel binary, and one
- * test suite, covers both firmwares. See docs/design/boot.md.
+ * Gives the kernel the hand-off the BIOS loader does (struct boot_info
+ * passed in RDI, kernel at its link address, identity + higher-half page
+ * tables, interrupts off), so one kernel binary, and one test suite,
+ * covers both firmwares. See docs/design/boot.md. The BIOS loader puts
+ * boot_info at BOOT_INFO_PHYS; this one takes any free page below 1 GiB
+ * (the kernel reads it through its window onto that GiB, then copies it):
+ * a fixed low page may belong to the firmware.
  *
  *   1. read \minios\kernel.elf (and the optional \minios\cmdline) from the
  *      volume this loader was started from;
- *   2. claim the kernel's physical range and the boot_info page from the
- *      firmware (AllocateAddress), so firmware-owned memory is never
+ *   2. claim the kernel's physical range from the firmware
+ *      (AllocateAddress), so firmware-owned memory is never
  *      overwritten: if it is taken, fail with a clear message;
  *   3. copy and zero the kernel's segments while boot services still work;
- *   4. build page tables (0-4 GiB identity, 0-1 GiB at -2 GiB);
+ *   4. build page tables (0-4 GiB identity, 0-1 GiB at -2 GiB, plus this
+ *      loader's own image and stack identity-mapped wherever the firmware
+ *      put them: it keeps running across the CR3 switch);
  *   5. fetch the final memory map, ExitBootServices (retrying if the map
  *      changed), convert the map to E820 form, publish boot_info (magic
  *      last), switch CR3 and jump.
@@ -30,7 +35,9 @@
 #define KERNEL_VMA      0xFFFFFFFF80000000ull
 #define KERNEL_PHYS_MIN 0x100000ull
 #define PAGE            4096ull
+#define PAGE_2M         0x200000ull
 #define IDENTITY_LIMIT  (4ull << 30)
+#define BOOT_WINDOW     (1ull << 30) /* the kernel's BOOT_WINDOW_SIZE */
 #define COM1            0x3F8
 #define CR4_LA57        (1ull << 12)
 
@@ -46,6 +53,8 @@ static const struct efi_guid acpi20_guid = {
     0x8868E871, 0xE4F1, 0x11D3, {0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81}};
 static const struct efi_guid acpi10_guid = {
     0xEB9D2D30, 0x2D88, 0x11D3, {0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D}};
+static const struct efi_guid gop_guid = {
+    0x9042A9DE, 0x23DC, 0x4A38, {0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A}};
 
 /* --- output ----------------------------------------------------------------- */
 
@@ -144,17 +153,20 @@ static void *alloc_pages_below(u64 pages, u64 limit)
     return (void *)(uptr)addr;
 }
 
-static struct efi_file *open_boot_volume(efi_handle image)
+static struct efi_loaded_image *loaded_image(efi_handle image)
 {
     struct efi_loaded_image *li;
-    struct efi_simple_file_system *fs;
-    struct efi_file *root;
 
     if (bs->handle_protocol(image, &loaded_image_guid, (void **)&li) != EFI_SUCCESS)
         fail("no LoadedImage protocol\n");
-    /* Everything after the CR3 switch runs identity-mapped: it must sit below 4 GiB. */
-    if ((uptr)li->image_base + li->image_size > IDENTITY_LIMIT)
-        fail("loader image above 4 GiB\n");
+    return li;
+}
+
+static struct efi_file *open_boot_volume(const struct efi_loaded_image *li)
+{
+    struct efi_simple_file_system *fs;
+    struct efi_file *root;
+
     if (bs->handle_protocol(li->device_handle, &simple_fs_guid, (void **)&fs) != EFI_SUCCESS)
         fail("boot device has no file system\n");
     if (fs->open_volume(fs, &root) != EFI_SUCCESS)
@@ -286,6 +298,129 @@ static u64 find_acpi_rsdp(void)
     return v1;
 }
 
+/* A channel mask the kernel can draw with: 8 contiguous bits on a byte boundary. */
+static bool mask_shift(u32 mask, u8 *shift)
+{
+    for (u8 s = 0; s <= 24; s += 8) {
+        if (mask == 0xFFu << s) {
+            *shift = s;
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Describes a GOP's current mode as a framebuffer the kernel can draw on:
+ * 32-bit pixels with byte-aligned channels, as large as the mode says.
+ * On failure, *why says what is missing and *fb is untouched.
+ */
+static bool describe_gop(const struct efi_graphics_output *gop, struct boot_framebuffer *fb,
+                         const char **why)
+{
+    if (!gop || !gop->mode || !gop->mode->info) {
+        *why = "no mode information";
+        return false;
+    }
+    const struct efi_gop_mode_info *info = gop->mode->info;
+    u8 r, g, b;
+
+    switch (info->pixel_format) {
+    case EFI_PIXEL_RGB_RESERVED_8BIT:
+        r = 0, g = 8, b = 16;
+        break;
+    case EFI_PIXEL_BGR_RESERVED_8BIT:
+        r = 16, g = 8, b = 0;
+        break;
+    case EFI_PIXEL_BIT_MASK:
+        /* The masks together span the pixel: nothing above bit 23 means 24-bit pixels. */
+        if (!((info->red_mask | info->green_mask | info->blue_mask | info->reserved_mask) >> 24)) {
+            *why = "24-bit pixels";
+            return false;
+        }
+        if (mask_shift(info->red_mask, &r) && mask_shift(info->green_mask, &g) &&
+            mask_shift(info->blue_mask, &b))
+            break;
+        *why = "channel masks not byte-aligned";
+        return false;
+    default:
+        *why = "no linear framebuffer (Blt only)";
+        return false;
+    }
+    u64 pitch = (u64)info->pixels_per_scan_line * 4;
+
+    if (!gop->mode->frame_buffer_base || info->pixels_per_scan_line < info->width ||
+        gop->mode->frame_buffer_size < pitch * info->height) {
+        *why = "framebuffer smaller than its mode";
+        return false;
+    }
+    *fb = (struct boot_framebuffer){
+        .phys = gop->mode->frame_buffer_base,
+        .width = info->width,
+        .height = info->height,
+        .pitch = (u32)pitch,
+        .bpp = 32,
+        .red_shift = r,
+        .green_shift = g,
+        .blue_shift = b,
+    };
+    return true;
+}
+
+/*
+ * The framebuffer the user is looking at, in the firmware's current mode
+ * (changing modes is where firmware bugs live, and the kernel draws at any
+ * resolution). The GOP on the console-out handle comes first: it drives
+ * the visible display. It can be a Blt-only splitter spanning several
+ * outputs, so then the first GOP with a usable framebuffer wins.
+ */
+static bool gop_on(efi_handle handle, struct boot_framebuffer *fb, const char **why)
+{
+    struct efi_graphics_output *gop = NULL;
+
+    return handle && bs->handle_protocol(handle, &gop_guid, (void **)&gop) == EFI_SUCCESS &&
+           describe_gop(gop, fb, why);
+}
+
+static void find_framebuffer(struct boot_framebuffer *fb)
+{
+    const char *why = "no graphics output protocol";
+    efi_handle *handles = NULL;
+    u64 count = 0;
+    bool found = gop_on(st->console_out_handle, fb, &why);
+
+    if (!found && bs->locate_handle_buffer(EFI_LOCATE_BY_PROTOCOL, &gop_guid, NULL, &count,
+                                           &handles) == EFI_SUCCESS)
+        for (u64 i = 0; i < count && !found; i++)
+            found = gop_on(handles[i], fb, &why);
+    if (found)
+        efi_log("framebuffer %ux%u at %#llx\n", fb->width, fb->height,
+                (unsigned long long)fb->phys);
+    else
+        efi_log("no usable framebuffer (%s); serial console only\n", why);
+}
+
+/*
+ * Identity-maps [start, end) with 2 MiB pages, adding tables as needed.
+ * Firmware may load this loader, and put its stack, above 4 GiB (OVMF does
+ * from 8 GiB of RAM): the code after the CR3 switch must still be mapped.
+ */
+static void identity_map(u64 *pml4, u64 start, u64 end)
+{
+    for (u64 va = start & ~(PAGE_2M - 1); va < end; va += PAGE_2M) {
+        u64 *table = pml4;
+
+        for (int shift = 39; shift > 21; shift -= 9) {
+            u64 *e = &table[(va >> shift) & 511];
+
+            if (!(*e & 1))
+                *e = (uptr)alloc_pages_below(1, IDENTITY_LIMIT) | 0x3;
+            table = (u64 *)(uptr)(*e & ~0xFFFull);
+        }
+        table[(va >> 21) & 511] = va | 0x83; /* present, writable, 2 MiB */
+    }
+}
+
 /* 0-4 GiB identity (this loader keeps running after the switch) and 0-1 GiB at
  * KERNEL_VMA, exactly the windows stage 2 provides. 2 MiB pages. */
 static u64 build_page_tables(void)
@@ -360,6 +495,9 @@ static __noreturn void jump_to_kernel(u64 pml4, u64 entry, struct boot_info *bi)
                      "mov $0xFF, %%al\n\t"
                      "out %%al, $0xA1\n\t" /* mask both 8259s, as stage 2 does */
                      "out %%al, $0x21\n\t"
+                     "in $0x70, %%al\n\t" /* and NMI: until the kernel's IDT is in, */
+                     "or $0x80, %%al\n\t" /* one would vector through the firmware's */
+                     "out %%al, $0x70\n\t"
                      "mov %0, %%cr3\n\t"
                      "mov %2, %%rdi\n\t"
                      "jmp *%1"
@@ -381,19 +519,14 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
 
     __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    if (rsp > IDENTITY_LIMIT)
-        fail("firmware stack above 4 GiB\n");
     if (cr4 & CR4_LA57)
         fail("firmware runs 5-level paging; this kernel uses 4-level\n");
 
-    /* boot_info lives at a fixed address the kernel checks. */
-    if (!claim_pages_at(BOOT_INFO_PHYS, 1))
-        fail("physical %#x (boot_info) is in use by the firmware\n", BOOT_INFO_PHYS);
-    struct boot_info *bi = (struct boot_info *)(uptr)BOOT_INFO_PHYS;
+    /* Below 1 GiB: the kernel reads it through its window onto that GiB. */
+    struct boot_info *bi = alloc_pages_below(1, BOOT_WINDOW);
 
-    memset(bi, 0, sizeof(*bi));
-
-    struct efi_file *root = open_boot_volume(image);
+    struct efi_loaded_image *li = loaded_image(image);
+    struct efi_file *root = open_boot_volume(li);
     u64 kernel_size, cmdline_size;
     const u8 *kernel = read_file(root, u"\\minios\\kernel.elf", "kernel.elf", &kernel_size, true);
     const u8 *cmdline = read_file(root, u"\\minios\\cmdline", "cmdline", &cmdline_size, false);
@@ -409,14 +542,23 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
 
     u64 entry = load_kernel(kernel, kernel_size, bi);
     u64 pml4 = build_page_tables();
+    u64 image_base = (uptr)li->image_base;
+
+    efi_log("loader image at %#llx, stack near %#llx\n", (unsigned long long)image_base,
+            (unsigned long long)rsp);
+
+    /* The code and stack in use across the CR3 switch, wherever they are. */
+    identity_map((u64 *)(uptr)pml4, image_base, image_base + li->image_size);
+    identity_map((u64 *)(uptr)pml4, rsp - 2 * PAGE, rsp + PAGE);
 
     bi->acpi_rsdp = find_acpi_rsdp();
     if (!bi->acpi_rsdp)
         efi_log("no ACPI RSDP in the configuration table\n");
+    find_framebuffer(&bi->framebuffer);
 
-    efi_log("kernel %#llx-%#llx, entry %#llx, cmdline \"%s\"\n",
+    efi_log("kernel %#llx-%#llx, entry %#llx, boot_info at %#llx, cmdline \"%s\"\n",
             (unsigned long long)bi->kernel_phys_start, (unsigned long long)bi->kernel_phys_end,
-            (unsigned long long)entry, bi->cmdline);
+            (unsigned long long)entry, (unsigned long long)(uptr)bi, bi->cmdline);
 
     /* The final memory map. Nothing may allocate (or print) between getting it and
      * ExitBootServices, and the map may still change once: retry on a stale key. */

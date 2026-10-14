@@ -48,6 +48,16 @@ static inline void pmm_free_page(u64 phys)
 /* Order of the allocated block at phys, or -1 if phys is not a block head. */
 int pmm_block_order(u64 phys);
 
+/*
+ * Ownership tags on allocated blocks, so a free can check its pointer
+ * really came from its allocator (kfree must not take a page table or a
+ * user frame back). A new block starts as PMM_OWNER_NONE.
+ */
+enum { PMM_OWNER_NONE = 0, PMM_OWNER_KMALLOC = 1, PMM_OWNER_SLAB = 2 };
+void pmm_set_owner(u64 phys, u16 owner);
+/* The tag of the allocated block whose head is phys; -1 if phys is not one. */
+int pmm_block_owner(u64 phys);
+
 void pmm_get_stats(struct pmm_stats *out);
 
 /* Full allocator consistency check (O(frames)); 0 if consistent. */

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Local APIC (Intel SDM Vol. 3A, chapter 11), driven in xAPIC (MMIO) mode.
+ * Local APIC (Intel SDM Vol. 3A, chapter 11), in whichever mode the
+ * firmware left it: xAPIC (MMIO) or x2APIC (MSRs).
  */
 #ifndef MINIOS_ARCH_LAPIC_H
 #define MINIOS_ARCH_LAPIC_H
@@ -40,8 +41,8 @@ enum {
 #define LAPIC_TIMER_DIVIDER  16u
 
 /*
- * Enables the local APIC of the boot CPU: maps it, leaves x2APIC mode if
- * the firmware entered it, drains stale in-service bits, then programs the
+ * Enables the local APIC of the boot CPU (mapping it in xAPIC mode, keeping
+ * x2APIC mode if the firmware chose it), drains stale in-service bits, then programs the
  * spurious, error and LINT vectors (LINT0 masked: the 8259 is not used;
  * the MADT's NMI entries, or LINT1 by default, deliver NMIs). The timer
  * stays masked until lapic_timer_start_periodic(). Panics if the APIC
@@ -50,8 +51,12 @@ enum {
 void lapic_init(const struct acpi_madt_info *madt);
 
 bool lapic_active(void);
+bool lapic_x2apic_mode(void);
 u32 lapic_read(u32 reg);
 u32 lapic_id(void);
+
+/* This CPU's APIC ID, readable before lapic_init(). */
+u32 lapic_boot_id(void);
 void lapic_eoi(void);
 bool lapic_in_service(u8 vector);
 
@@ -68,5 +73,8 @@ void lapic_timer_set_masked(bool masked);
 
 /* Sends a fixed interrupt to this CPU and waits until the APIC accepted it. */
 void lapic_send_self_ipi(u8 vector);
+
+/* Sends an NMI to this CPU (physical destination: the self shorthand excludes NMI). */
+void lapic_send_self_nmi(void);
 
 #endif /* MINIOS_ARCH_LAPIC_H */

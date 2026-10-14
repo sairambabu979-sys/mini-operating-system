@@ -14,6 +14,7 @@ static void set_block(struct buddy *b, u64 pfn, unsigned order, enum page_state 
 {
     b->pages[pfn].state = (u8)head;
     b->pages[pfn].order = (u8)order;
+    b->pages[pfn].owner = 0;
     for (u64 i = 1; i < block_frames(order); i++)
         b->pages[pfn + i].state = PAGE_TAIL;
 }

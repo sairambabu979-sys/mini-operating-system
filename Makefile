@@ -3,10 +3,13 @@
 # Top-level, non-recursive build. Everything lands in $(BUILD).
 #
 #   make                 build the kernel and disk images
-#   make run             boot build/<config>/disk.img in QEMU (CMDLINE="..." to pass options)
+#   make run             boot build/<config>/disk.img in QEMU (CMDLINE="..." to pass options;
+#                        QEMU_DISPLAY=gtk to see the screen console too)
 #   make debug           same, halted at reset waiting for gdb on :1234
 #   make test            host unit tests, binary checks, in-kernel tests under QEMU
-#   make check           check-format + lint + test: what CI runs (gate commits on it)
+#   make check           check-format + lint + test for one CONFIG (gate commits on it);
+#                        CI runs it for debug and release, plus make test-x2apic
+#   make test-x2apic     the suite in x2APIC mode; needs QEMU >= 9.0 (QEMU=/path/to/binary)
 #   make lint            clang-tidy over kernel sources
 #   make format          reformat all C sources in place
 #   make check-format    fail if any C source is not clang-formatted
@@ -245,6 +248,15 @@ $(BUILD)/boot/%.bin: boot/%.asm | $(ASM_OFFSETS)
 	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS),$(@:.bin=.d),$@,$<)
 	$(Q)$(NASM) $(BOOT_ASFLAGS) $< -o $@
 
+# Stage 2 test builds: A20 off first, then back on by one method only.
+A20_METHODS := bios kbc fast
+
+$(BUILD)/boot/stage2-a20-%.bin: boot/stage2.asm | $(ASM_OFFSETS)
+	@mkdir -p $(@D)
+	$(call msg,NASM,$(@F))
+	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS) -DA20_SELFTEST=$*,$(@:.bin=.d),$@,$<)
+	$(Q)$(NASM) $(BOOT_ASFLAGS) -DA20_SELFTEST=$* $< -o $@
+
 # Same kernel binary in both images; only the command line differs, so the
 # tests exercise exactly what `make run` boots.
 DISK_IMG := $(BUILD)/disk.img
@@ -252,6 +264,7 @@ TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
 TEST_NOAPIC_IMG := $(BUILD)/disk-ktest-noapic.img
+TEST_X2APIC_IMG := $(BUILD)/disk-ktest-x2apic.img
 PANIC_IMG       := $(BUILD)/disk-panic.img
 DEMO_IMG        := $(BUILD)/disk-demo.img
 BENCH_IMG       := $(BUILD)/disk-bench.img
@@ -268,11 +281,19 @@ endef
 
 $(eval $(call bios_image,$(TEST_IMG),ktest))
 $(eval $(call bios_image,$(TEST_NOAPIC_IMG),ktest noapic))
+$(eval $(call bios_image,$(TEST_X2APIC_IMG),ktest x2apic))
 $(eval $(call bios_image,$(PANIC_IMG),selftest=panic))
 $(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
 $(eval $(call bios_image,$(BENCH_IMG),bench))
 $(eval $(call bios_image,$(HANG_IMG),selftest=hang))
 $(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
+
+A20_IMGS := $(A20_METHODS:%=$(BUILD)/disk-a20-%.img)
+
+$(BUILD)/disk-a20-%.img: $(STAGE1) $(BUILD)/boot/stage2-a20-%.bin $(KERNEL_STRIPPED) tools/mkimage.py
+	$(call msg,IMAGE,$@)
+	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(BUILD)/boot/stage2-a20-$*.bin \
+	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
 
 # --------------------------------------------------------------------------
 # UEFI loader (boot/efi) and UEFI boot images
@@ -326,14 +347,18 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 
 .PHONY: all
 all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
-	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(KERNEL_ELF)
+	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) \
+	$(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
 # --------------------------------------------------------------------------
 
 QEMU       := qemu-system-x86_64
-QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display none -monitor none \
+# The console is on stdio either way; QEMU_DISPLAY=gtk (or sdl) also opens a
+# window showing the screen console (VGA text under BIOS, framebuffer under UEFI).
+QEMU_DISPLAY ?= none
+QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display $(QEMU_DISPLAY) -monitor none \
               -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
               -drive file=$(DISK_IMG),format=raw,if=ide
 
@@ -364,7 +389,8 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 # --------------------------------------------------------------------------
 
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
-	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c
+	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c \
+	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 
@@ -402,16 +428,27 @@ host-test: $(HOST_TEST_BIN)
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
 # The interrupt paths: APICs calibrated by the HPET (default), APICs calibrated
-# by PIT channel 2 (no HPET table), and the legacy 8259 + PIT ("noapic").
+# by PIT channel 2 (no HPET table), APICs with no PIT at all (as on platforms
+# that gate it off), no reference clock at all (must panic, not hang), and the
+# legacy 8259 + PIT ("noapic").
 qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
-	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG)
+	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
+	  --expect 'calibrated against the HPET'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
+	  --memory 4G --expect 'calibrated against the HPET'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 3 \
+	  --log-suffix nohpet --expect 'calibrated against the PIT' -- -machine pc,hpet=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 4 \
+	  --log-suffix nopit --expect 'calibrated against the HPET' -- -machine pc,pit=off
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs \
-	  --log-suffix nohpet -- -machine pc,hpet=off
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs
+	  --log-suffix noclock --expect-panic \
+	  --expect 'no working reference clock: the PIT \(no HPET\) did not time a 50 ms window' \
+	  -- -machine pc,pit=off,hpet=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs --skips 9 \
+	  --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
 	  --expect 'KERNEL PANIC' \
@@ -425,13 +462,33 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) 
 	  --expect 'init: pid [0-9]+, starting 11 programs' \
 	  --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs
+	$(Q)for m in $(A20_METHODS); do \
+	  $(PYTHON) tests/qemu/run_tests.py --image $(BUILD)/disk-a20-$$m.img --log-dir $(BUILD)/logs \
+	    --no-tap --expect "A20 test: off, then on by $$m" \
+	    --expect 'init exited with status 0' || exit 1; \
+	done
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
+	  --skips 1 --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
 	  --no-tap --expect 'loader: UEFI' --expect 'init: all children reaped, 0 unexpected' \
+	  --expect 'init exited with status 0'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
+	  --memory 8G --no-tap --expect 'loader image at 0x[1-9a-f][0-9a-f]{8,},' \
 	  --expect 'init exited with status 0'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BENCH_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --expect 'bench: context switch' --expect 'bench: syscall round trip' \
 	  --expect 'user benchmark exit 0'
+
+# The suite in x2APIC mode, the mode recent Intel firmware hands over in.
+# QEMU emulates x2APIC under TCG only from 9.0 (Ubuntu 24.04 ships 8.2),
+# so this run names its emulator: make test-x2apic QEMU=/path/to/qemu-system-x86_64.
+# CI builds QEMU 9.2 for it.
+.PHONY: test-x2apic
+test-x2apic: $(TEST_X2APIC_IMG)
+	$(Q)QEMU=$(QEMU) $(PYTHON) tests/qemu/run_tests.py --image $(TEST_X2APIC_IMG) \
+	  --log-dir $(BUILD)/logs --skips 1 \
+	  --expect 'x2APIC mode \(switched on by the x2apic option\)' \
+	  --expect 'calibrated against the HPET'
 
 # Static checks on the linked kernel (e.g. no SSE instructions slipped in).
 check-binary: $(KERNEL_ELF)

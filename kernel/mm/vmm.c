@@ -20,8 +20,9 @@
 /*
  * Page tables needed before the PMM exists come from this pool. It lives in
  * .bss (zeroed by the loader) inside the kernel image, so the boot window
- * reaches it. 32 pages covers the kernel image plus a direct map of tens of
- * GiB; running out is a clear panic, not corruption.
+ * reaches it. 32 pages cover the kernel image plus the direct map: all 512
+ * GiB of it with 1 GiB pages, but only about 24 GiB of RAM on a CPU without
+ * them (one table per GiB). Running out is a clear panic, not corruption.
  */
 #define EARLY_PT_PAGES 32
 
@@ -63,7 +64,8 @@ static u64 alloc_table(void)
 {
     if (!active) {
         if (early_pt_used == EARLY_PT_PAGES)
-            panic("vmm: early page-table pool exhausted (%u pages)", EARLY_PT_PAGES);
+            panic("vmm: early page-table pool exhausted (%u pages)%s", EARLY_PT_PAGES,
+                  cpu_features()->page_1g ? "" : ": without 1 GiB pages, about 24 GiB of RAM fit");
         return (u64)(uptr)early_pt_pool[early_pt_used++] - KERNEL_VMA;
     }
     u64 phys = pmm_alloc_page();
@@ -87,6 +89,8 @@ static u64 leaf_bits(unsigned flags)
         bits |= pte_global;
     if (flags & VM_NOCACHE)
         bits |= PTE_PCD | PTE_PWT;
+    else if (flags & VM_WC)
+        bits |= cpu_features()->pat ? PTE_PWT : PTE_PCD | PTE_PWT; /* PAT entry 1 */
     if (flags & VM_IOMAP)
         bits |= PTE_SW_IOMAP;
     return bits;
@@ -375,6 +379,13 @@ void vmm_init(const struct mem_region *regions, usize nregions, const struct boo
 
     /* NXE before loading tables that use bit 63; WP so ring 0 honors R/O. */
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_NXE);
+    /*
+     * Only entry 1 changes (WT -> WC), and no mapping uses it yet: the
+     * loader's tables and these new ones never set PWT alone, so no stale
+     * entry or cache line can have the old type.
+     */
+    if (cpu->pat)
+        wrmsr(MSR_PAT, PAT_KERNEL);
     write_cr0(read_cr0() | CR0_WP);
 
     u64 cr4 = read_cr4();

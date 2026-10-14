@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include <arch/paging.h>
 #include <arch/setjmp.h>
 #include <core/ktest.h>
 #include <core/panic.h>
@@ -96,6 +97,53 @@ KTEST(kfree_rejects_non_heap_pointers)
         kfree(&not_heap); // NOLINT(clang-analyzer-unix.Malloc): misuse is the test
     panic_expect_clear();
     KEXPECT(e.hit);
+
+    /* A live PMM block that kmalloc did not hand out: shaped like a large allocation. */
+    u64 frame = pmm_alloc_page();
+
+    KEXPECT(frame != PMM_ALLOC_FAILED);
+    panic_expect(&e, &jb);
+    if (ksetjmp(&jb) == 0)
+        kfree(phys_to_virt(frame)); // NOLINT(clang-analyzer-unix.Malloc): misuse is the test
+    panic_expect_clear();
+    KEXPECT(e.hit);
+    KEXPECT_EQ(pmm_block_order(frame), 0); /* and it was not freed */
+
+    /*
+     * Inside a page, a pointer is judged by the slab header at the page's
+     * start. A frame kmalloc does not own, holding an exact copy of a live
+     * slab page (as a user frame could), must be refused before any of
+     * that header is believed.
+     */
+    u8 *obj = kmalloc(16);
+    u8 *slab = (u8 *)ALIGN_DOWN((uptr)obj, PAGE_SIZE_4K);
+    u8 *copy = phys_to_virt(frame);
+
+    KEXPECT(obj != NULL);
+    memcpy(copy, slab, PAGE_SIZE_4K);
+    panic_expect(&e, &jb);
+    if (ksetjmp(&jb) == 0)
+        kfree(copy + (obj - slab)); // NOLINT(clang-analyzer-unix.Malloc): misuse is the test
+    panic_expect_clear();
+    KEXPECT(e.hit);
+    KEXPECT_EQ(pmm_block_order(frame), 0);
+    kfree(obj);
+    pmm_free_page(frame);
+}
+
+KTEST(kmalloc_refuses_sizes_beyond_its_largest_block)
+{
+    KEXPECT(kmalloc(KMALLOC_MAX + 1) == NULL);
+    KEXPECT(kmalloc(~(usize)0) == NULL); /* would wrap to a 16-byte object */
+    KEXPECT(kmalloc(~(usize)0 - 4) == NULL);
+    KEXPECT(kmalloc((usize)1 << 63) == NULL); /* order 51; one more and order_for() never ends */
+    KEXPECT(kzalloc(~(usize)0) == NULL);
+    KEXPECT(kcalloc(1, ~(usize)0) == NULL);
+
+    void *p = kmalloc(KMALLOC_MAX); /* the limit itself still works */
+
+    KEXPECT(p != NULL);
+    kfree(p);
 }
 
 #ifdef CONFIG_DEBUG

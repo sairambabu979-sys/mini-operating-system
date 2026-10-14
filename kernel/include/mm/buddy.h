@@ -34,7 +34,7 @@ struct page {
     struct list_head link; /* free-list link, valid for PAGE_FREE_HEAD */
     u8 state;              /* enum page_state */
     u8 order;              /* valid for heads */
-    u16 reserved;
+    u16 owner;    /* allocated heads: who allocated the block (pmm.h); reset on every alloc/free */
     u32 refcount; /* for users of allocated pages (e.g. shared page tables) */
 };
 

@@ -9,18 +9,21 @@
  * configuration instead.
  */
 #include <acpi/acpi.h>
+#include <arch/cpuid.h>
 #include <arch/irqflags.h>
 #include <arch/lapic.h>
 #include <arch/trap.h>
 #include <core/boot.h>
 #include <core/irq.h>
 #include <core/ktest.h>
+#include <core/printk.h>
 #include <core/time.h>
 #include <drivers/hpet.h>
 #include <drivers/ioapic.h>
 #include <drivers/pit.h>
 #include <lib/cmdline.h>
 #include <lib/errno.h>
+#include <lib/string.h>
 
 static bool apic_mode(void)
 {
@@ -57,6 +60,19 @@ KTEST(reference_clock_matches_the_platform)
 
     KEXPECT_EQ(time_ref_clock(), acpi_hpet() && !nohpet ? REF_HPET : REF_PIT);
     KEXPECT(tsc_khz() > 100000); /* any x86-64 CPU runs its TSC above 100 MHz */
+}
+
+/* "x2apic" asks for x2APIC mode; the image that passes it must get it. */
+KTEST(lapic_mode_matches_the_command_line)
+{
+    if (!apic_mode())
+        KTEST_SKIP("8259 mode");
+
+    bool wanted = cmdline_has_flag(boot_info_get()->cmdline, "x2apic");
+
+    if (wanted)
+        KEXPECT(cpu_features()->x2apic);     /* an emulator without it cannot run this image */
+    KEXPECT_EQ(lapic_x2apic_mode(), wanted); /* QEMU's firmware never leaves x2APIC on */
 }
 
 KTEST(lapic_is_configured)
@@ -156,6 +172,147 @@ static bool hpet_tsc_pair(u64 *hpet, u64 *tsc)
     return false;
 }
 
+/*
+ * Calibration against a measurement that shares no code with time.c: this
+ * test's own polled PIT channel 2 window, bracketed by TSC reads, the
+ * tightest of up to eight tries. In the default boot the kernel used the
+ * HPET, so two clocks are compared; with hpet=off, two implementations on
+ * one. A calibration off by a factor (an injected 2x error passed every
+ * other test) fails either way.
+ *
+ * The tolerance is 2% plus what the endpoints are uncertain by: under a
+ * loaded host the vCPU can stop at any instruction, and a bracket wide
+ * enough to contain such a stop is measured, not ignored.
+ */
+#define PIT_TEST_COUNT 47727u /* 40 ms */
+
+struct pit_window {
+    u64 tsc;   /* TSC cycles from the programming to the output edge */
+    u64 slack; /* TSC cycles of uncertainty at the two ends */
+};
+
+static struct pit_window time_pit_window(void)
+{
+    struct pit_window w;
+    irqflags_t flags = arch_irq_save();
+    u64 a = rdtsc();
+
+    pit_oneshot_start(PIT_TEST_COUNT);
+    u64 b = rdtsc(), low = b, high;
+
+    /*
+     * The edge lies between the last poll that saw the output low and the
+     * first that saw it high: bound it by a TSC read taken before the
+     * former and one taken after the latter.
+     */
+    for (;;) {
+        u64 t = rdtsc();
+
+        if (pit_oneshot_done()) {
+            high = rdtsc();
+            break;
+        }
+        if (t - b > tsc_khz() * 1000) { /* a second: the PIT is not counting */
+            high = t;
+            low = b;
+            break;
+        }
+        low = t;
+    }
+    arch_irq_restore(flags);
+    w.tsc = (low + high) / 2 - (a + b) / 2;
+    w.slack = (b - a) + (high - low);
+    return w;
+}
+
+static struct pit_window best_pit_window(void)
+{
+    struct pit_window best = {.slack = ~0ull};
+
+    for (int i = 0; i < 8; i++) {
+        struct pit_window w = time_pit_window();
+
+        if (w.slack < best.slack)
+            best = w;
+        if (best.slack * 1000 < best.tsc) /* endpoints pinned to 0.1% */
+            break;
+    }
+    return best;
+}
+
+/*
+ * |measured - expected| <= 2% of expected, plus `slack` parts per `total`.
+ * A measurement uncertain by a quarter or more proves nothing (its bound
+ * would let a 2x error through) and fails rather than passes.
+ */
+static bool agrees(u64 measured, u64 expected, u64 slack, u64 total)
+{
+    if (slack * 4 >= total)
+        return false;
+
+    u64 bound = expected / 50 + expected * slack / total + 1;
+
+    return measured + bound >= expected && measured <= expected + bound;
+}
+
+KTEST(tsc_rate_matches_an_independent_measurement)
+{
+    if (!pit_present())
+        KTEST_SKIP("no PIT to measure with");
+
+    struct pit_window w = best_pit_window();
+    u64 khz = w.tsc * PIT_INPUT_HZ / PIT_TEST_COUNT / 1000;
+
+    KEXPECT(agrees(khz, tsc_khz(), w.slack, w.tsc));
+}
+
+/* A LAPIC timer reading pinned between two TSC reads at most 20 us apart. */
+static bool lapic_tsc_pair(u32 *lapic, u64 *tsc, u64 *width)
+{
+    for (int i = 0; i < 1000; i++) {
+        u64 a = rdtsc();
+        u32 l = lapic_timer_current();
+        u64 b = rdtsc();
+
+        if (b - a <= tsc_khz() / 50) {
+            *lapic = l;
+            *tsc = a + (b - a) / 2;
+            *width = b - a;
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The LAPIC timer against the TSC, and the TSC against this test's own PIT
+ * window: neither ratio comes from time.c.
+ */
+KTEST(lapic_timer_rate_matches_an_independent_measurement)
+{
+    if (!apic_mode())
+        KTEST_SKIP("8259 mode");
+    if (!pit_present())
+        KTEST_SKIP("no PIT to measure with");
+
+    struct pit_window w = best_pit_window();
+    u64 tsc_hz = w.tsc * PIT_INPUT_HZ / PIT_TEST_COUNT;
+    u32 count = lapic_read(LAPIC_TIMER_INIT);
+    u32 l0, l1;
+    u64 t0, t1, w0, w1;
+
+    /* The tick pauses for the measurement (40 ms). */
+    lapic_timer_start_oneshot(0xFFFFFFFFu);
+    KEXPECT(lapic_tsc_pair(&l0, &t0, &w0));
+    tsc_delay_us(40000);
+    KEXPECT(lapic_tsc_pair(&l1, &t1, &w1));
+    lapic_timer_start_periodic(VEC_APIC_TIMER, count);
+
+    u64 hz = (u64)(l0 - l1) * tsc_hz / (t1 - t0);
+
+    KEXPECT(agrees(hz, lapic_timer_hz(), w.slack * (t1 - t0) / w.tsc + w0 + w1, t1 - t0));
+}
+
 KTEST(hpet_counter_runs_at_its_period)
 {
     if (time_ref_clock() != REF_HPET)
@@ -204,6 +361,8 @@ KTEST(ioapic_routes_isa_irq0_through_its_override)
 {
     if (!apic_mode())
         KTEST_SKIP("8259 mode");
+    if (!pit_present())
+        KTEST_SKIP("no PIT to drive IRQ 0");
 
     const struct acpi_isa_irq *isa = &acpi_madt()->isa[0];
     volatile u64 hits = 0;
@@ -231,6 +390,72 @@ KTEST(ioapic_routes_isa_irq0_through_its_override)
     irq_unregister(0);
     pit_stop();
     KEXPECT_EQ(irq_register(2, count_irq, (void *)&hits), -ENODEV); /* GSI 2 belongs to IRQ 0 */
+}
+
+/* The newest console output contains `needle`. */
+static bool log_tail_contains(const char *needle)
+{
+    static char tail[1024];
+    usize n = console_log_read(tail, sizeof(tail) - 1), len = strlen(needle);
+
+    tail[n] = '\0';
+    for (usize i = 0; i + len <= n; i++)
+        if (memcmp(tail + i, needle, len) == 0)
+            return true;
+    return false;
+}
+
+/*
+ * An NMI cannot be held off by cli, so its handler must not print: the
+ * code it interrupted may own the console lock. It is counted at once and
+ * reported by the next maskable interrupt.
+ */
+KTEST(nmi_is_counted_now_and_reported_later)
+{
+    if (!apic_mode())
+        KTEST_SKIP("8259 mode");
+
+    u64 before = trap_nmi_count();
+    irqflags_t flags = arch_irq_save();
+
+    kprintf("nmi-probe\n");
+    lapic_send_self_nmi();
+    u64 deadline = rdtsc() + tsc_khz() * 1000;
+
+    while (trap_nmi_count() == before && rdtsc() < deadline)
+        cpu_pause();
+    KEXPECT_EQ(trap_nmi_count(), before + 1); /* delivered with interrupts off */
+    char tail[10];
+
+    /* Nothing at all was printed in NMI context: the log still ends with the probe. */
+    KEXPECT_EQ(console_log_read(tail, sizeof(tail)), sizeof(tail));
+    KEXPECT(memcmp(tail, "nmi-probe\n", sizeof(tail)) == 0);
+    arch_irq_restore(flags);
+    KEXPECT(wait_ticks(2));
+    KEXPECT(log_tail_contains("1 NMI(s) received"));
+}
+
+/*
+ * The other half of the override: polarity and trigger. QEMU's MADT, like
+ * a PC's, makes the ACPI SCI (ISA 9) level-triggered, active high. The
+ * line stays quiet: nothing enabled an ACPI event.
+ */
+KTEST(ioapic_programs_trigger_and_polarity_from_the_madt)
+{
+    if (!apic_mode())
+        KTEST_SKIP("8259 mode");
+
+    const struct acpi_isa_irq *isa = &acpi_madt()->isa[9];
+    volatile u64 hits = 0;
+    u64 entry = 0;
+
+    KEXPECT(isa->overridden && isa->level_triggered && !isa->active_low);
+    KEXPECT_EQ(irq_register(9, count_irq, (void *)&hits), 0);
+    KEXPECT(ioapic_read_entry(isa->gsi, &entry));
+    irq_unregister(9);
+    KEXPECT_EQ(entry & (IOAPIC_REDIR_MASKED | IOAPIC_REDIR_LEVEL | IOAPIC_REDIR_ACTIVE_LOW),
+               IOAPIC_REDIR_LEVEL);
+    KEXPECT_EQ(entry & 0xFF, VEC_FIRST_IRQ + 9);
 }
 
 KTEST(lapic_self_ipi_waits_for_interrupts_to_be_enabled)

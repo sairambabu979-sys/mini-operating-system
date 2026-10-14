@@ -96,6 +96,13 @@ void nmi_enable(void);
 /* Number of #BP traps handled; lets tests observe int3 without a debugger. */
 u64 trap_breakpoint_count(void);
 
+/* NMIs taken, and the report of any not yet logged (called from IRQ context). */
+u64 trap_nmi_count(void);
+void trap_report_nmis(void);
+
+/* Interrupts and exceptions that arrived with RFLAGS.AC set (cleared on entry). */
+u64 trap_ac_entries(void);
+
 /*
  * Test hook: while armed, the next exception with this vector is recorded
  * instead of being fatal, then execution resumes at an exception-table
@@ -110,7 +117,8 @@ struct trap_expectation {
     bool hit;
     u64 error_code;
     u64 cr2;
-    uptr handler_rsp; /* stack pointer the handler ran on */
+    uptr handler_rsp;   /* stack pointer the handler ran on */
+    u64 handler_rflags; /* RFLAGS the handler ran with (after trap entry's clac) */
 };
 
 void trap_expect(struct trap_expectation *e, u64 vector, struct kjmp_buf *resume);

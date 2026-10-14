@@ -5,8 +5,10 @@
  * fixup (or klongjmp, when resuming in place is impossible).
  */
 #include <arch/cpu.h>
+#include <arch/cpuid.h>
 #include <arch/extable.h>
 #include <arch/irqflags.h>
+#include <arch/paging.h>
 #include <arch/segments.h>
 #include <arch/setjmp.h>
 #include <arch/trap.h>
@@ -17,6 +19,13 @@
 /* Canonical, but outside the 1 GiB the bootloader maps. */
 #define UNMAPPED_ADDR 0x80000000ull
 #define NONCANONICAL  0x8000000000000000ull
+
+KTEST(machine_checks_are_exceptions)
+{
+    if (!cpu_features()->mce)
+        KTEST_SKIP("no MCE");
+    KEXPECT(read_cr4() & CR4_MCE); /* else a machine check is a silent reset */
+}
 
 KTEST(gdt_and_tss_are_loaded)
 {
@@ -164,4 +173,27 @@ KTEST(stack_protector_guard_is_seeded)
 {
     KEXPECT_EQ(__stack_chk_guard & 0xFF, 0);
     KEXPECT(__stack_chk_guard != 0x5a17e2c0ffee5100ull); /* the link-time default */
+}
+
+/*
+ * Trap entry runs clac: AC set in ring 0 means SMAP is off, and a trap
+ * taken inside a user copy (between stac and clac) would otherwise run
+ * its handler, and whatever it switches to, unprotected. Interrupts take
+ * the same entry, trap_dispatch(), as this #BP.
+ */
+KTEST(traps_inside_a_user_copy_window_run_with_smap_on)
+{
+    if (!cpu_features()->smap)
+        KTEST_SKIP("no SMAP");
+
+    struct trap_expectation e;
+
+    trap_expect(&e, VEC_BREAKPOINT, NULL); /* a trap: execution resumes after int3 */
+    stac();
+    __asm__ volatile("int3");
+    KEXPECT(read_rflags() & RFLAGS_AC); /* iretq gave this context its AC back */
+    clac();
+    trap_expect_clear();
+    KEXPECT(e.hit);
+    KEXPECT(!(e.handler_rflags & RFLAGS_AC));
 }

@@ -17,7 +17,14 @@ Sources: `kernel/arch/x86_64/{gdt,idt,traps,extable}.c`, `isr.asm`,
 
 IST stacks: `#DF` (IST1), NMI (IST2), `#MC` (IST3), 16 KiB each. These
 exceptions can arrive when the current stack is unusable, and a handler
-that runs on a broken stack escalates straight to a triple fault.
+that runs on a broken stack escalates straight to a triple fault. The
+three are one array in `.bss`, with no guard pages: an NMI or `#MC`
+handler that overflowed its stack would write into the one below it, and
+the `#DF` handler into whatever precedes the array, with no fault. The
+stacks of created tasks come from `vmalloc`, which leaves an unmapped page
+below each one; that is what turns their overflow into a clean `#DF`. The
+boot task (`kmain`) stays on the 16 KiB `.bss` stack that `_start` loads,
+which has no guard page.
 
 ## Entry path
 
@@ -34,16 +41,49 @@ The CPU aligns RSP to 16 before pushing its frame, and the 22-qword frame
 keeps it aligned at the `call` (enforced by a `static_assert`). Every
 offset the assembly uses comes from `asm-offsets.inc`.
 
+**AC is cleared on entry.** Interrupt delivery clears TF and NT, and the
+stub clears DF, but nothing clears AC, and AC set in ring 0 switches SMAP
+off. A process can set it (`popfq`), and a tick can land inside a user copy
+between `stac` and `clac`. Either way the handler, and any task it
+switched to, would run with SMAP off. So `trap_dispatch()` checks RFLAGS
+first. If AC is set, it counts the entry (`trap_ac_entries()`) and, on CPUs
+with SMAP, executes `clac`. `iretq` restores the interrupted context's own
+AC from the frame. The syscall entry needs no such step: `FMASK` clears AC,
+along with every other flag ring 3 can set (see [usermode.md](usermode.md)).
+
 ## Dispatch policy
+
+Checked top to bottom:
 
 | Situation | Response |
 |-----------|----------|
 | A test armed `trap_expect()` for this vector | record vector, error code, CR2 and handler RSP; resume via fixup or `klongjmp` |
-| `#BP` | log, count, continue (the saved RIP already points past `int3`) |
-| NMI | log, continue |
+| Any exception from user mode except NMI and `#MC` (`#BP` included) | `process_kill_on_fault()`: log, kill the process with status `128 + vector` |
+| `#BP` from kernel mode | log, count, continue (the saved RIP already points past `int3`) |
+| NMI, from either mode | count it and record its RIP, continue; reported later (below) |
 | Kernel fault at an exception-table address | resume at the fixup |
-| Anything else from kernel mode | `panic_trap()` |
-| User mode | (M7) kill the process; until then, panic |
+| Anything else from kernel mode, and `#MC` from user mode | `panic_trap()` |
+
+So a machine check panics even when a process was running: the kill
+leaves out NMI and `#MC`. A `#GP` raised by `iretq` while returning to
+ring 3 happens in ring 0; its exception-table fixup kills the process (see
+[usermode.md](usermode.md)).
+
+**NMIs are not printed where they land.** An NMI ignores IF, so it can
+interrupt code that holds any lock, the console's included: printing there
+would deadlock, or, with recursion detection, panic. The handler only
+counts it and records the RIP. `trap_report_nmis()` prints `N NMI(s)
+received, the last at ...` after the EOI of the next maskable interrupt
+that runs a handler (the timer tick at the latest). That one cannot arrive
+while a spinlock is held, because spinlocks keep interrupts off.
+
+**Exceptions the CPU must be told to raise.** `fpu_init()` sets
+`CR0.NE`, which the BIOS path inherits clear: an x87 error would otherwise
+go to the legacy FERR#/IRQ 13 route, which nothing handles, instead of
+raising `#MF` (vector 16, killing the process with status 144). It also
+sets `CR4.MCE` when CPUID reports MCE, so a machine check reaches the
+`#MC` handler on IST3, which panics with a decode, instead of putting the
+CPU into shutdown (on a PC, a silent reset).
 
 The **exception table** (`__ex_table`, emitted with `EXTABLE_ENTRY()`) is
 how code declares that one instruction may fault on purpose. M7 builds
@@ -60,10 +100,12 @@ exception 14 (#PF page fault), error code 0x2, from kernel mode
 page fault: write hit a non-present page in kernel mode
 RIP/RSP/RFLAGS, all GPRs, CR0 CR2 CR3 CR4 EFER
 backtrace:
-  #0  0xffffffff80101ad9 selftest_page_fault+0x9
-  #1  0xffffffff801019b3 kmain+0x403
-  #2  0xffffffff80100035 _start+0x35
+  #0  0xffffffff801xxxxx selftest_page_fault+0x9
+  #1  0xffffffff801xxxxx kmain+0x...
+  #2  0xffffffff8010003c _start+0x3c
 ```
+
+The addresses, and the offset into `kmain`, change from build to build.
 
 The backtrace follows the frame-pointer chain (`-fno-omit-frame-pointer`,
 with `RBP = 0` set in `_start`). Each frame is checked for alignment,
@@ -97,10 +139,22 @@ the smashed canary. Both nets fired, in the expected order.
 (non-canonical access) and `#PF` (read and write, checking CR2 and the
 error code). It also forces a genuine **double fault** by pointing RSP at
 unmapped memory and executing `int3`: `#BP` → `#PF` → `#PF` → `#DF`. The
-test then verifies that the handler ran on the IST1 stack.
-`tests/kernel/test_ubsan.c` covers overflow, out-of-bounds and shift
-reports. The `disk-panic.img` QEMU run checks the full panic output
-against expected patterns.
+test then verifies that the handler ran on the IST1 stack. Another test
+checks that `CR4.MCE` is set (skipped on a CPU without MCE).
+
+- `tests/kernel/test_apic.c` (APIC mode) sends this CPU an NMI with
+  interrupts off. It checks that the NMI is counted at once, that nothing
+  was printed in NMI context, and that `1 NMI(s) received` is logged once
+  interrupts are back on.
+- `tests/kernel/test_user.c` covers the user-mode policy: each hostile
+  program's exact exit status, `#MF` from an x87 error (with `CR0.NE`
+  set), and a process that sets AC and NT while another runs. Both must
+  exit normally. On a CPU with SMAP the test also checks that interrupts
+  did arrive with AC set (`trap_ac_entries()` grew).
+- `tests/kernel/test_ubsan.c` covers overflow, out-of-bounds and shift
+  reports (debug builds only).
+- The `disk-panic.img` QEMU run checks the full panic output against
+  expected patterns.
 
 ## Hardware interrupts and time (M5)
 
@@ -125,7 +179,8 @@ already be acknowledged.
 1193, 999,847 ns per tick). `time_ns()` multiplies ticks by that integer,
 which drifts about 0.4 ppm, far below the crystal's own tolerance. The
 TSC is calibrated by polling the HPET or PIT channel 2, as on the APIC
-path.
+path. This path has no tick without the PIT, so if `pit_present()` finds
+none the boot panics rather than hang.
 
 **Locks.** `spin_lock_irqsave` disables interrupts, disables preemption,
 and takes the lock with an atomic exchange. With one CPU, the only way to
@@ -138,18 +193,31 @@ Locks and their nesting order (outer first):
 | Lock | Protects |
 |------|----------|
 | `kmalloc` | slab state |
-| `vmalloc` | the VA bump pointer |
-| `kernel page tables` (per address space) | page-table updates |
-| `pmm` | the buddy allocator |
-| `console` | whole printk messages (bypassed once a panic starts) |
+| `vmalloc` | the VA bump pointer and the ring of freed ranges |
+| `kernel page tables`, `user page tables` (one per address space) | page-table updates |
+| `pmm` | the buddy allocator, including block owner tags |
+| `sched` | task states, run queue, sleep list, wait queues, task tree ([scheduler.md](scheduler.md)) |
+| `ioapic` | the I/O APICs' index/data register pairs |
+| `console` | whole printk messages and the log ring (bypassed once a panic starts) |
+
+Apart from printing, only two nestings occur: `kmalloc` takes `pmm` when
+a slab grows or shrinks, and a page-table lock takes `pmm` for a new
+table. `vmalloc` takes nothing while held (it maps pages after dropping
+its lock), and neither do `sched` and `ioapic`. `console` is innermost: a
+message may be printed with any other lock held. Nothing calls `kmalloc`
+or `vmalloc` while holding a page-table or `pmm` lock.
 
 Every misuse check that panics while holding a lock releases it first,
 so a panic caught by `panic_expect()` in a test leaves the subsystem
 usable.
 
-**Tests** (`tests/kernel/test_irq.c`): timer interrupts arrive; the tick
-rate agrees with the TSC within 5% over 100 ms; `time_ns` advances;
-masking IRQ 0 stops ticks completely while interrupts stay enabled, and
-unmasking resumes them; spinlocks restore IF and preemption state
+**Tests** (`tests/kernel/test_irq.c`): timer interrupts arrive; on this
+path the PIT divisor is exactly 1193, the counter's readings span more
+than half of it, and the ticks of a 100-tick wait take between 0.5 ms
+and 4 ms of TSC time on average (only a factor-sized error fails that; see
+[interrupts.md](interrupts.md) for why, and for the tighter checks against
+the HPET and an independent PIT measurement); `time_ns` advances;
+masking the tick stops it completely while interrupts stay enabled, and
+unmasking resumes it; spinlocks restore IF and preemption state
 exactly, including when nested with interrupts already off; and a
 recursive acquisition is caught as a panic instead of a hang.

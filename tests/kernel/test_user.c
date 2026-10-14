@@ -5,9 +5,13 @@
  * and every other process, unharmed.
  */
 #include <arch/cpu.h>
+#include <arch/cpuid.h>
+#include <arch/irqflags.h>
+#include <arch/paging.h>
 #include <arch/segments.h>
 #include <arch/trap.h>
 #include <core/ktest.h>
+#include <core/time.h>
 #include <lib/errno.h>
 #include <mm/kmalloc.h>
 #include <mm/pmm.h>
@@ -77,9 +81,10 @@ KTEST(sysret_to_noncanonical_rip_kills_only_the_process)
     KEXPECT_EQ(syscall_slow_exits, slow + 1);
     /*
      * ...and the process died. Real CPUs reject the non-canonical RIP in
-     * iretq itself (#GP in ring 0, recovered via the exception table);
-     * QEMU's TCG does not check, so the fault arrives one instruction
-     * later as a user-mode #PF. Either way only the process dies.
+     * iretq itself (#GP in ring 0, recovered via the exception table), and
+     * so does QEMU 9.2's TCG (the x2APIC runs take that path). QEMU 8.2's
+     * does not check, so the fault arrives one instruction later as a
+     * user-mode #PF. Either way only the process dies.
      */
     KEXPECT(status == EXIT_STATUS_FAULT(VEC_GENERAL_PROTECTION) ||
             status == EXIT_STATUS_FAULT(VEC_PAGE_FAULT));
@@ -114,6 +119,47 @@ KTEST(faulting_iretq_kills_only_the_task)
     KEXPECT_EQ(task_wait(pid, &status), pid);
     KEXPECT_EQ(status, EXIT_STATUS_FAULT(VEC_GENERAL_PROTECTION));
     KEXPECT_EQ(run("hello"), 42); /* syscalls still find the kernel stack via GS */
+}
+
+/*
+ * NT and AC are the process's to set, never the kernel's to inherit: with
+ * NT, the next iretq anywhere in the kernel raises #GP; with AC, SMAP is off
+ * in ring 0. The program sets both and keeps them across 100 syscalls and
+ * ~30 timer interrupts, while a second process runs, and both must finish
+ * normally.
+ */
+KTEST(user_rflags_nt_and_ac_do_not_leak_into_the_kernel)
+{
+    u64 ac_entries = trap_ac_entries();
+    int bomb = process_spawn("flagbomb"), other = process_spawn("hello");
+    int status, done = 0, ok = 0;
+
+    KEXPECT(bomb > 0 && other > 0);
+    while (done < 2) {
+        int pid = task_wait(-1, &status);
+
+        if (pid < 0)
+            break;
+        done++;
+        ok += (pid == bomb && status == 0) || (pid == other && status == 42);
+    }
+    KEXPECT_EQ(ok, 2);
+    /* The hazard was real: interrupts did arrive with the user's AC set. */
+    if (cpu_features()->smap)
+        KEXPECT(trap_ac_entries() > ac_entries);
+}
+
+/* Nothing from boot (firmware SSE use, say) shows through in a new process's registers. */
+KTEST(user_processes_start_with_clean_fpu_registers)
+{
+    KEXPECT_EQ(run("fpuclean"), 0);
+}
+
+/* An unmasked x87 error must raise #MF (CR0.NE), killing only the process. */
+KTEST(user_x87_error_raises_mf)
+{
+    KEXPECT(read_cr0() & CR0_NE);
+    KEXPECT_EQ(run("x87fault"), EXIT_STATUS_FAULT(VEC_X87_FP));
 }
 
 KTEST(fpu_state_is_isolated_between_processes)
@@ -154,9 +200,100 @@ KTEST(process_churn_returns_all_memory)
         KEXPECT_EQ(run(i % 2 ? "hello" : "faulter"), i % 2 ? 42 : EXIT_STATUS_FAULT(14));
     pmm_get_stats(&p1);
     kmalloc_get_stats(&k1);
-    /* Page tables, stacks and frames all come back; the slack is vmalloc's PTs. */
-    KEXPECT(p1.free_frames + 4 >= p0.free_frames);
+    /* Page tables, stacks and frames all come back, to the frame. */
+    KEXPECT_EQ(p1.free_frames, p0.free_frames);
     KEXPECT_EQ(k1.small_live, k0.small_live);
+}
+
+static bool is_zombie_child(int pid)
+{
+    bool zombie = false;
+    irqflags_t flags = arch_irq_save();
+
+    list_for_each(it, &task_current()->children)
+    {
+        struct task *c = list_entry(it, struct task, sibling);
+
+        zombie |= c->pid == pid && c->state == TASK_ZOMBIE;
+    }
+    arch_irq_restore(flags);
+    return zombie;
+}
+
+/*
+ * A process's memory goes back when it exits, not when its parent reaps
+ * it: a parent that never waits must not pin every child's pages. Until
+ * then a zombie holds only its task struct and kernel stack.
+ */
+KTEST(zombies_hold_no_user_memory)
+{
+    enum { N = 8 };
+    struct pmm_stats zombies, reaped;
+    struct kmalloc_stats kzombies, kreaped;
+    int pids[N];
+    u64 deadline = time_ticks() + 2000;
+
+    KEXPECT_EQ(run("hello"), 42); /* warm up caches */
+    for (int i = 0; i < N; i++) {
+        pids[i] = process_spawn("hello");
+        KEXPECT(pids[i] > 0);
+    }
+    for (int i = 0; i < N; i++) {
+        while (pids[i] > 0 && !is_zombie_child(pids[i]) && time_ticks() < deadline)
+            sleep_ms(1);
+        KEXPECT(pids[i] <= 0 || is_zombie_child(pids[i]));
+    }
+    pmm_get_stats(&zombies);
+    kmalloc_get_stats(&kzombies);
+    for (int i = 0; i < N; i++) {
+        int status = -1;
+
+        if (pids[i] > 0) {
+            KEXPECT_EQ(task_wait(pids[i], &status), pids[i]);
+            KEXPECT_EQ(status, 42);
+        }
+    }
+    pmm_get_stats(&reaped);
+    kmalloc_get_stats(&kreaped);
+    /* Reaping frees a kernel stack and a task struct each, and nothing else. */
+    KEXPECT(reaped.free_frames - zombies.free_frames <= N * (KSTACK_SIZE / PAGE_SIZE_4K + 1));
+    /* Of the heap, only the task structs: the FPU areas went at exit too. */
+    KEXPECT_EQ(kzombies.small_live - kreaped.small_live, N);
+}
+
+static struct wait_queue hold_queue = WAIT_QUEUE_INIT(hold_queue);
+static volatile bool hold_released;
+
+static int hold(void *arg)
+{
+    (void)arg;
+    wait_event(&hold_queue, hold_released);
+    return 0;
+}
+
+/* A spawn loop stops at TASK_MAX with -EAGAIN, and creation works again after. */
+KTEST(task_creation_stops_at_the_limit)
+{
+    struct sched_stats st;
+    int held = 0;
+
+    hold_released = false;
+    for (;;) {
+        sched_get_stats(&st);
+        if (st.allocated >= TASK_MAX || !kthread_create(hold, NULL, "hold", 0))
+            break;
+        held++;
+    }
+    sched_get_stats(&st);
+    KEXPECT_EQ(st.allocated, TASK_MAX);
+    KEXPECT(kthread_create(hold, NULL, "hold", 0) == NULL);
+    KEXPECT_EQ(process_spawn("hello"), -EAGAIN);
+
+    hold_released = true;
+    wake_up_all(&hold_queue);
+    for (int i = 0; i < held; i++)
+        KEXPECT(task_wait(-1, NULL) > 0);
+    KEXPECT_EQ(run("hello"), 42);
 }
 
 KTEST(init_runs_the_whole_tour)

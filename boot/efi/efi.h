@@ -91,6 +91,14 @@ struct efi_boot_services {
         *install_configuration_table;
     void *load_image, *start_image, *exit, *unload_image;
     efi_status (*exit_boot_services)(efi_handle image, u64 map_key);
+    void *get_next_monotonic_count, *stall, *set_watchdog_timer;
+    void *connect_controller, *disconnect_controller;
+    void *open_protocol, *close_protocol, *open_protocol_information;
+    void *protocols_per_handle;
+    efi_status (*locate_handle_buffer)(u32 search_type, const struct efi_guid *protocol,
+                                       void *search_key, u64 *count, efi_handle **handles);
+    efi_status (*locate_protocol)(const struct efi_guid *protocol, void *registration,
+                                  void **interface);
 };
 
 struct efi_configuration_table {
@@ -127,6 +135,37 @@ struct efi_loaded_image {
     u64 image_size;
 };
 
+#define EFI_LOCATE_BY_PROTOCOL 2u
+
+enum efi_pixel_format {
+    EFI_PIXEL_RGB_RESERVED_8BIT = 0, /* byte 0 red, 1 green, 2 blue */
+    EFI_PIXEL_BGR_RESERVED_8BIT = 1, /* byte 0 blue, 1 green, 2 red */
+    EFI_PIXEL_BIT_MASK = 2,
+    EFI_PIXEL_BLT_ONLY = 3, /* no linear framebuffer at all */
+};
+
+struct efi_gop_mode_info {
+    u32 version;
+    u32 width, height;
+    u32 pixel_format; /* enum efi_pixel_format */
+    u32 red_mask, green_mask, blue_mask, reserved_mask;
+    u32 pixels_per_scan_line;
+};
+
+struct efi_gop_mode {
+    u32 max_mode;
+    u32 mode;
+    struct efi_gop_mode_info *info;
+    u64 size_of_info;
+    u64 frame_buffer_base;
+    u64 frame_buffer_size;
+};
+
+struct efi_graphics_output {
+    void *query_mode, *set_mode, *blt;
+    struct efi_gop_mode *mode;
+};
+
 #define EFI_FILE_MODE_READ 1ull
 
 struct efi_file {
@@ -155,7 +194,14 @@ static_assert(__builtin_offsetof(struct efi_boot_services, allocate_pages) == 40
 static_assert(__builtin_offsetof(struct efi_boot_services, get_memory_map) == 56, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_boot_services, handle_protocol) == 152, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_boot_services, exit_boot_services) == 232, "UEFI 4.4");
+static_assert(__builtin_offsetof(struct efi_boot_services, locate_handle_buffer) == 312,
+              "UEFI 4.4");
+static_assert(__builtin_offsetof(struct efi_boot_services, locate_protocol) == 320, "UEFI 4.4");
 static_assert(__builtin_offsetof(struct efi_loaded_image, image_size) == 72, "UEFI 9.1");
+static_assert(__builtin_offsetof(struct efi_gop_mode, frame_buffer_base) == 24, "UEFI 12.9");
+static_assert(__builtin_offsetof(struct efi_gop_mode_info, pixels_per_scan_line) == 32,
+              "UEFI 12.9");
+static_assert(__builtin_offsetof(struct efi_graphics_output, mode) == 24, "UEFI 12.9");
 static_assert(sizeof(struct efi_memory_descriptor) == 40, "UEFI 7.2");
 
 #endif /* MINIOS_BOOT_EFI_H */

@@ -21,6 +21,7 @@
 #include <core/sections.h>
 #include <core/time.h>
 #include <drivers/qemu.h>
+#include <drivers/screen.h>
 #include <drivers/serial.h>
 #include <lib/cmdline.h>
 #include <lib/string.h>
@@ -31,8 +32,14 @@
 
 __noreturn void kmain(u64 boot_info_phys);
 
+/*
+ * The kernel's own copy. The loader's page may be ordinary RAM (the UEFI
+ * loader takes any page below 1 GiB the firmware has free), which the
+ * PMM hands out once it runs.
+ */
+static struct boot_info boot_info_copy;
 static const struct boot_info *boot_info;
-static u64 entry_rflags;
+extern u64 loader_rflags; /* entry.asm: RFLAGS exactly as the loader jumped in */
 
 const struct boot_info *boot_info_get(void)
 {
@@ -41,7 +48,7 @@ const struct boot_info *boot_info_get(void)
 
 u64 boot_entry_rflags(void)
 {
-    return entry_rflags;
+    return loader_rflags;
 }
 
 static const char *e820_type_name(u32 type)
@@ -84,9 +91,15 @@ static void print_memory_map(const struct boot_info *bi)
  */
 static const struct boot_info *validate_boot_info(u64 phys)
 {
+    /* Read through the loaders' window onto the first GiB (phys_to_kimage). */
+    if (phys == 0 || !IS_ALIGNED(phys, 8) || phys > BOOT_WINDOW_SIZE - sizeof(struct boot_info)) {
+        kprintf("FATAL: boot_info at %#llx is outside the boot window\n", (unsigned long long)phys);
+        qemu_exit(QEMU_EXIT_FAILURE);
+    }
+
     const struct boot_info *bi = phys_to_kimage(phys);
 
-    if (phys != BOOT_INFO_PHYS || bi->magic != BOOT_INFO_MAGIC) {
+    if (bi->magic != BOOT_INFO_MAGIC) {
         kprintf("FATAL: no valid boot_info at %#llx\n", (unsigned long long)phys);
         qemu_exit(QEMU_EXIT_FAILURE);
     }
@@ -94,7 +107,10 @@ static const struct boot_info *validate_boot_info(u64 phys)
         kprintf("FATAL: boot_info version %u, kernel expects %u\n", bi->version, BOOT_INFO_VERSION);
         qemu_exit(QEMU_EXIT_FAILURE);
     }
-    return bi;
+    memcpy(&boot_info_copy, bi, sizeof(boot_info_copy));
+    boot_info_copy.mmap_count = MIN(boot_info_copy.mmap_count, BOOT_MMAP_MAX);
+    boot_info_copy.cmdline[BOOT_CMDLINE_MAX - 1] = '\0';
+    return &boot_info_copy;
 }
 
 static void apply_cmdline(const char *cmdline)
@@ -177,7 +193,6 @@ static __noreturn void run_init(const char *cmdline)
 
 __noreturn void kmain(u64 boot_info_phys)
 {
-    entry_rflags = read_rflags(); /* the loader's hand-off state, for tests */
     serial_init();
     boot_info = validate_boot_info(boot_info_phys);
     apply_cmdline(boot_info->cmdline);
@@ -189,9 +204,9 @@ __noreturn void kmain(u64 boot_info_phys)
     run_selftest(boot_info->cmdline);
 
     cpu_detect_features();
-    mm_init(boot_info_phys);
-    boot_info = phys_to_virt(boot_info_phys);
+    mm_init(boot_info);
 
+    screen_init(boot_info); /* replays everything logged so far */
     acpi_init(boot_info);
     irq_init();
     time_init();
@@ -200,6 +215,8 @@ __noreturn void kmain(u64 boot_info_phys)
     syscall_init();
     sched_init();
     cpu_irq_enable();
+    console_go_live(); /* screen drawing leaves interrupts on from here */
+    console_start_thread();
 
     kprintf("%s %s (x86_64, %s build)\n", MINIOS_NAME, MINIOS_VERSION, MINIOS_BUILD);
     kprintf("loader: %s\n", boot_info->loader == BOOT_LOADER_UEFI ? "UEFI" : "BIOS");

@@ -35,8 +35,11 @@ text really is read-only.
 **Address spaces.** A new PML4 copies the kernel half (entries 256–511,
 frozen at boot) and starts with an empty user half. Tearing one down frees
 every user frame and every user page table. That happens when the process
-is reaped, on its parent's stack and page tables, never while the space is
-active.
+exits, not when it is reaped: `task_exit()` detaches the space, switches
+the task onto the kernel's page tables, and only then frees it, so the
+space is never active while it is destroyed. The FPU area goes at the same
+time. A zombie keeps only its task struct and kernel stack, so a parent
+that never calls `wait` does not pin its children's memory.
 
 ## Entering and leaving ring 3
 
@@ -57,10 +60,27 @@ Both are updated on every context switch.
 
 ### The syscall entry
 
-`SYSCALL` leaves RSP pointing at the user stack and interrupts disabled
-(`FMASK` clears IF, DF, TF and AC). The entry does `swapgs`, saves the user
-RSP in per-CPU scratch space, loads the kernel stack, builds the frame,
-and only then re-enables interrupts. Syscalls are preemptible.
+`SYSCALL` leaves RSP pointing at the user stack and interrupts disabled.
+The entry does `swapgs`, saves the user RSP in per-CPU scratch space, loads
+the kernel stack, builds the frame, and only then re-enables interrupts.
+Syscalls are preemptible.
+
+**`FMASK` clears every flag ring 3 can set**: CF, PF, AF, ZF, SF, TF,
+IF, DF, OF, IOPL, NT, RF, AC and ID. The way out restores the user's own
+flags from the frame (`sysret` through R11, or `iretq`). The ones that
+matter:
+- IF: off until the stack switch;
+- DF and TF: the kernel assumes DF clear, and must not single-step;
+- AC: set in ring 0 it switches SMAP off;
+- NT: the kernel does not save RFLAGS across context switches, so an NT
+  flag the user set would reach the next `iretq` of whatever task ran next,
+  and `iretq` with NT set raises `#GP` in 64-bit mode. Until `FMASK`
+  cleared it, a process could kill other processes this way, or panic the
+  kernel through a kernel thread's `iretq`.
+
+Interrupts from ring 3 need the same care for AC, which interrupt
+delivery does not clear: on CPUs with SMAP, `trap_dispatch()` clears it
+on entry (see [traps.md](traps.md)).
 
 ### SYSRET only when it is safe (CVE-2012-0217)
 
@@ -85,21 +105,23 @@ process (`user_bad_iret`). A test drives this deterministically by
 "returning" with an SS no CPU accepts, then checks that a later syscall
 still finds its stack through GS.
 
-QEMU's TCG does not check RIP canonicality in `iretq`. There the hazard
-program instead dies one instruction later, with a user-mode `#PF`. The
-test accepts either outcome and documents why.
+QEMU 8.2's TCG does not check RIP canonicality in `iretq`. There the
+hazard program instead dies one instruction later, with a user-mode
+`#PF`. QEMU 9.2's TCG does check, so the x2APIC runs (`make test-x2apic`)
+take the real `#GP` path, and the recovery works. The test accepts either
+outcome and documents why.
 
 ## System calls
 
 | # | Call | Notes |
 |---|------|-------|
 | 0 | `exit(code)` | |
-| 1 | `write(fd, buf, len)` | fd 1/2 only; copied in 256-byte chunks; each chunk is one console message |
+| 1 | `write(fd, buf, len)` | fd 1/2 only; copied in 256-byte chunks; each chunk is one console message, sent to COM1 with interrupts off (see [console.md](console.md)) |
 | 2 | `yield()` | |
 | 3 | `getpid()` | |
-| 4 | `sleep_ms(ms)` | capped at one hour |
-| 5 | `spawn(name)` | name copied byte by byte (it may end just before an unmapped page) |
-| 6 | `wait(pid or -1, int *status)` | the status pointer is validated *before* reaping, so a bad pointer cannot consume the child |
+| 4 | `sleep_ms(ms)` | capped at one hour; sleeps at least `ms` (see [scheduler.md](scheduler.md)) |
+| 5 | `spawn(name)` | name copied byte by byte (it may end just before an unmapped page); `-EAGAIN` at `TASK_MAX` tasks |
+| 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
 
 **User memory** is reached only through `copy_from_user`, `copy_to_user`
@@ -109,17 +131,38 @@ lifts SMAP for the copy alone (`stac`/`clac`, only on CPUs that have them),
 and turns faults into `-EFAULT` through the exception table. `badptr`
 throws kernel pointers, unmapped pointers, wrapping and `USER_TOP`-crossing
 ranges, bad fds, over-long names and unknown syscall numbers at the kernel,
-and checks every errno.
+and checks every errno. Its `wait` cases (kernel, unmapped and read-only
+status pointers) must each fail without reaping the child, which a final
+`wait` then collects.
+
+A range check alone is not enough for `wait`'s status pointer: the page
+may be unmapped or read-only, and the copy-out happens after the child is
+reaped. So `sys_wait` writes the status once before waiting, through
+`copy_to_user`. Processes are single-threaded, so nothing can unmap the
+page between that write and the real one.
 
 ## Faults
 
 A CPU exception in ring 3 kills the process with status `128 + vector`
-and a log line; the kernel and every other process carry on. The tests
-run each hostile program and check the exact status:
+and a log line; the kernel and every other process carry on. Two vectors
+are excluded (see [traps.md](traps.md)): an NMI is counted and reported,
+and the process continues; a machine check panics the kernel. `int3` in
+ring 3 kills the process too (status 131). The tests run each hostile
+program and check the exact status:
 - NULL write: `#PF`
 - `cli`: `#GP`
 - reading kernel memory: `#PF`, protection, user
 - writing its own text: `#PF`, W^X
+- an unmasked x87 divide by zero (`x87fault`): `#MF`, status 144. This
+  needs `CR0.NE`, which the BIOS path inherits clear. Without it the error
+  goes to the legacy FERR#/IRQ 13 route, which nothing handles, and the
+  program would exit normally.
+
+`flagbomb` sets NT and AC, then makes 100 `yield` calls and spins for
+30 ms (about 30 timer interrupts) with both set, while `hello` runs
+alongside. Both must exit normally, `flagbomb` with its own NT and AC
+still set. On a CPU with SMAP the test also checks that interrupts did
+arrive with AC set, so the `clac` in `trap_dispatch()` was exercised.
 
 ## FPU
 
@@ -128,6 +171,15 @@ for tasks that own an FXSAVE area (processes): save on switch-out, restore
 on switch-in. The `fpu` test fills all 16 XMM registers with a
 per-process pattern in assembly, then yields 300 times while two other
 instances do the same, and checks that every register survived.
+
+Every process starts from one template, saved by `fpu_init()` after
+`fninit` and `MXCSR = 0x1F80` (all SSE exceptions masked). `fninit` resets
+the x87 control words but not the register contents, and nothing resets
+XMM0–15, so the template used to carry whatever the firmware left there
+(OVMF uses SSE) into every process. `fpu_init()` now zeroes ST0–7,
+XMM0–15 and the reserved tail of the template. `fpuclean` saves its own
+state before doing anything else and fails if any of ST0–7 or XMM0–15 is
+nonzero.
 
 ## init
 

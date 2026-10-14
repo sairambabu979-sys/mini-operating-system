@@ -25,6 +25,7 @@
 #include <core/klog.h>
 #include <core/panic.h>
 #include <core/preempt.h>
+#include <core/printk.h>
 #include <core/spinlock.h>
 #include <core/time.h>
 #include <lib/errno.h>
@@ -51,6 +52,10 @@ static int next_pid = 2; /* 0: idle, 1: the boot task (kmain) */
 static bool running;
 static u64 context_switches;
 static u32 ntasks;
+static u32 nallocated = 1; /* the boot task; atomic, as task_free runs unlocked */
+
+/* Then every kernel stack reuses a freed range: no fresh VA, no new page tables. */
+static_assert(TASK_MAX + VMALLOC_QUARANTINE <= VMALLOC_REUSE_SLOTS, "vmalloc reuse ring too small");
 
 struct task *task_current(void)
 {
@@ -111,7 +116,19 @@ static void wake_locked(struct task *t)
         list_remove(&t->wait_link);
         t->sleeping = false;
     }
-    if (t->state == TASK_BLOCKED)
+    if (t->state != TASK_BLOCKED)
+        return;
+    /*
+     * An interrupt handler can wake the very task it interrupted: one
+     * between sched_prepare_wait() and its condition check. It is still on
+     * the CPU, so it only becomes RUNNING again; queueing it would leave a
+     * stale run-queue entry once it carries on (and, if it then exits, a
+     * zombie that gets scheduled, or a freed task still queued). Should it
+     * still call schedule(), a RUNNING prev is simply a yield.
+     */
+    if (t == current_task)
+        t->state = TASK_RUNNING;
+    else
         make_runnable(t);
 }
 
@@ -131,6 +148,7 @@ static void task_free(struct task *t)
     sched_arch_task_free(t); /* address space, FPU state */
     vfree(t->kstack);
     kfree(t);
+    __atomic_fetch_sub(&nallocated, 1, __ATOMIC_RELAXED);
 }
 
 /*
@@ -173,15 +191,22 @@ static void task_init_common(struct task *t, const char *name)
     wait_queue_init(&t->child_exit);
 }
 
-struct task *sched_task_alloc(int (*fn)(void *), void *arg, const char *name)
+struct task *sched_task_alloc(int (*fn)(void *), void *arg, const char *name, int *err)
 {
+    if (__atomic_fetch_add(&nallocated, 1, __ATOMIC_RELAXED) >= TASK_MAX) {
+        __atomic_fetch_sub(&nallocated, 1, __ATOMIC_RELAXED);
+        *err = -EAGAIN;
+        return NULL;
+    }
+
     struct task *t = kzalloc(sizeof(*t));
 
-    if (!t)
-        return NULL;
-    t->kstack = vmalloc(KSTACK_SIZE);
-    if (!t->kstack) {
+    if (t)
+        t->kstack = vmalloc(KSTACK_SIZE);
+    if (!t || !t->kstack) {
         kfree(t);
+        __atomic_fetch_sub(&nallocated, 1, __ATOMIC_RELAXED);
+        *err = -ENOMEM;
         return NULL;
     }
     t->kstack_top = (uptr)t->kstack + KSTACK_SIZE;
@@ -215,7 +240,8 @@ void sched_admit(struct task *t, unsigned flags)
 
 struct task *kthread_create(int (*fn)(void *), void *arg, const char *name, unsigned flags)
 {
-    struct task *t = sched_task_alloc(fn, arg, name);
+    int err;
+    struct task *t = sched_task_alloc(fn, arg, name, &err);
 
     if (t)
         sched_admit(t, flags);
@@ -387,7 +413,11 @@ void sleep_ticks(u64 n)
 
 void sleep_ms(u64 ms)
 {
-    sleep_ticks(time_ms_to_ticks(ms));
+    /*
+     * The current tick is already partly over: n ticks from now can be
+     * just over n - 1 tick periods. One more makes the duration a minimum.
+     */
+    sleep_ticks(time_ms_to_ticks(ms) + 1);
 }
 
 void wait_queue_init(struct wait_queue *wq)
@@ -453,7 +483,10 @@ __noreturn void task_exit(int code)
     if (t == &boot_task || t == idle_task)
         panic("task %s (pid %d) must never exit", t->name, t->pid);
 
+    /* Its memory goes back now, not when (or if) the parent reaps it. */
+    sched_arch_task_exit(t);
     lock_sched(&flags);
+    BUG_ON(t->on_rq); /* running tasks are never queued: see wake_locked() */
     t->exit_code = code;
 
     /* Orphans are adopted by the boot task, which reaps whatever it is given. */
@@ -540,8 +573,11 @@ static int idle_main(void *arg)
 {
     (void)arg;
     /* sti; hlt is atomic with respect to interrupts: no wakeup is missed. */
-    for (;;)
+    for (;;) {
+        cpu_irq_enable();
+        console_drain(); /* output logged with interrupts off reaches the screen */
         __asm__ volatile("sti; hlt" ::: "memory");
+    }
     return 0;
 }
 
@@ -553,7 +589,9 @@ void sched_init(void)
     list_push_back(&all_tasks, &boot_task.all_link);
     current_task = &boot_task;
 
-    idle_task = sched_task_alloc(idle_main, NULL, "idle");
+    int err;
+
+    idle_task = sched_task_alloc(idle_main, NULL, "idle", &err);
     if (!idle_task)
         panic("sched: cannot allocate the idle task");
     idle_task->pid = 0;
@@ -576,6 +614,7 @@ void sched_get_stats(struct sched_stats *out)
     list_for_each(it, &run_queue) runnable++;
     out->context_switches = context_switches;
     out->tasks = ntasks;
+    out->allocated = __atomic_load_n(&nallocated, __ATOMIC_RELAXED);
     out->runnable = runnable;
     unlock_sched(flags);
 }

@@ -24,4 +24,13 @@ u16 pit_read_counter(void);
 void pit_oneshot_start(u16 count);
 bool pit_oneshot_done(void);
 
+/*
+ * Whether a working 8254 is there. Programming channel 2's one-shot drives
+ * its output low; on a platform without a PIT (some recent chipsets gate
+ * it off) port 0x61 floats and reads high. The output must then rise when
+ * the 1 ms count runs out: a PIT that answers but does not count is not
+ * one. Uses channel 2 only.
+ */
+bool pit_present(void);
+
 #endif /* MINIOS_DRIVERS_PIT_H */

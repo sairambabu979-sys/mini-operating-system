@@ -7,11 +7,12 @@
  *   - #BP: report and continue (a breakpoint is not an error)
  *   - NMI: report and continue
  *   - anything else in kernel mode: panic with a full decode
- *   - user mode: arrives with processes (M7); until then, panic
+ *   - user mode: kill the process (process_kill_on_fault); #MC panics
  */
 #define pr_fmt(fmt) "traps: " fmt
 
 #include <arch/cpu.h>
+#include <arch/cpuid.h>
 #include <arch/extable.h>
 #include <arch/io.h>
 #include <arch/setjmp.h>
@@ -59,6 +60,8 @@ const char *trap_name(u64 vector)
 
 static struct trap_expectation *expectation;
 static u64 breakpoint_count;
+static u64 ac_entries;
+static volatile u64 nmi_count, nmi_reported, nmi_last_rip;
 
 void trap_expect(struct trap_expectation *e, u64 vector, struct kjmp_buf *resume)
 {
@@ -90,6 +93,7 @@ static bool handle_expected(struct trap_frame *f)
     e->error_code = f->error_code;
     e->cr2 = read_cr2();
     e->handler_rsp = read_rsp();
+    e->handler_rflags = read_rflags();
 
     uptr fixup = extable_find(f->rip);
 
@@ -119,7 +123,14 @@ static void handle_exception(struct trap_frame *f)
         pr_info("breakpoint at %#llx\n", (unsigned long long)(f->rip - 1));
         return;
     case VEC_NMI:
-        pr_warn("NMI received at %#llx\n", (unsigned long long)f->rip);
+        /*
+         * NMIs ignore IF: the interrupted code may hold any lock, the
+         * console's included, so printing here would deadlock (or, with
+         * recursion detection, panic). Count it; the next maskable
+         * interrupt, which cannot arrive while a lock is held, reports it.
+         */
+        nmi_last_rip = f->rip;
+        nmi_count++;
         return;
     default:
         break;
@@ -138,11 +149,44 @@ static void handle_exception(struct trap_frame *f)
 
 void trap_dispatch(struct trap_frame *f)
 {
+    /*
+     * Interrupt delivery clears NT and TF but not AC, and AC in ring 0 means
+     * SMAP is off: a process that sets it, or a tick landing inside a user
+     * copy, would run this handler and whatever it switches to unprotected.
+     * iretq restores the interrupted context's own AC from the frame.
+     */
+    if (read_rflags() & RFLAGS_AC) {
+        ac_entries++;
+        if (cpu_features()->smap)
+            __asm__ volatile("clac" ::: "memory");
+    }
+
     if (f->vector < VEC_FIRST_IRQ) {
         handle_exception(f);
         return;
     }
     irq_dispatch(f);
+}
+
+void trap_report_nmis(void)
+{
+    u64 n = nmi_count;
+
+    if (n != nmi_reported) {
+        pr_warn("%llu NMI(s) received, the last at %#llx\n", (unsigned long long)(n - nmi_reported),
+                (unsigned long long)nmi_last_rip);
+        nmi_reported = n;
+    }
+}
+
+u64 trap_nmi_count(void)
+{
+    return nmi_count;
+}
+
+u64 trap_ac_entries(void)
+{
+    return ac_entries;
 }
 
 u64 trap_breakpoint_count(void)

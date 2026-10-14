@@ -3,7 +3,8 @@
 ; Kernel entry point.
 ;
 ; Contract with the bootloader (docs/design/boot.md):
-;   - 64-bit long mode, paging on, interrupts off, direction flag undefined
+;   - 64-bit long mode, paging on, interrupts off, NMI masked, PICs masked,
+;     direction flag clear (test_boot.c checks; cld anyway)
 ;   - physical 0-1 GiB mapped both at 0 and at KERNEL_VMA (-2 GiB)
 ;   - RDI = physical address of struct boot_info
 ;   - no valid stack: we must not touch memory through RSP before loading it
@@ -13,13 +14,16 @@ default rel
 
 section .text.entry
 global _start
+global loader_rflags
 extern kmain
 extern __stack_chk_guard
 
 _start:
+    lea     rsp, [boot_stack_top]   ; lea leaves RFLAGS alone
+    pushfq
+    pop     qword [loader_rflags]   ; the hand-off state, before cli/cld hide it (tests)
     cli
     cld
-    lea     rsp, [boot_stack_top]
     xor     ebp, ebp                ; terminates frame-pointer backtraces
 
     ; Seed the stack-protector canary before any protected C function runs.
@@ -38,6 +42,10 @@ _start:
     cli
     hlt
     jmp     .halt
+
+section .data
+align 8
+loader_rflags: dq 0
 
 section .bss
 align 16

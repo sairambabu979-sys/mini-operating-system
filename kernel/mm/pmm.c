@@ -68,14 +68,22 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
     regions = map;
     nregions = nmap;
 
-    u64 top = 0;
+    u64 top = 0, beyond = 0;
 
+    /* Every frame handed out is used through the direct map: none above it. */
     for (usize i = 0; i < nregions; i++) {
-        if (regions[i].type == E820_USABLE)
-            top = MAX(top, regions[i].end);
+        if (regions[i].type != E820_USABLE)
+            continue;
+        if (regions[i].base < HHDM_SIZE) /* else the page array would grow for nothing */
+            top = MAX(top, MIN(regions[i].end, HHDM_SIZE));
+        if (regions[i].end > HHDM_SIZE)
+            beyond += regions[i].end - MAX(regions[i].base, HHDM_SIZE);
     }
     if (top == 0)
         panic("pmm: firmware reports no usable memory");
+    if (beyond)
+        pr_warn("%llu MiB of RAM above the %llu GiB direct map left unused\n",
+                (unsigned long long)(beyond >> 20), (unsigned long long)(HHDM_SIZE >> 30));
 
     u64 nframes = pfn_of(top);
     u64 kernel_end = ALIGN_UP(bi->kernel_phys_end, PAGE_SIZE);
@@ -98,8 +106,9 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
     };
 
     for (usize i = 0; i < nregions; i++) {
-        if (regions[i].type == E820_USABLE)
-            add_usable(regions[i].base, regions[i].end, reserved, ARRAY_SIZE(reserved));
+        if (regions[i].type == E820_USABLE && regions[i].base < HHDM_SIZE)
+            add_usable(regions[i].base, MIN(regions[i].end, HHDM_SIZE), reserved,
+                       ARRAY_SIZE(reserved));
     }
 
     pr_info("%llu MiB managed, %llu KiB metadata at %#llx, highest frame %#llx\n",
@@ -134,6 +143,26 @@ void pmm_free_pages(u64 phys, unsigned order)
     if (err != 0)
         panic("pmm: invalid free of %#llx (order %u): double free or wrong order?",
               (unsigned long long)phys, order);
+}
+
+void pmm_set_owner(u64 phys, u16 owner)
+{
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+
+    BUG_ON(buddy_block_order(&buddy, pfn_of(phys)) < 0);
+    buddy.pages[pfn_of(phys)].owner = owner;
+    spin_unlock_irqrestore(&pmm_lock, flags);
+}
+
+int pmm_block_owner(u64 phys)
+{
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+    int owner = IS_ALIGNED(phys, PAGE_SIZE) && buddy_block_order(&buddy, pfn_of(phys)) >= 0
+                    ? buddy.pages[pfn_of(phys)].owner
+                    : -1;
+
+    spin_unlock_irqrestore(&pmm_lock, flags);
+    return owner;
 }
 
 int pmm_block_order(u64 phys)

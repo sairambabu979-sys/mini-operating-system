@@ -19,9 +19,34 @@
 ;   !M  E820 failed or map is empty    !S  staging area not usable RAM
 ;   !K  bad stage-2 header             !D  disk read failed
 ;   !F  kernel is not a valid ELF64    !P  bad program header
+;   !a  (A20 test builds) A20 could not be turned off
+;
+; A20 test builds (-DA20_SELFTEST=bios|kbc|fast) first turn A20 off, then
+; may turn it back on by that one method only, and say so on COM1.
+; SeaBIOS hands over with A20 already on, so without them none of the
+; three methods would ever run under test.
 
 %include "layout.inc"
 %include "asm-offsets.inc"
+
+%ifdef A20_SELFTEST
+  %assign A20_TRY_BIOS 0
+  %assign A20_TRY_KBC  0
+  %assign A20_TRY_FAST 0
+  %ifidn A20_SELFTEST, bios
+    %assign A20_TRY_BIOS 1
+  %elifidn A20_SELFTEST, kbc
+    %assign A20_TRY_KBC 1
+  %elifidn A20_SELFTEST, fast
+    %assign A20_TRY_FAST 1
+  %else
+    %error "A20_SELFTEST must be bios, kbc or fast"
+  %endif
+%else
+  %assign A20_TRY_BIOS 1
+  %assign A20_TRY_KBC  1
+  %assign A20_TRY_FAST 1
+%endif
 
 bits 16
 org STAGE2_ADDR
@@ -97,6 +122,10 @@ err_header: mov al, 'K'
             jmp fail16
 err_disk:   mov al, 'D'
             jmp fail16
+%ifdef A20_SELFTEST
+err_a20_off: mov al, 'a'
+            jmp fail16
+%endif
 
 ; Prints "!<AL>" and halts forever.
 fail16:
@@ -164,15 +193,26 @@ putc:
 ; --------------------------------------------------------------------------
 
 enable_a20:
+%ifdef A20_SELFTEST
+    call    a20_force_off
+    call    a20_check
+    jnz     err_a20_off             ; still on: the test would prove nothing
+%endif
     call    a20_check
     jnz     .done
+%if A20_TRY_BIOS
     mov     ax, 0x2401              ; BIOS: enable A20 gate
     int     0x15
     call    a20_check
     jnz     .done
+%endif
+%if A20_TRY_KBC
+    mov     ah, 0x02                ; gate on
     call    a20_keyboard_controller
     call    a20_check
     jnz     .done
+%endif
+%if A20_TRY_FAST
     in      al, 0x92                ; "fast A20" via system control port A
     test    al, 0x02
     jnz     .fast_done
@@ -181,9 +221,42 @@ enable_a20:
     out     0x92, al
 .fast_done:
     call    a20_check
-    jz      err_a20
+    jnz     .done
+%endif
+    jmp     err_a20
+.done:
+%ifdef A20_SELFTEST
+    mov     si, a20_selftest_msg
+    call    puts
+%endif
+    ret
+
+%ifdef A20_SELFTEST
+; Turns A20 off by every method, so that only the one under test can
+; have turned it back on.
+a20_force_off:
+    mov     ax, 0x2400              ; BIOS: disable A20 gate
+    int     0x15
+    xor     ah, ah                  ; gate off
+    call    a20_keyboard_controller
+    in      al, 0x92
+    and     al, 0xFC                ; gate off; never set bit 0: it resets the machine
+    out     0x92, al
+    ret
+
+; Prints the NUL-terminated string at DS:SI.
+puts:
+    lodsb
+    test    al, al
+    jz      .done
+    call    putc
+    jmp     puts
 .done:
     ret
+
+%defstr A20_METHOD A20_SELFTEST
+a20_selftest_msg: db 13, 10, "A20 test: off, then on by ", A20_METHOD, 13, 10, 0
+%endif
 
 ; a20_check: ZF=0 if A20 is enabled, ZF=1 if addresses wrap at 1 MiB.
 ; Writes different bytes to 0000:0500 and FFFF:0510 (= 0x100500); if they
@@ -210,7 +283,9 @@ a20_check:
     popa                            ; popa does not affect flags
     ret
 
-; Classic 8042 method: read the output port, set bit 1, write it back.
+; Classic 8042 method: read the output port, replace bit 1 (the A20 gate)
+; with AH (0x02 on, 0 off), write it back. Nothing below writes AH: the
+; waits use AL and CX.
 a20_keyboard_controller:
     cli
     call    kbc_wait_input
@@ -227,7 +302,8 @@ a20_keyboard_controller:
     out     0x64, al
     call    kbc_wait_input
     mov     al, bl
-    or      al, 0x02                ; A20 gate
+    and     al, 0xFD
+    or      al, ah                  ; A20 gate
     out     0x60, al
     call    kbc_wait_input
     mov     al, 0xAE                ; re-enable keyboard
@@ -278,11 +354,10 @@ detect_memory:
     cmp     eax, SMAP
     jne     err_mmap
     jcxz    .skip                   ; ECX = bytes written
-    cmp     cl, 20
-    jbe     .accept                 ; legacy 20-byte entry: keep pre-set attribute
-    test    byte [es:di + E820_ACPI], 1
-    jz      .skip                   ; ACPI 3.0: bit 0 clear means "ignore me"
-.accept:
+    ; ACPI 3.0's "enabled" attribute (bit 0) was deprecated in ACPI 6.0, and
+    ; some BIOSes leave it clear on every entry: honoring it lost all of RAM
+    ; on those. Like Linux, ignore it (and record every entry as valid).
+    mov     dword [es:di + E820_ACPI], 1
     mov     ecx, [es:di + E820_LENGTH]
     or      ecx, [es:di + E820_LENGTH + 4]
     jz      .skip                   ; zero-length entry

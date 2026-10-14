@@ -96,8 +96,14 @@ static s64 sys_wait(u64 pid, u64 user_status, u64 a2)
     int status = 0;
 
     (void)a2;
-    /* Validate the destination first: a bad pointer must not consume the child. */
-    if (user_status && !user_range_ok(user_status, sizeof(int)))
+    /*
+     * A bad pointer must not consume the child, and "in the user range" is
+     * not enough: the page may be unmapped or read-only. So the status is
+     * written once before anything is reaped (a waitpid() out-parameter, so
+     * writing 0 is harmless). Processes are single-threaded: nothing can
+     * unmap it between this write and the one after the wait.
+     */
+    if (user_status && copy_to_user((void *)user_status, &status, sizeof(status)) != 0)
         return -EFAULT;
     int r = task_wait((int)pid, &status);
 
@@ -140,7 +146,15 @@ void syscall_init(void)
      */
     wrmsr(MSR_STAR, ((u64)(GDT_USER_CODE32 | RPL_USER) << 48) | ((u64)GDT_KERNEL_CODE << 32));
     wrmsr(MSR_LSTAR, (u64)(uptr)syscall_entry);
-    /* Entry runs with IF off (until the stack switch), DF clear, no single-step, SMAP on. */
-    wrmsr(MSR_FMASK, RFLAGS_IF | RFLAGS_DF | RFLAGS_TF | RFLAGS_AC);
+    /*
+     * Every flag ring 3 can set is cleared on entry; sysret restores the
+     * user's own from R11. Above all IF (off until the stack switch), DF,
+     * TF, AC (SMAP stays on) and NT: the kernel does not save RFLAGS across
+     * context switches, so a user's NT would reach the next iretq of some
+     * other task and #GP it, kernel threads included.
+     */
+    wrmsr(MSR_FMASK, RFLAGS_CF | RFLAGS_PF | RFLAGS_AF | RFLAGS_ZF | RFLAGS_SF | RFLAGS_TF |
+                         RFLAGS_IF | RFLAGS_DF | RFLAGS_OF | RFLAGS_IOPL | RFLAGS_NT | RFLAGS_RF |
+                         RFLAGS_AC | RFLAGS_ID);
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
 }
