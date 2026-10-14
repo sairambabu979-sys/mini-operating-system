@@ -244,14 +244,19 @@ void screen_init(const struct boot_info *bi)
 {
     char value[16];
 
-    if (cmdline_get(bi->cmdline, "console", value, sizeof(value)) && strcmp(value, "serial") == 0) {
-        pr_info("console=serial: no screen console\n");
-        return;
+    if (cmdline_get(bi->cmdline, "console", value, sizeof(value))) {
+        if (strcmp(value, "serial") == 0) {
+            pr_info("console=serial: no screen console\n");
+            return;
+        }
+        pr_warn("unknown console '%s' ignored\n", value);
     }
     if (bi->framebuffer.phys)
         fb_init(&bi->framebuffer);
     else if (bi->loader == BOOT_LOADER_BIOS)
         vga_init();
+    else
+        pr_info("no framebuffer from the loader: no screen console\n");
 }
 
 const struct textgrid *screen_grid(void)

@@ -13,7 +13,7 @@
 #include <core/time.h>
 #include <drivers/pit.h>
 
-/* Waits (halting) until `n` more ticks have passed, or gives up. */
+/* Waits (spinning, with a TSC deadline) until `n` more ticks have passed, or gives up. */
 static bool wait_ticks(u64 n)
 {
     u64 target = time_ticks() + n;
@@ -22,7 +22,7 @@ static bool wait_ticks(u64 n)
     while (time_ticks() < target) {
         if (rdtsc() > deadline)
             return false;
-        cpu_halt();
+        cpu_pause(); /* not hlt: with no live interrupt source it would never return */
     }
     return true;
 }

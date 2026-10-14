@@ -16,21 +16,25 @@ Sources: `kernel/acpi/`, `kernel/arch/x86_64/lapic.c`,
 Drivers see neither: `irq_register(line, ...)` names an ISA line, and the
 interrupt arrives on vector `32 + line` either way. The legacy path is not
 dead code. It is the fallback for anything missing at boot, and
-`make test` boots it every time through the `noapic` option
-(`disk-ktest-noapic.img`); the automatic fallbacks have not run.
+`make test` boots it through the `noapic` option
+(`disk-ktest-noapic.img`) and through two of the automatic fallbacks: a
+CPU without a local APIC (`-cpu max,-apic`) and a machine without ACPI,
+hence without a MADT (`-machine pc,acpi=off`). The other two have not
+run: QEMU's `pc` machine always has its I/O APIC, and its one CPU has
+APIC ID 0.
 
-Why bother, when the 8259 + PIT worked: some recent platforms gate off the
-8254 PIT, and the 8259 cannot be used on SMP. The local APIC timer is
+Why bother, when the 8259 + PIT worked: some recent platforms gate off
+the 8254 PIT, and the 8259 cannot be used on SMP. The local APIC timer is
 also the tick every future CPU will need. The APIC path runs without any
 PIT when there is an HPET to calibrate against (`make test` boots it with
 `-machine pc,pit=off`). The 8259 path cannot: it panics with `no PIT: the
-8259 path ("noapic" or no usable I/O APIC) has no other tick` instead of
-hanging (no test run boots `noapic` without a PIT). `pit_present()`
-programs a 1 ms channel 2 one-shot and checks that its output went low
-(without a PIT, port `0x61` floats and reads high), then that it rises
-within a million polls: a PIT that answers but does not count (clock
-gating) would otherwise be the tick and hang the first wait. QEMU cannot
-model a gated PIT, so that half has not run.
+8259 path (<why the 8259 was chosen>) has no other tick` instead of
+hanging (the `noapic` image with `-machine pc,pit=off` boots into it).
+`pit_present()` programs a 1 ms channel 2 one-shot and checks that its
+output went low (without a PIT, port `0x61` floats and reads high), then
+that it rises within a million polls: a PIT that answers but does not
+count (clock gating) would otherwise be the tick and hang the first wait.
+QEMU cannot model a gated PIT, so that half has not run.
 
 An APIC ID above 255 also selects the 8259: the I/O APIC's destination
 field is 8 bits, and reaching a larger ID would need interrupt remapping.
@@ -126,8 +130,10 @@ window of the reference clock:
 - **Reference: the HPET**, when the ACPI table names one that passes its
   checks (period nonzero and at most 100 ns, as the specification
   requires; 32-bit counters wrap-handled). Its comparators are disabled:
-  it is only a clock. `nohpet` skips it (no test image boots with it: the
-  no-HPET run removes the HPET from the machine instead).
+  it is only a clock. `nohpet` skips it (`disk-ktest-nohpet.img`), and
+  then leaves the HPET exactly as the firmware left it: a firmware that
+  left LegacyReplacement routing on would keep the PIT off IRQ 0. QEMU's
+  never does.
 - **Otherwise PIT channel 2**, a polled one-shot gated through port
   `0x61`. It needs no interrupt and leaves channel 0 alone.
 
@@ -172,9 +178,11 @@ what was tried: `the HPET and PIT channel 2 both` after a failed HPET,
 `the PIT (HPET not used)` when ACPI lists an HPET that `nohpet` or its
 checks ruled out.
 
-The `pit=off,hpet=off` run boots into that panic (see
+The `pit=off,hpet=off` run boots into that panic, and the `nohpet`
+image with `pit=off` into its `(HPET not used)` form (see
 [Testing](#testing)). No run has an HPET that is listed but broken, so
-the fallback from the HPET to the PIT has never run. No run has a clock
+the fallback from the HPET to the PIT, and its `the HPET and PIT channel
+2 both` clause, have never run. No run has a clock
 that stops or crawls, or an implausible TSC rate, either.
 
 ## Testing
@@ -185,13 +193,20 @@ that stops or crawls, or an implausible TSC rate, either.
 | `disk-ktest.img` with `-machine pc,hpet=off` | APIC path, PIT channel 2 reference | 3 |
 | `disk-ktest.img` with `-machine pc,pit=off` | APIC path, HPET reference, no PIT at all | 4 |
 | `disk-ktest.img` with `-machine pc,pit=off,hpet=off` | no reference clock: must panic with `no working reference clock: the PIT (no HPET) did not time a 50 ms window` | – |
+| `disk-ktest-nohpet.img` (`ktest nohpet`) | APIC path, PIT channel 2 reference although ACPI lists an HPET | 3 |
+| `disk-ktest-nohpet.img` with `-machine pc,pit=off` | must panic with `the PIT (HPET not used)` | – |
+| `disk-ktest.img` with `-cpu max,-apic` | 8259 + PIT tick chosen automatically (the CPU has no local APIC), HPET reference; no `lapic:` or `ioapic:` line | 9 |
+| `disk-demo.img` with `-machine pc,acpi=off` | no RSDP, so no MADT and no HPET: 8259 + PIT tick chosen automatically, PIT reference, through the whole `init` demo | – |
 | `disk-ktest-noapic.img` | 8259 + PIT tick, HPET reference | 9 |
+| `disk-ktest-noapic.img` with `-machine pc,hpet=off` | 8259 + PIT tick, PIT reference | 11 |
+| `disk-ktest-noapic.img` with `-machine pc,pit=off` | 8259 path without a PIT: must panic with `no PIT: the 8259 path (noapic on the command line) has no other tick` | – |
 | `disk-uefi-ktest.img` | APIC path, RSDP from the EFI configuration table, XSDT | 1 |
 | `disk-ktest-x2apic.img` (`make test-x2apic`) | APIC path in x2APIC mode, HPET reference | 1 |
 
 The in-kernel tests check each configuration against its command line
 and platform. Absent ACPI tables are failures, not skips: under QEMU they
-always exist, and a broken RSDP search must not turn the APIC tests into
+exist unless the machine is built without ACPI, which only the demo run
+does, and a broken RSDP search must not turn the APIC tests into
 no-ops. Tests that do not apply to a configuration report TAP `# SKIP`:
 - everywhere on the APIC path, the PIT tick-programming test;
 - without an HPET, also the two HPET tests;
@@ -199,15 +214,20 @@ no-ops. Tests that do not apply to a configuration report TAP `# SKIP`:
   routing test;
 - on the 8259 path, the nine tests that need the local APIC or the I/O
   APIC: eight in `test_apic.c`, and the scheduler's IRQ-wakeup test, which
-  sends a self-IPI. The PIT tick test runs there.
+  sends a self-IPI. The PIT tick test runs there. Without an HPET as
+  well, the two HPET tests also skip: eleven.
 
 Each ktest run passes `run_tests.py` its exact skip count (`--skips N`)
 and the reference clock the boot log must name: `--expect 'calibrated
-against the HPET'`, or `'calibrated against the PIT'` for `hpet=off`. A
-test that starts skipping because discovery broke, or a boot that quietly
-falls back from the HPET to the PIT, fails its run. The
-`pit=off,hpet=off` run passes `--expect-panic` and the panic message
-instead.
+against the HPET'`, or `'calibrated against the PIT'` for `hpet=off` and
+`nohpet`. The one exception is the `loglevel=warn` run, whose log has no
+info-level lines; `reference_clock_matches_the_platform` still checks the
+clock inside it. A test that starts skipping because discovery broke, or a boot
+that quietly falls back from the HPET to the PIT, fails its run. The
+panic runs pass `--expect-panic` and the panic message instead. Runs
+that pin a path by what must not happen use `--reject`: the
+no-local-APIC run must print no `lapic:` or `ioapic:` line, the no-ACPI
+run no `hpet:` line.
 
 **x2APIC.** `make test-x2apic QEMU=<a QEMU 9.x qemu-system-x86_64>` boots
 `disk-ktest-x2apic.img` (command line `ktest x2apic`): the whole suite,

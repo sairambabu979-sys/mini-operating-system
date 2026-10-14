@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Tests for the test runner: it must FAIL, for the right reason, when the
-kernel hangs or triple-faults. A runner that cannot fail proves nothing.
+kernel hangs or triple-faults, and when a run that otherwise passes prints
+a line it was told to reject. A runner that cannot fail proves nothing.
 
-  check_runner.py --hang-image H --triplefault-image T --log-dir DIR
+  check_runner.py --hang-image H --triplefault-image T --clean-image C --log-dir DIR
 """
 
 import argparse
@@ -29,12 +30,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--hang-image", type=Path, required=True)
     ap.add_argument("--triplefault-image", type=Path, required=True)
+    ap.add_argument("--clean-image", type=Path, required=True,
+                    help="an image whose run passes and prints 'init exited with status 0'")
     ap.add_argument("--log-dir", type=Path, required=True)
     args = ap.parse_args()
 
     results = [
         expect_failure(args.hang_image, args.log_dir, "timed out", ["--timeout", "5"]),
         expect_failure(args.triplefault_image, args.log_dir, "crash or triple fault", []),
+        expect_failure(args.clean_image, args.log_dir, "output matches rejected",
+                       ["--log-suffix", "reject", "--reject", "init exited with status 0"]),
     ]
     return 0 if all(results) else 1
 

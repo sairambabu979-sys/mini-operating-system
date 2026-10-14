@@ -264,6 +264,8 @@ TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
 TEST_NOAPIC_IMG := $(BUILD)/disk-ktest-noapic.img
+TEST_NOHPET_IMG := $(BUILD)/disk-ktest-nohpet.img
+TEST_QUIET_IMG  := $(BUILD)/disk-ktest-quiet.img
 TEST_X2APIC_IMG := $(BUILD)/disk-ktest-x2apic.img
 PANIC_IMG       := $(BUILD)/disk-panic.img
 DEMO_IMG        := $(BUILD)/disk-demo.img
@@ -281,6 +283,8 @@ endef
 
 $(eval $(call bios_image,$(TEST_IMG),ktest))
 $(eval $(call bios_image,$(TEST_NOAPIC_IMG),ktest noapic))
+$(eval $(call bios_image,$(TEST_NOHPET_IMG),ktest nohpet))
+$(eval $(call bios_image,$(TEST_QUIET_IMG),ktest console=serial loglevel=warn))
 $(eval $(call bios_image,$(TEST_X2APIC_IMG),ktest x2apic))
 $(eval $(call bios_image,$(PANIC_IMG),selftest=panic))
 $(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
@@ -346,7 +350,7 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 	  --kernel $(KERNEL_STRIPPED) --cmdline "$(CMDLINE)" -o $@
 
 .PHONY: all
-all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
+all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
 	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) \
 	$(KERNEL_ELF)
 
@@ -431,10 +435,10 @@ host-test: $(HOST_TEST_BIN)
 # by PIT channel 2 (no HPET table), APICs with no PIT at all (as on platforms
 # that gate it off), no reference clock at all (must panic, not hang), and the
 # legacy 8259 + PIT ("noapic").
-qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
+qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
 	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
-	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
+	  --triplefault-image $(TRIPLEFAULT_IMG) --clean-image $(DEMO_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
 	  --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
@@ -447,8 +451,37 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) 
 	  --log-suffix noclock --expect-panic \
 	  --expect 'no working reference clock: the PIT \(no HPET\) did not time a 50 ms window' \
 	  -- -machine pc,pit=off,hpet=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOHPET_IMG) --log-dir $(BUILD)/logs --skips 3 \
+	  --expect 'HPET disabled on the command line' --expect 'calibrated against the PIT'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOHPET_IMG) --log-dir $(BUILD)/logs \
+	  --log-suffix nopit --expect-panic --expect 'HPET disabled on the command line' \
+	  --expect 'no working reference clock: the PIT \(HPET not used\) did not time a 50 ms window' \
+	  -- -machine pc,pit=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 9 \
+	  --log-suffix nolapic --expect '^cpu: .* apic=0 ' \
+	  --expect '^irq: using the 8259 PIC \(the CPU has no local APIC\)$$' \
+	  --expect '^time: tick: PIT at 1000 Hz .*calibrated against the HPET$$' \
+	  --reject '^lapic: ' --reject '^ioapic: ' -- -cpu max,-apic
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(DEMO_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --log-suffix noacpi --expect 'acpi: no RSDP found' \
+	  --expect 'irq: using the 8259 PIC \(no MADT\)' \
+	  --expect 'tick: PIT at 1000 Hz .*calibrated against the PIT' \
+	  --expect 'init: all children reaped, 0 unexpected' --expect 'init exited with status 0' \
+	  --reject '^hpet: ' -- -machine pc,acpi=off
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs --skips 9 \
 	  --expect 'calibrated against the HPET'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs --skips 11 \
+	  --log-suffix nohpet --expect 'tick: PIT at 1000 Hz .*calibrated against the PIT' \
+	  -- -machine pc,hpet=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_NOAPIC_IMG) --log-dir $(BUILD)/logs \
+	  --log-suffix nopit --expect-panic \
+	  --expect 'irq: using the 8259 PIC \(noapic on the command line\)' \
+	  --expect 'no PIT: the 8259 path \(noapic on the command line\) has no other tick' \
+	  -- -machine pc,pit=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_QUIET_IMG) --log-dir $(BUILD)/logs --skips 4 \
+	  --expect 'WARNING: traps: 1 NMI\(s\) received' \
+	  --expect 'screen_shows_printed_text # SKIP no screen console' \
+	  --reject '^(cpu|vmm|pmm|screen|acpi|ioapic|lapic|irq|hpet|time|sched|traps|proc|syscall): '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
 	  --expect 'KERNEL PANIC' \
@@ -469,12 +502,28 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) 
 	done
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
 	  --skips 1 --expect 'calibrated against the HPET'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
+	  --log-suffix nogop --skips 4 \
+	  --expect 'minios-efi: no usable framebuffer \(no graphics output protocol\)' \
+	  --expect 'screen: no framebuffer from the loader: no screen console' \
+	  --expect 'calibrated against the HPET' -- -vga none
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
+	  --log-suffix noclock --expect-panic \
+	  --expect 'screen: framebuffer [0-9]+x[0-9]+ at 0x[0-9a-f]+: [0-9]+x[0-9]+ text' \
+	  --expect 'no working reference clock: the PIT \(no HPET\) did not time a 50 ms window' \
+	  --expect 'end of panic' --reject '(?s)KERNEL PANIC.*KERNEL PANIC' --reject 'recursive panic' \
+	  -- -machine pc,pit=off,hpet=off
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
 	  --no-tap --expect 'loader: UEFI' --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
 	  --memory 8G --no-tap --expect 'loader image at 0x[1-9a-f][0-9a-f]{8,},' \
 	  --expect 'init exited with status 0'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
+	  --log-suffix bltonly --no-tap \
+	  --expect 'minios-efi: no usable framebuffer \(no linear framebuffer \(Blt only\)\)' \
+	  --expect 'screen: no framebuffer from the loader: no screen console' \
+	  --expect 'init exited with status 0' -- -vga none -device virtio-gpu-pci
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BENCH_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --expect 'bench: context switch' --expect 'bench: syscall round trip' \
 	  --expect 'user benchmark exit 0'

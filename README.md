@@ -99,10 +99,10 @@ the first line break). Unknown options are ignored.
 | Option | Effect |
 |--------|--------|
 | `loglevel=err\|warn\|info\|debug` | console verbosity (default `info`); any other value is ignored with a warning |
-| `console=serial` | no screen console, COM1 only |
+| `console=serial` | no screen console, COM1 only; any other value is ignored with a warning |
 | `noapic` | 8259 PIC and PIT tick instead of the I/O APIC and LAPIC timer |
 | `x2apic` | switch the local APIC from xAPIC to x2APIC mode, if the CPU has x2APIC; no effect on the 8259 path |
-| `nohpet` | calibrate against PIT channel 2 instead of the HPET (no test image uses it: the no-HPET run removes the HPET from the machine instead) |
+| `nohpet` | calibrate against PIT channel 2 instead of the HPET |
 | `ktest` | run the in-kernel test suite, report TAP, exit QEMU with its result |
 | `bench` | run the microbenchmarks, exit QEMU |
 | `exit-after-init` | exit QEMU when `init` exits: success if its status is 0, failure otherwise |
@@ -111,11 +111,13 @@ the first line break). Unknown options are ignored.
 
 `ktest` and any `selftest=` also make a panic exit QEMU with a failure status
 instead of halting, so a crashed test run ends at once. The test images are the
-same kernel with a fixed command line: `disk-ktest.img` and `disk-uefi-ktest.img`
-(`ktest`), `disk-ktest-noapic.img` (`ktest noapic`), `disk-ktest-x2apic.img`
-(`ktest x2apic`), `disk-panic.img` (`selftest=panic`), `disk-demo.img`,
-`disk-uefi-demo.img` and the three `disk-a20-*.img` (`exit-after-init`),
-`disk-bench.img` (`bench`), and the two `disk-selftest-*.img`.
+same kernel with a fixed command line: `disk-ktest.img` and
+`disk-uefi-ktest.img` (`ktest`), `disk-ktest-noapic.img` (`ktest noapic`),
+`disk-ktest-nohpet.img` (`ktest nohpet`), `disk-ktest-quiet.img` (`ktest
+console=serial loglevel=warn`), `disk-ktest-x2apic.img` (`ktest x2apic`),
+`disk-panic.img` (`selftest=panic`), `disk-demo.img`, `disk-uefi-demo.img` and
+the three `disk-a20-*.img` (`exit-after-init`), `disk-bench.img` (`bench`), and
+the two `disk-selftest-*.img`.
 
 ## What is in it
 
@@ -169,10 +171,10 @@ both debug and release, and the x2APIC run in a job of its own.
 |-------|-----------|-------|
 | Host unit tests | Kernel code built for Linux under ASan + UBSan. printf against glibc (20k random formats); memory-map sanitizer against brute force; buddy allocator fuzz with full verification; ELF validator and ACPI table parser against hostile and randomly corrupted input; the console's text grid against a reference terminal model on random output, and its pixel drawing exact to the byte. | `tests/host/` |
 | Binary checks | No SSE/AVX in kernel code; W^X segment layout; entry point. Build-time guard for `-mno-red-zone`, `-mgeneral-regs-only`, `-mcmodel=kernel`. | `tools/check_kernel.py`, `Makefile` |
-| In-kernel tests | 116 `KTEST()`s (109 in release builds, which compile out the 7 that test debug-only checks), TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with an HPET, without one and without a PIT, and on the legacy 8259 path. A machine with neither clock must panic with a clear message. Each run states its exact number of skipped tests (from 1 on the default path to 9 on the 8259 path) and the clock the calibration must report. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
+| In-kernel tests | 116 `KTEST()`s (109 in release builds, which compile out the 7 that test debug-only checks), TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with an HPET, without one, with `nohpet` and without a PIT, and on the legacy 8259 path: chosen by `noapic`, or automatically on a CPU without a local APIC. A machine with neither clock, and the 8259 path without a PIT, must panic with a clear message. Each run states its exact number of skipped tests (from 1 on the default path to 11 on the 8259 path without an HPET) and, except under `loglevel=warn`, which hides the line, the clock the calibration must report. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
 | Crash path | A deliberate kernel page fault; the panic decode and backtrace are matched against patterns. | `disk-panic.img` |
-| Whole system | Boots the real `init`, which runs 11 programs and passes only if each ends as expected. | `disk-demo.img` |
-| UEFI | The whole in-kernel suite and the `init` demo again, booted through OVMF and the UEFI loader. The demo boots a second time with 8 GiB of RAM, where OVMF loads the loader above 4 GiB; the run requires the loader's logged address to be above 4 GiB. | `disk-uefi-*.img` |
+| Whole system | Boots the real `init`, which runs 11 programs and passes only if each ends as expected; again on a machine without ACPI, where the kernel must choose the 8259 and the PIT by itself. | `disk-demo.img` |
+| UEFI | The whole in-kernel suite and the `init` demo again, booted through OVMF and the UEFI loader. The demo boots a second time with 8 GiB of RAM, where OVMF loads the loader above 4 GiB; the run requires the loader's logged address to be above 4 GiB. Without a GOP (`-vga none`) and with a Blt-only one, the console must stay on serial; a panic drawn on the framebuffer must complete with no nested panic. | `disk-uefi-*.img` |
 | A20 | Three test builds of stage 2, one per method (`bios`, `kbc`, `fast`). Each turns A20 off, checks that addresses wrap, lets only its own method turn A20 back on, prints `A20 test: off, then on by <method>`, and boots through to the end of `init`. | `disk-a20-*.img` |
 | x2APIC | The whole in-kernel suite with the `x2apic` option, which switches the local APIC to x2APIC mode; a test requires that mode. Needs QEMU 9.0 or later, so it is a separate target: `make test-x2apic QEMU=...`. CI builds QEMU 9.2.0 for it. | `disk-ktest-x2apic.img` |
 | Benchmarks | Smoke run of `make bench`. | `disk-bench.img` |
@@ -205,7 +207,9 @@ The QEMU runner fails on timeout, triple fault, kernel-reported failure or
 a TAP count mismatch, and `make test` proves it: `tests/qemu/check_runner.py`
 boots kernels that hang and that triple-fault, and requires the runner to
 reject each for the right reason. It also fails a run whose number of
-skipped tests differs from the one the Makefile gives it. Timing-sensitive
+skipped tests differs from the one the Makefile gives it, or whose output
+matches a line the run must not print (`--reject`), which `check_runner.py`
+checks too. Timing-sensitive
 tests were run repeatedly with up to 10 QEMU instances competing for the
 host's cores.
 
@@ -231,18 +235,20 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
   locally and in CI, runs under QEMU's TCG emulator (never KVM), on one CPU,
   with SeaBIOS or OVMF as the firmware; the host unit tests run natively.
   The code written for real machines (the UEFI loader's placement rules, the
-  screen console, bounded clock calibration, x2APIC support) mostly runs
-  only its normal path there. Paths no test reaches include the firmware's
-  x2APIC hand-off; the automatic switch to the 8259 (no local APIC, no MADT,
-  no usable I/O APIC, or an APIC ID above 255); an HPET that is rejected or
-  broken, falling back to the PIT; the calibration timeouts and the
-  implausible-rate check; a PIT that answers but does not count; the 8259
-  path's panic without a PIT; the `nohpet`, `console=serial` and `loglevel=`
-  options; the UEFI loader's stack mapping above 4 GiB, its failure when the
-  firmware owns 1 MiB, its LA57 refusal and its fallback to serial when the
-  GOP is unusable; and a panic drawn on a GOP framebuffer (one run draws its
-  panic in VGA text, but no test checks what the screen shows). No real PC
-  has run any of it, and the first one is likely to find something.
+  screen console, bounded clock calibration, x2APIC support) runs there only
+  where QEMU can set the case up. Paths no test reaches include the
+  firmware's x2APIC hand-off; the automatic switch to the 8259 for an I/O
+  APIC that does not answer or an APIC ID above 255; an HPET that is
+  rejected or broken, falling back to the PIT; the calibration timeouts and
+  the implausible-rate check; a PIT that answers but does not count; the
+  UEFI loader's stack mapping above 4 GiB, its failure when the firmware
+  owns 1 MiB, its LA57 refusal, its rejection of a GOP it cannot draw on for
+  any reason but Blt-only (24-bit pixels, unaligned channel masks, a
+  framebuffer smaller than its mode, no mode information), and its choice of
+  a second GOP when the console's is unusable; `loglevel=` values other than
+  `warn`, and unknown `console=` and `loglevel=` values. No test checks what
+  the screen shows after a panic. No real PC has run any of it, and the
+  first one is likely to find something.
 - **One CPU.** Locks use atomic exchange and are written for SMP, but
   there is no AP bring-up, no per-CPU run queues and no TLB shootdown.
 - **ISA interrupts only.** No PCI interrupt routing, no MSI, and no ACPI AML
