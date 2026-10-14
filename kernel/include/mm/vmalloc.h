@@ -24,7 +24,11 @@
 /* Allocates `size` bytes (rounded up to pages), zeroed. NULL on failure. */
 __must_check void *vmalloc(usize size);
 
-/* Frees a vmalloc() allocation. Panics on a pointer vmalloc did not return. */
+/*
+ * Frees a vmalloc() allocation. Panics on a pointer vmalloc did not return,
+ * and on a second vfree() while the range is quarantined; after that the
+ * range may have a new owner, whose area a stale vfree() would free.
+ */
 void vfree(void *ptr);
 
 /*

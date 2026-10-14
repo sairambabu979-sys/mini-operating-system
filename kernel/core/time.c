@@ -54,7 +54,8 @@ static void tick_interrupt(struct trap_frame *frame, void *ctx)
 #define TSC_MAX_KHZ        20000000ull  /* 20 GHz */
 
 struct calibration {
-    bool ok; /* the reference completed the window and the rate is plausible */
+    bool ok;   /* the reference completed the window and the rate is plausible */
+    bool dead; /* it never completed the window: retrying cannot help */
     u64 elapsed_ns;
     u64 tsc;   /* TSC cycles in that time */
     u64 lapic; /* local APIC timer counts (divider 16), if it was running */
@@ -121,6 +122,7 @@ static struct calibration measure_once(bool with_lapic)
         start = take_sample(with_lapic);
         if (!hpet_window(&start, CALIBRATION_MS * 1000000000000ull / hpet_period_fs())) {
             arch_irq_restore(flags);
+            c.dead = true;
             return c;
         }
         end = take_sample(with_lapic);
@@ -144,11 +146,13 @@ static struct calibration measure_once(bool with_lapic)
 
         if (prev.ref) {
             arch_irq_restore(flags);
+            c.dead = true;
             return c;
         }
         while (!(end = take_sample(with_lapic)).ref) {
             if (end.tsc - start.tsc > REF_TIMEOUT_CYCLES) {
                 arch_irq_restore(flags);
+                c.dead = true;
                 return c; /* channel 2 never ran out: clock-gated */
             }
             prev = end;
@@ -173,7 +177,10 @@ static struct calibration measure_once(bool with_lapic)
  * Up to five windows, keeping the first whose endpoints are pinned to
  * within 0.1% of its length (else the tightest good one seen). Without
  * this, a single preemption at an endpoint skews the TSC rate for the
- * whole run. Not ok only if no window succeeded at all.
+ * whole run. Not ok only if no window succeeded at all. A reference that
+ * timed out is not tried again: each timeout is 2^32 TSC cycles with
+ * interrupts off and nothing printed, and five of them looked like the
+ * very hang the timeout exists to prevent.
  */
 static struct calibration measure(bool with_lapic)
 {
@@ -182,6 +189,8 @@ static struct calibration measure(bool with_lapic)
     for (int attempt = 0; attempt < 5; attempt++) {
         struct calibration c = measure_once(with_lapic);
 
+        if (c.dead)
+            break;
         if (!c.ok)
             continue;
         if (!best.ok || c.skew < best.skew)

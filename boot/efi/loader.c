@@ -12,8 +12,8 @@
  *
  *   1. read \minios\kernel.elf (and the optional \minios\cmdline) from the
  *      volume this loader was started from;
- *   2. claim the kernel's physical range and the boot_info page from the
- *      firmware (AllocateAddress), so firmware-owned memory is never
+ *   2. claim the kernel's physical range from the firmware
+ *      (AllocateAddress), so firmware-owned memory is never
  *      overwritten: if it is taken, fail with a clear message;
  *   3. copy and zero the kernel's segments while boot services still work;
  *   4. build page tables (0-4 GiB identity, 0-1 GiB at -2 GiB, plus this
@@ -495,6 +495,9 @@ static __noreturn void jump_to_kernel(u64 pml4, u64 entry, struct boot_info *bi)
                      "mov $0xFF, %%al\n\t"
                      "out %%al, $0xA1\n\t" /* mask both 8259s, as stage 2 does */
                      "out %%al, $0x21\n\t"
+                     "in $0x70, %%al\n\t" /* and NMI: until the kernel's IDT is in, */
+                     "or $0x80, %%al\n\t" /* one would vector through the firmware's */
+                     "out %%al, $0x70\n\t"
                      "mov %0, %%cr3\n\t"
                      "mov %2, %%rdi\n\t"
                      "jmp *%1"

@@ -53,7 +53,7 @@ int pmm_block_order(u64 phys);
  * really came from its allocator (kfree must not take a page table or a
  * user frame back). A new block starts as PMM_OWNER_NONE.
  */
-enum { PMM_OWNER_NONE = 0, PMM_OWNER_KMALLOC = 1 };
+enum { PMM_OWNER_NONE = 0, PMM_OWNER_KMALLOC = 1, PMM_OWNER_SLAB = 2 };
 void pmm_set_owner(u64 phys, u16 owner);
 /* The tag of the allocated block whose head is phys; -1 if phys is not one. */
 int pmm_block_owner(u64 phys);

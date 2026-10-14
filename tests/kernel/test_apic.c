@@ -212,6 +212,11 @@ static struct pit_window time_pit_window(void)
             high = rdtsc();
             break;
         }
+        if (t - b > tsc_khz() * 1000) { /* a second: the PIT is not counting */
+            high = t;
+            low = b;
+            break;
+        }
         low = t;
     }
     arch_irq_restore(flags);
@@ -235,9 +240,16 @@ static struct pit_window best_pit_window(void)
     return best;
 }
 
-/* |measured - expected| <= 2% of expected, plus `slack` parts per `total`. */
+/*
+ * |measured - expected| <= 2% of expected, plus `slack` parts per `total`.
+ * A measurement uncertain by a quarter or more proves nothing (its bound
+ * would let a 2x error through) and fails rather than passes.
+ */
 static bool agrees(u64 measured, u64 expected, u64 slack, u64 total)
 {
+    if (slack * 4 >= total)
+        return false;
+
     u64 bound = expected / 50 + expected * slack / total + 1;
 
     return measured + bound >= expected && measured <= expected + bound;

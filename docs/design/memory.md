@@ -100,9 +100,12 @@ use through the direct map faulted.
 `owner`, reset to `PMM_OWNER_NONE` (0) on every allocation and free.
 `pmm_set_owner()` tags an allocated block, and `pmm_block_owner()` reads
 the tag back (-1 if the address is not the head of an allocated block).
-kmalloc tags its large blocks `PMM_OWNER_KMALLOC`, so that `kfree()` can
-refuse a live PMM block it did not hand out, such as a page table or a
-user frame. The tag fits in the 24-byte `struct page`.
+kmalloc tags its large blocks `PMM_OWNER_KMALLOC` and its slab pages
+`PMM_OWNER_SLAB`, so that `kfree()` can refuse memory it did not hand
+out, such as a page table or a user frame. For a pointer inside a page it
+checks the tag before reading the slab header: the header is only bytes
+on the page, and a user frame can hold an exact copy of one. The tag fits
+in the 24-byte `struct page`.
 
 ## Page tables (VMM)
 
@@ -171,6 +174,14 @@ bounded. (On SMP, reuse will also need a TLB shootdown.)
 An area needs no metadata: it ends at the next unmapped page. `vfree()`
 of anything but an area's first page panics. A failed `vmalloc()` or
 `iomap()` abandons its VA range.
+
+The price of reuse: a double or stale `vfree()` panics only while its
+range is quarantined. Once 16 newer ranges were freed, the range may
+belong to a new owner, and the stale call frees that owner's area
+instead. Two tests pin the ring down: a range comes back only after
+exactly 16 newer frees, and a reused range leaves the ring (the oldest
+range of its size can sit behind others, and one still listed would go to
+a second owner).
 
 **`iomap()`** maps physical ranges the direct map leaves out (device
 registers, framebuffers, firmware tables in reserved memory) into the same

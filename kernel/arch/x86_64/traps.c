@@ -93,6 +93,7 @@ static bool handle_expected(struct trap_frame *f)
     e->error_code = f->error_code;
     e->cr2 = read_cr2();
     e->handler_rsp = read_rsp();
+    e->handler_rflags = read_rflags();
 
     uptr fixup = extable_find(f->rip);
 

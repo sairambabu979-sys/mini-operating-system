@@ -74,7 +74,8 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
     for (usize i = 0; i < nregions; i++) {
         if (regions[i].type != E820_USABLE)
             continue;
-        top = MAX(top, MIN(regions[i].end, HHDM_SIZE));
+        if (regions[i].base < HHDM_SIZE) /* else the page array would grow for nothing */
+            top = MAX(top, MIN(regions[i].end, HHDM_SIZE));
         if (regions[i].end > HHDM_SIZE)
             beyond += regions[i].end - MAX(regions[i].base, HHDM_SIZE);
     }

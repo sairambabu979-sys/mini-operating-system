@@ -3,7 +3,8 @@
 ; Kernel entry point.
 ;
 ; Contract with the bootloader (docs/design/boot.md):
-;   - 64-bit long mode, paging on, interrupts off, direction flag undefined
+;   - 64-bit long mode, paging on, interrupts off, NMI masked, PICs masked,
+;     direction flag clear (test_boot.c checks; cld anyway)
 ;   - physical 0-1 GiB mapped both at 0 and at KERNEL_VMA (-2 GiB)
 ;   - RDI = physical address of struct boot_info
 ;   - no valid stack: we must not touch memory through RSP before loading it

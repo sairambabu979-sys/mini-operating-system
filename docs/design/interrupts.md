@@ -25,8 +25,11 @@ PIT when there is an HPET to calibrate against (`make test` boots it with
 `-machine pc,pit=off`). The 8259 path cannot: it panics with `no PIT: the
 8259 path ("noapic" or no usable I/O APIC) has no other tick` instead of
 hanging (no test run boots `noapic` without a PIT). `pit_present()`
-programs a channel 2 one-shot and checks that its output went low; without
-a PIT, port `0x61` floats and reads high.
+programs a 1 ms channel 2 one-shot and checks that its output went low
+(without a PIT, port `0x61` floats and reads high), then that it rises
+within a million polls: a PIT that answers but does not count (clock
+gating) would otherwise be the tick and hang the first wait. QEMU cannot
+model a gated PIT, so that half has not run.
 
 An APIC ID above 255 also selects the 8259: the I/O APIC's destination
 field is 8 bits, and reaching a larger ID would need interrupt remapping.
@@ -145,16 +148,20 @@ is the only error (under QEMU: 62.5 MHz, a tick of 1,000,004 ns).
 interrupts off, so an unbounded wait would hang the boot with no message
 saying why. Every window therefore has a timeout and a sanity check:
 - Each wait gives up after 2^32 TSC cycles (about 1 s at 4 GHz, 4 s at
-  1 GHz). That catches an HPET counter that is stopped or crawling, or a
-  PIT channel 2 that never runs out (clock-gated).
+  1 GHz). That catches an HPET counter that is stopped, or so slow that
+  its 50 ms take longer, or a PIT channel 2 that never runs out
+  (clock-gated).
 - PIT channel 2 in mode 0 drives its output low as soon as it is
   programmed. An output already high at the first poll means no counting
   PIT (a missing one reads as `0xFF`), or a stall longer than the window.
 - The resulting TSC rate must lie between 100 MHz and 20 GHz.
 
-A window that fails any of these is discarded, but it still counts as one
-of the five tries. Among the good ones, the retry rule above applies. If
-none of the five HPET windows succeeds, the kernel logs `the HPET did not
+A window with an implausible rate is discarded and counts as one of the
+five tries. A clock that times out, or a PIT whose output is already high,
+is not tried again: each timeout is 2^32 cycles with interrupts off and
+nothing printed, and five in a row looked like the hang the timeout
+exists to prevent. Among the good windows, the retry rule above applies.
+If the HPET yields no good window, the kernel logs `the HPET did not
 time a 50 ms window; calibrating against the PIT` and measures again on
 PIT channel 2. If that fails too, or the HPET was never usable (none
 listed, `nohpet`, or rejected by its checks), it panics:
@@ -277,8 +284,9 @@ channel 2 (count 47,727) in TSC cycles, with interrupts off, and keeps
 the tightest of up to eight windows, stopping early at one whose
 endpoints are pinned to 0.1%. In the default boot that compares two
 clocks, since the kernel calibrated against the HPET; with `hpet=off`,
-two implementations on one. An injected 2x calibration error passed
-every other test.
+two implementations on one. An injected 2x LAPIC-rate error passed every
+other test, and so did a 2x TSC error without an HPET (with one,
+`hpet_counter_runs_at_its_period` also catches a TSC error).
 
 The start of the window is bracketed by TSC reads around the
 programming. The end, the output's rising edge, lies between the last

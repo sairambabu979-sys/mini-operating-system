@@ -108,6 +108,26 @@ KTEST(kfree_rejects_non_heap_pointers)
     panic_expect_clear();
     KEXPECT(e.hit);
     KEXPECT_EQ(pmm_block_order(frame), 0); /* and it was not freed */
+
+    /*
+     * Inside a page, a pointer is judged by the slab header at the page's
+     * start. A frame kmalloc does not own, holding an exact copy of a live
+     * slab page (as a user frame could), must be refused before any of
+     * that header is believed.
+     */
+    u8 *obj = kmalloc(16);
+    u8 *slab = (u8 *)ALIGN_DOWN((uptr)obj, PAGE_SIZE_4K);
+    u8 *copy = phys_to_virt(frame);
+
+    KEXPECT(obj != NULL);
+    memcpy(copy, slab, PAGE_SIZE_4K);
+    panic_expect(&e, &jb);
+    if (ksetjmp(&jb) == 0)
+        kfree(copy + (obj - slab)); // NOLINT(clang-analyzer-unix.Malloc): misuse is the test
+    panic_expect_clear();
+    KEXPECT(e.hit);
+    KEXPECT_EQ(pmm_block_order(frame), 0);
+    kfree(obj);
     pmm_free_page(frame);
 }
 

@@ -117,7 +117,8 @@ struct trap_expectation {
     bool hit;
     u64 error_code;
     u64 cr2;
-    uptr handler_rsp; /* stack pointer the handler ran on */
+    uptr handler_rsp;   /* stack pointer the handler ran on */
+    u64 handler_rflags; /* RFLAGS the handler ran with (after trap entry's clac) */
 };
 
 void trap_expect(struct trap_expectation *e, u64 vector, struct kjmp_buf *resume);

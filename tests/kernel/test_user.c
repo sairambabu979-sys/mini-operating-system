@@ -228,6 +228,7 @@ KTEST(zombies_hold_no_user_memory)
 {
     enum { N = 8 };
     struct pmm_stats zombies, reaped;
+    struct kmalloc_stats kzombies, kreaped;
     int pids[N];
     u64 deadline = time_ticks() + 2000;
 
@@ -242,6 +243,7 @@ KTEST(zombies_hold_no_user_memory)
         KEXPECT(pids[i] <= 0 || is_zombie_child(pids[i]));
     }
     pmm_get_stats(&zombies);
+    kmalloc_get_stats(&kzombies);
     for (int i = 0; i < N; i++) {
         int status = -1;
 
@@ -251,8 +253,11 @@ KTEST(zombies_hold_no_user_memory)
         }
     }
     pmm_get_stats(&reaped);
+    kmalloc_get_stats(&kreaped);
     /* Reaping frees a kernel stack and a task struct each, and nothing else. */
     KEXPECT(reaped.free_frames - zombies.free_frames <= N * (KSTACK_SIZE / PAGE_SIZE_4K + 1));
+    /* Of the heap, only the task structs: the FPU areas went at exit too. */
+    KEXPECT_EQ(kzombies.small_live - kreaped.small_live, N);
 }
 
 static struct wait_queue hold_queue = WAIT_QUEUE_INIT(hold_queue);

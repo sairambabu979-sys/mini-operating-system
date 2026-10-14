@@ -147,7 +147,7 @@ context all panic.
 | Test | What it proves |
 |------|----------------|
 | exit code through `task_wait`; `-ECHILD` | lifecycle and reaping |
-| four CPU-bound threads that never yield all make progress, and their CPU time in ticks is within one slice of each other | preemption works, and round robin is fair (loop counts are no measure under emulation: they follow the host) |
+| four CPU-bound threads that never yield all make progress, and their CPU time in ticks is within one slice of each other (plus two ticks for the exit runs) | preemption works, and round robin is fair (loop counts are no measure under emulation: they follow the host) |
 | `sleep_ms(30)` lasts ≥ 30 ticks (and, loosely, < 80); `sleep_ms(1)`, started at 20 points within a tick, always spans ≥ 2 tick deliveries; sleepers wake in deadline order | sleep list, sleep rounding |
 | a waiter whose wait condition sends a self-IPI, so the interrupt handler wakes it while it is still running, 4 times; the waiter checks it is not queued, then exits | the `wake_locked()` rule (needs a local APIC) |
 | producer/consumer through a 4-slot buffer, 3000 items | no lost wakeups (a lost one hangs the test, which the runner fails on timeout) |

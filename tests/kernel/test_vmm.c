@@ -206,6 +206,64 @@ KTEST(vmalloc_areas_have_guard_pages)
     KEXPECT(try_read((uptr)p).hit); /* freed VA is quarantined, not reused at once: it faults */
 }
 
+/* Frees `n` fresh one-page areas: n newer entries in vmalloc's reuse ring. */
+static void free_n_pages(int n)
+{
+    for (int i = 0; i < n; i++)
+        vfree(vmalloc(PAGE_SIZE_4K));
+}
+
+/*
+ * A freed range is reused, by the same size only, once VMALLOC_QUARANTINE
+ * newer ranges were freed: until then a stale pointer into it faults
+ * rather than aliasing a new owner. Sizes no other code allocates keep
+ * this deterministic.
+ */
+KTEST(vmalloc_reuses_a_range_only_after_the_quarantine)
+{
+    u8 *a = vmalloc(7 * PAGE_SIZE_4K);
+
+    KEXPECT(a != NULL);
+    vfree(a);
+    free_n_pages(VMALLOC_QUARANTINE - 1);
+
+    u8 *b = vmalloc(7 * PAGE_SIZE_4K); /* `a` has one newer free too few */
+
+    KEXPECT(b != NULL && b != a);
+    vfree(b); /* the sixteenth */
+
+    u8 *c = vmalloc(7 * PAGE_SIZE_4K);
+
+    KEXPECT(c == a);
+    vfree(c);
+}
+
+/*
+ * Reuse can take an entry from the middle of the ring (the oldest of its
+ * size, not the oldest overall). It must leave the ring then: a range
+ * still listed would go to a second owner while the first uses it.
+ */
+KTEST(vmalloc_reuse_takes_a_range_out_of_the_ring)
+{
+    u8 *x = vmalloc(5 * PAGE_SIZE_4K), *y = vmalloc(6 * PAGE_SIZE_4K);
+
+    KEXPECT(x != NULL && y != NULL);
+    vfree(x);
+    vfree(y);
+    free_n_pages(VMALLOC_QUARANTINE);
+
+    u8 *y2 = vmalloc(6 * PAGE_SIZE_4K); /* behind `x` in the ring */
+    u8 *x2 = vmalloc(5 * PAGE_SIZE_4K);
+    u8 *y3 = vmalloc(6 * PAGE_SIZE_4K);
+
+    KEXPECT(y2 == y);
+    KEXPECT(x2 == x);
+    KEXPECT(y3 != NULL && y3 != y); /* not handed out twice */
+    vfree(y3);
+    vfree(x2);
+    vfree(y2);
+}
+
 KTEST(vfree_rejects_foreign_pointers)
 {
     struct kjmp_buf jb;

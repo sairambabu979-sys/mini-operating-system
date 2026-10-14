@@ -7,8 +7,10 @@
  * drift apart. Bump BOOT_INFO_VERSION on any layout change.
  *
  * On entry to the kernel, RDI holds the physical address of a struct
- * boot_info located at BOOT_INFO_PHYS. The loader writes `magic` last, so
- * a valid magic implies every other field is filled in.
+ * boot_info, 8-aligned and inside the first 1 GiB: stage 2 uses
+ * BOOT_INFO_PHYS, the UEFI loader any free page. The kernel copies it at
+ * entry. The loader writes `magic` last, so a valid magic implies every
+ * other field is filled in.
  */
 #ifndef MINIOS_BOOT_BOOT_INFO_H
 #define MINIOS_BOOT_BOOT_INFO_H

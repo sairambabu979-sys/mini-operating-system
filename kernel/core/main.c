@@ -92,7 +92,7 @@ static void print_memory_map(const struct boot_info *bi)
 static const struct boot_info *validate_boot_info(u64 phys)
 {
     /* Read through the loaders' window onto the first GiB (phys_to_kimage). */
-    if (phys == 0 || !IS_ALIGNED(phys, 8) || phys + sizeof(struct boot_info) > BOOT_WINDOW_SIZE) {
+    if (phys == 0 || !IS_ALIGNED(phys, 8) || phys > BOOT_WINDOW_SIZE - sizeof(struct boot_info)) {
         kprintf("FATAL: boot_info at %#llx is outside the boot window\n", (unsigned long long)phys);
         qemu_exit(QEMU_EXIT_FAILURE);
     }
@@ -108,6 +108,8 @@ static const struct boot_info *validate_boot_info(u64 phys)
         qemu_exit(QEMU_EXIT_FAILURE);
     }
     memcpy(&boot_info_copy, bi, sizeof(boot_info_copy));
+    boot_info_copy.mmap_count = MIN(boot_info_copy.mmap_count, BOOT_MMAP_MAX);
+    boot_info_copy.cmdline[BOOT_CMDLINE_MAX - 1] = '\0';
     return &boot_info_copy;
 }
 

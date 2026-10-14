@@ -89,7 +89,9 @@ static bool all_zombies(struct task *const *ts, int n)
  *
  * Fairness is judged in ticks of CPU time, which is what round robin
  * divides: every slice is exactly TIME_SLICE_TICK ticks, so no thread can
- * be more than one slice behind another. Loop counts are no measure of it
+ * be more than one slice behind another (plus a tick caught while one
+ * runs to exit). The threads are created with preemption off, so the
+ * first gets no head start. Loop counts are no measure of it
  * under emulation: iterations per tick follow the host, and a +-25% bound
  * on them failed once on a cold 4 GiB run (host faulting in guest RAM)
  * while instrumented runs showed the ticks exactly equal.
@@ -102,13 +104,21 @@ KTEST(cpu_bound_threads_are_preempted_fairly)
     struct task *ts[N];
     u64 deadline = time_ticks() + 2000;
 
+    /* All queued before any runs: none gets a head start. */
+    preempt_disable();
     for (int i = 0; i < N; i++) {
         args[i] = (struct spin_arg){.stop = &stop, .count = 0};
         ts[i] = kthread_create(spinner, &args[i], "spinner", 0);
         KEXPECT(ts[i] != NULL);
-        if (!ts[i])
+        if (!ts[i]) {
+            preempt_enable();
+            stop = true; /* `stop` lives in this frame: reap the others before leaving */
+            for (int j = 0; j < i; j++)
+                KEXPECT(task_wait(-1, NULL) > 0);
             return;
+        }
     }
+    preempt_enable();
     sleep_ms(400); /* ~10 slices each */
     stop = true;
     while (!all_zombies(ts, N) && time_ticks() < deadline)
@@ -123,7 +133,8 @@ KTEST(cpu_bound_threads_are_preempted_fairly)
         hi = MAX(hi, ts[i]->runtime_ticks);
     }
     KEXPECT(lo >= 5ull * TIME_SLICE_TICK); /* each had several slices of the 400 ms */
-    KEXPECT(hi - lo <= TIME_SLICE_TICK);
+    /* Stopped mid-round: one slice apart at most, plus a tick in each exit run. */
+    KEXPECT(hi - lo <= TIME_SLICE_TICK + 2);
     for (int i = 0; i < N; i++)
         KEXPECT(task_wait(-1, NULL) > 0);
 }

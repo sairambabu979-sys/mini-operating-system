@@ -75,6 +75,18 @@ bool pit_oneshot_done(void)
 
 bool pit_present(void)
 {
-    pit_oneshot_start(0xFFFF); /* 55 ms: far longer than the check */
-    return !pit_oneshot_done();
+    pit_oneshot_start(1193); /* 1 ms */
+    if (pit_oneshot_done())
+        return false; /* no 8254: port 0x61 floats high */
+
+    /*
+     * And it must count: a clock-gated 8254 answers but never runs out,
+     * and as the tick on the 8259 path it would hang the first wait
+     * silently. A port read takes about a microsecond on hardware, so a
+     * million of them allow the 1 ms count a thousand times over.
+     */
+    for (u32 i = 0; i < 1000000; i++)
+        if (pit_oneshot_done())
+            return true;
+    return false;
 }

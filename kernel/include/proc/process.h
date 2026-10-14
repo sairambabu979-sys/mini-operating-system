@@ -32,7 +32,8 @@ bool user_image_find(const char *name, struct user_image *out);
 
 /*
  * Starts the named program as a child of the current task. Returns its
- * pid, or -ENOENT (no such image), -ENOEXEC/-EINVAL (bad ELF), -ENOMEM.
+ * pid, or -ENOENT (no such image), -ENOEXEC/-EINVAL (bad ELF), -ENOMEM,
+ * or -EAGAIN (TASK_MAX tasks exist).
  */
 int process_spawn(const char *name);
 

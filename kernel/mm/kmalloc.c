@@ -118,6 +118,7 @@ static struct slab *new_slab(int idx)
 
     if (phys == PMM_ALLOC_FAILED)
         return NULL;
+    pmm_set_owner(phys, PMM_OWNER_SLAB); /* kfree trusts a slab header only on such pages */
     struct slab *s = phys_to_virt(phys);
     usize size = classes[idx].obj_size;
     u8 *first = (u8 *)s + SLAB_HDR_SZ;
@@ -323,6 +324,16 @@ void kfree(void *ptr)
     }
 
     struct slab *s = (struct slab *)ALIGN_DOWN(va, PAGE_SIZE_4K);
+
+    /*
+     * The header is only data on the page: a user frame or a page table
+     * can hold the same bytes. Only a page new_slab() tagged is a slab.
+     * (This also turns a pointer into a hole in the direct map into a
+     * clean panic, not a page fault.)
+     */
+    if (pmm_block_owner(virt_to_phys_hhdm(s)) != PMM_OWNER_SLAB)
+        panic("kfree: %p is not in a slab page", ptr);
+
     irqflags_t flags = spin_lock_irqsave(&heap_lock);
 
     if (s->magic != SLAB_MAGIC || s->class_idx >= NUM_CLASSES) {
