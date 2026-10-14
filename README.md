@@ -230,18 +230,19 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 - **Never booted on real hardware.** Every test that boots the kernel,
   locally and in CI, runs under QEMU's TCG emulator (never KVM), on one CPU,
   with SeaBIOS or OVMF as the firmware; the host unit tests run natively.
-  The code written for real machines (the UEFI loader's placement rules,
-  the screen console, bounded clock calibration, x2APIC support) mostly runs
+  The code written for real machines (the UEFI loader's placement rules, the
+  screen console, bounded clock calibration, x2APIC support) mostly runs
   only its normal path there. Paths no test reaches include the firmware's
-  x2APIC hand-off; the automatic switch to the 8259 (no local APIC, no
-  MADT, no usable I/O APIC, or an APIC ID above 255); an HPET that is
-  rejected or broken, falling back to the PIT; the calibration timeouts and
-  the implausible-rate check; a PIT that answers but does not count; the
-  8259 path's panic without a PIT; the `nohpet`, `console=serial` and
-  `loglevel=` options; the UEFI loader's stack mapping above 4 GiB, its
-  failure when the firmware owns 1 MiB, its LA57 refusal and its fallback
-  to serial when the GOP is unusable; and a panic drawn on the screen. No
-  real PC has run any of it, and the first one is likely to find something.
+  x2APIC hand-off; the automatic switch to the 8259 (no local APIC, no MADT,
+  no usable I/O APIC, or an APIC ID above 255); an HPET that is rejected or
+  broken, falling back to the PIT; the calibration timeouts and the
+  implausible-rate check; a PIT that answers but does not count; the 8259
+  path's panic without a PIT; the `nohpet`, `console=serial` and `loglevel=`
+  options; the UEFI loader's stack mapping above 4 GiB, its failure when the
+  firmware owns 1 MiB, its LA57 refusal and its fallback to serial when the
+  GOP is unusable; and a panic drawn on a GOP framebuffer (one run draws its
+  panic in VGA text, but no test checks what the screen shows). No real PC
+  has run any of it, and the first one is likely to find something.
 - **One CPU.** Locks use atomic exchange and are written for SMP, but
   there is no AP bring-up, no per-CPU run queues and no TLB shootdown.
 - **ISA interrupts only.** No PCI interrupt routing, no MSI, and no ACPI AML
