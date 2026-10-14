@@ -48,8 +48,9 @@ KTEST(acpi_tables_are_found_and_valid)
 
 /*
  * The 8259 exactly when the command line says noapic or the CPU has no
- * local APIC (QEMU's -cpu max,-apic). The other reasons, no MADT and no
- * usable I/O APIC, already fail acpi_tables_are_found_and_valid.
+ * local APIC (QEMU's -cpu max,-apic). No MADT fails
+ * acpi_tables_are_found_and_valid; an I/O APIC that does not answer and an
+ * APIC ID above 255 cannot happen under QEMU, and would fail this test.
  */
 KTEST(controller_matches_the_command_line)
 {

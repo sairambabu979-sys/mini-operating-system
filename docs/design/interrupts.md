@@ -220,7 +220,9 @@ no-ops. Tests that do not apply to a configuration report TAP `# SKIP`:
 Each ktest run passes `run_tests.py` its exact skip count (`--skips N`)
 and the reference clock the boot log must name: `--expect 'calibrated
 against the HPET'`, or `'calibrated against the PIT'` for `hpet=off` and
-`nohpet`. A test that starts skipping because discovery broke, or a boot
+`nohpet`. The one exception is the `loglevel=warn` run, whose log has no
+info-level lines; `reference_clock_matches_the_platform` still checks the
+clock inside it. A test that starts skipping because discovery broke, or a boot
 that quietly falls back from the HPET to the PIT, fails its run. The
 panic runs pass `--expect-panic` and the panic message instead. Runs
 that pin a path by what must not happen use `--reject`: the
