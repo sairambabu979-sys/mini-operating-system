@@ -142,7 +142,7 @@ ESP (FAT32, built by tools/mkesp.py with mtools)
 | Load | Files are read through the volume the loader itself came from (LoadedImage → SimpleFileSystem). The kernel ELF gets the same checks as in stage 2, then is copied and its `.bss` zeroed **while boot services still run**. |
 | ACPI | The RSDP from the configuration table: the ACPI 2.0 GUID first, 1.0 accepted. |
 | Framebuffer | The Graphics Output Protocol's current mode, unchanged: base, size, pitch, and the channel layout (RGB, BGR, or byte-aligned bit masks). A Blt-only GOP, or none, leaves the console on serial. |
-| Page tables | 0–4 GiB identity and 0–1 GiB at `-2 GiB`, with 2 MiB pages. The loader keeps running after the CR3 switch, so it also identity-maps its own image and the stack around its current `RSP`, wherever the firmware put them, and logs `loader image at ..., stack near ...`. The 8 GiB run tests the image mapping; OVMF keeps the stack below 4 GiB, so the stack mapping (nothing on the stack is used after the switch) has not run. |
+| Page tables | 0–4 GiB identity and 0–1 GiB at `-2 GiB`, with 2 MiB pages. The loader keeps running after the CR3 switch, so it also identity-maps its own image and the stack around its current `RSP`, wherever the firmware put them, and logs `loader image at ..., stack near ...`. The 8 GiB run tests the image mapping; OVMF keeps the stack below 4 GiB, so mapping a stack above it (nothing on the stack is used after the switch) has not run. |
 | Exit | The final `GetMemoryMap` is followed immediately by `ExitBootServices`, with nothing allocating or printing in between, retried if the map key went stale. |
 | Memory map | EFI descriptors become E820 entries. Loader and boot-services memory and conventional memory become usable; ACPI types are kept; runtime services, MMIO and everything unknown become reserved. Contiguous same-type runs are merged. |
 | Jump | `cli`, PICs masked, CR3 switched, `RDI = &boot_info`, jump to the ELF entry. |
@@ -155,4 +155,5 @@ printed with `%ll`.
 
 **Real-hardware caveats.** Firmware may occupy physical 1 MiB; the
 loader then fails cleanly, because the kernel is not physically
-relocatable. Firmware using 5-level paging (LA57) is refused.
+relocatable. Firmware using 5-level paging (LA57) is refused. No test
+reaches either.

@@ -16,7 +16,8 @@ Sources: `kernel/acpi/`, `kernel/arch/x86_64/lapic.c`,
 Drivers see neither: `irq_register(line, ...)` names an ISA line, and the
 interrupt arrives on vector `32 + line` either way. The legacy path is not
 dead code. It is the fallback for anything missing at boot, and
-`make test` boots it every time (`disk-ktest-noapic.img`).
+`make test` boots it every time through the `noapic` option
+(`disk-ktest-noapic.img`); the automatic fallbacks have not run.
 
 Why bother, when the 8259 + PIT worked: some recent platforms gate off the
 8254 PIT, and the 8259 cannot be used on SMP. The local APIC timer is
@@ -87,11 +88,11 @@ ignored, never guessed at.
   xAPIC first, because going from disabled straight to x2APIC raises
   `#GP`. The boot log names the mode and the reason: `x2APIC mode (left on
   by the firmware)` or `x2APIC mode (switched on by the x2apic option)`.
-  Neither SeaBIOS nor OVMF hands over in x2APIC mode under QEMU, so the
-  option is how the suite runs the MSR path (see [Testing](#testing)).
-  From the switch on, the driver runs as it would after a firmware
-  hand-off. Only `lapic_boot_id()`'s MSR read never runs in a test,
-  because it runs before the switch.
+  Neither SeaBIOS nor OVMF hands over in x2APIC mode on the one-CPU QEMU
+  machines the suite boots, so the option is how the suite runs the MSR
+  path (see [Testing](#testing)). From the switch on, the driver runs as
+  it would after a firmware hand-off. Only `lapic_boot_id()`'s MSR read
+  never runs in a test, because it runs before the switch.
 - Every LVT is masked before the APIC is re-enabled. **Stale in-service
   bits** left by the firmware are drained with EOIs: one would silently
   block its priority class and everything below it.

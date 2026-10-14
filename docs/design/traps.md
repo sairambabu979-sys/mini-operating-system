@@ -92,7 +92,7 @@ exception class.
 
 ## Panic
 
-`panic()` assumes nothing about the system: polled serial only, no locks,
+`panic()` assumes nothing about the system: polled COM1 and the screen console, no locks,
 no allocation, interrupts off, and a recursion guard. A panic prints:
 
 ```
