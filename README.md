@@ -6,8 +6,8 @@ W^X enforced everywhere, handles every CPU exception and hardware
 interrupt, preemptively schedules kernel threads and ring-3 processes,
 and isolates those processes from the kernel and from each other.
 
-Every feature ships with a test that boots in CI. The few fallback paths
-no test reaches are listed under [Known limitations](#known-limitations).
+Nearly every feature ships with a test that boots in CI; the main paths no
+test reaches are listed under [Known limitations](#known-limitations).
 
 ```
 $ make run
@@ -124,7 +124,7 @@ same kernel with a fixed command line: `disk-ktest.img` and `disk-uefi-ktest.img
 | **Boot** | Own UEFI loader (PE32+, no SDK) and own BIOS loader, with the same hand-off: one kernel binary, one test suite, both firmwares. BIOS path: own MBR + stage 2. A20 by three methods (BIOS call, 8042 keyboard controller, port `0x92`), each followed by a wraparound check; since SeaBIOS starts with A20 on, three test builds of stage 2 turn it off and let only one method turn it back on. E820 map. Unreal-mode kernel load. Real mode straight to long mode. ELF64 loading with full bounds checks. A versioned `boot_info` ABI defined once in C, with NASM offsets generated from it, passed by address: the BIOS loader uses page `0x1000`, the UEFI loader any page below 1 GiB the firmware has free, and the kernel copies it at entry. The UEFI loader runs wherever the firmware loads it, above 4 GiB included. |
 | **Traps** | GDT/TSS with IST stacks for `#DF`, NMI and `#MC`. 256 generated entry stubs, one trap-frame layout. Decoded panics with symbolized backtraces (two-pass symbol-table link). Exception-table fixups. |
 | **Memory** | E820 sanitizer. Buddy allocator (pure, fuzzed on the host). Own page tables bootstrapped without an allocator. Direct map of RAM only: non-executable, with the kernel image read-only through it. NX, WP, SMEP, SMAP. Guard-paged `vmalloc` that reuses a freed range, for the same size, only after 16 newer frees. Slab `kmalloc`, with use-after-free, double-free and overflow detection in debug builds. |
-| **Console** | COM1, plus a screen: UEFI GOP framebuffer (write-combining) or BIOS VGA text, so a machine without a serial port still shows the boot and every panic after early setup. A log ring replays the boot onto the screen. Drawing never runs with interrupts off once they are on, because a slow scroll would cost the clock ticks. |
+| **Console** | COM1, plus a screen: UEFI GOP framebuffer (write-combining) or BIOS VGA text, so a machine without a serial port can still show the boot and later panics, if its firmware leaves VGA text mode or a linear 32-bit GOP framebuffer. A log ring replays the boot onto the screen. Outside a panic, drawing never runs with interrupts off once they are on, because a slow scroll would cost the clock ticks. |
 | **Interrupts** | ACPI discovery (RSDP, RSDT/XSDT, MADT, HPET; parser fuzzed on the host). Local APIC (xAPIC, or x2APIC when the firmware chose it or the `x2apic` option asks) + I/O APIC with interrupt source overrides honored. LAPIC timer and TSC calibrated against the HPET (or PIT channel 2), with each endpoint bracketed so a preemption cannot skew it, every wait bounded and implausible rates rejected: a broken HPET falls back to the PIT, and no working clock at all is a clear panic, not a hang. The 8259 + PIT path kept as a tested fallback (`noapic`). IRQ-safe spinlocks that report recursive locking instead of deadlocking. |
 | **Scheduling** | Preemptive round robin. Preemption on interrupt exit, only when no lock is held. Wait queues that cannot lose wakeups, even when preempted mid-wait. Sleeping mutexes, sleep, exit codes, orphan adoption. |
 | **Processes** | Per-process address spaces, ELF loader, syscall/sysret. SYSRET avoided for non-canonical returns (CVE-2012-0217), with recovery when `iretq` itself faults. Validated user copies. Eager FPU switching, from a zeroed initial state. Faults kill only the faulting process (a machine check panics). RFLAGS.NT and AC set in ring 3 can neither crash another task nor switch SMAP off. |
@@ -228,19 +228,20 @@ for hardware numbers.
 These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.md)):
 
 - **Never booted on real hardware.** Every test that boots the kernel,
-  locally and in CI, runs under QEMU's TCG emulator (never KVM), with
-  SeaBIOS or OVMF as the firmware; the host unit tests run natively. The
-  code aimed at real machines (the UEFI loader's placement rules, the
-  screen console, bounded clock calibration, the x2APIC hand-off) is
-  written to the UEFI, ACPI and Intel specifications and tested under
-  QEMU, but not every path has run: the firmware's x2APIC hand-off, the
-  fallback from a broken HPET to the PIT, the calibration timeouts, the
-  check for a PIT that does not count, `nohpet`, the 8259 path's panic
-  without a PIT, and the UEFI loader's stack mapping above 4 GiB and its
-  failure when the firmware owns 1 MiB never have (see
-  [interrupts.md](docs/design/interrupts.md) and
-  [boot.md](docs/design/boot.md)). No real PC has run any of it, and the
-  first one is likely to find something.
+  locally and in CI, runs under QEMU's TCG emulator (never KVM), on one CPU,
+  with SeaBIOS or OVMF as the firmware; the host unit tests run natively.
+  The code written for real machines (the UEFI loader's placement rules,
+  the screen console, bounded clock calibration, x2APIC support) mostly runs
+  only its normal path there. Paths no test reaches include the firmware's
+  x2APIC hand-off; the automatic switch to the 8259 (no local APIC, no
+  MADT, no usable I/O APIC, or an APIC ID above 255); an HPET that is
+  rejected or broken, falling back to the PIT; the calibration timeouts and
+  the implausible-rate check; a PIT that answers but does not count; the
+  8259 path's panic without a PIT; the `nohpet`, `console=serial` and
+  `loglevel=` options; the UEFI loader's stack mapping above 4 GiB, its
+  failure when the firmware owns 1 MiB, its LA57 refusal and its fallback
+  to serial when the GOP is unusable; and a panic drawn on the screen. No
+  real PC has run any of it, and the first one is likely to find something.
 - **One CPU.** Locks use atomic exchange and are written for SMP, but
   there is no AP bring-up, no per-CPU run queues and no TLB shootdown.
 - **ISA interrupts only.** No PCI interrupt routing, no MSI, and no ACPI AML
@@ -270,12 +271,14 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
   taken, which some real firmware may do.
 - **x2APIC tested only partly, and only with QEMU 9.** If the firmware hands
   over in x2APIC mode, the kernel stays in it (firmware may lock it on) and
-  drives the local APIC through MSRs. That MSR path has run only under QEMU
-  9 TCG, switched on by the `x2apic` option (`make test-x2apic`), never on
-  hardware; QEMU's firmware never hands over in x2APIC mode, so the hand-off
-  itself has not run either. A boot CPU whose APIC ID is above 255 stays on
-  the 8259: routing to it through the I/O APIC would need interrupt
-  remapping. See [interrupts.md](docs/design/interrupts.md).
+  drives the local APIC through MSRs. That MSR path, apart from reading the
+  boot APIC ID, has run only under QEMU 9 TCG (debug build), switched on by
+  the `x2apic` option (`make test-x2apic`), never on hardware; QEMU's
+  firmware does not hand over in x2APIC mode on the one-CPU machines the
+  tests boot, so the hand-off itself has not run either. A boot CPU whose
+  APIC ID is above 255 stays on the 8259 (untested): routing to it through
+  the I/O APIC would need interrupt remapping. See
+  [interrupts.md](docs/design/interrupts.md).
 - **The SYSRET hazard's real path runs only under QEMU 9.** On real CPUs a
   non-canonical RIP in `iretq` raises `#GP` in ring 0, the path the
   exception-table recovery handles. QEMU 8.2's TCG skips that check, so
