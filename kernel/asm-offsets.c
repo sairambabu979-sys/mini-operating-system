@@ -36,6 +36,8 @@ void asm_offsets(void)
     OFFSET(BI_KERNEL_PHYS_START, boot_info, kernel_phys_start);
     OFFSET(BI_KERNEL_PHYS_END, boot_info, kernel_phys_end);
     OFFSET(BI_BOOT_DRIVE, boot_info, boot_drive);
+    OFFSET(BI_LOADER, boot_info, loader);
+    DEFINE(BOOT_LOADER_BIOS, BOOT_LOADER_BIOS);
     OFFSET(BI_CMDLINE, boot_info, cmdline);
     OFFSET(BI_MMAP, boot_info, mmap);
     OFFSET(E820_BASE, e820_entry, base);

@@ -1,7 +1,10 @@
 # Usage: make debug    (in one shell)
 #        gdb -x tools/gdb/gdbinit build/debug/kernel.elf    (in another)
+#
+# Adds minios-tasks and minios-ptwalk (tools/gdb/minios.py).
 set disassembly-flavor intel
 set pagination off
+source tools/gdb/minios.py
 target remote :1234
 
 # For boot code instead:  set architecture i8086 ; break *0x7c00

@@ -6,9 +6,9 @@
  * larger ones are whole buddy blocks from the PMM, reached via the direct
  * map. Every allocation is 16-byte aligned; large ones are page-aligned.
  *
- * Debug builds poison freed objects and verify the poison on reuse, which
- * turns use-after-free writes into a panic naming the allocation site's
- * slab, and detect double frees.
+ * Debug builds poison freed objects and verify the poison on reuse
+ * (use-after-free writes panic), detect double frees, and put a redzone
+ * after every small object that kfree() checks (heap overflows panic).
  */
 #ifndef MINIOS_MM_KMALLOC_H
 #define MINIOS_MM_KMALLOC_H
@@ -18,6 +18,7 @@
 
 #define KMALLOC_MAX_SMALL 2048
 #define KMALLOC_POISON    0x6B /* fill byte of freed objects (debug builds) */
+#define KMALLOC_REDZONE   0xCC /* guard bytes after each small object (debug builds) */
 
 __must_check void *kmalloc(usize size);
 __must_check void *kzalloc(usize size);

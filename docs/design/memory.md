@@ -145,6 +145,9 @@ Debug builds add three checks:
 - freed objects are filled with `0x6B`, and the poison is verified on reuse
   (use-after-free writes panic),
 - free lists are scanned for double frees,
+- every small object gets a **redzone**: at least 8 `0xCC` bytes between
+  the requested size and a hidden `u16` size at the object's end, checked
+  by `kfree()`, so a write past the end panics with the exact offset,
 - the check runs *before* unlinking, so a detected corruption leaves the
   slab consistent.
 

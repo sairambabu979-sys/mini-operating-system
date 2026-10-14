@@ -138,4 +138,35 @@ KTEST(kmalloc_detects_use_after_free)
     kfree(kmalloc(48));
 }
 
+KTEST(kmalloc_detects_heap_overflow)
+{
+    struct kjmp_buf jb;
+    struct panic_expectation e;
+    u8 *p = kmalloc(40);
+
+    memset(p, 0x11, 40); /* the whole allocation is fine to use */
+    p[40] = 0x22;        // NOLINT(clang-analyzer-security.ArrayBound): one byte too far: the test
+    panic_expect(&e, &jb);
+    if (ksetjmp(&jb) == 0)
+        kfree(p);
+    panic_expect_clear();
+    KEXPECT(e.hit);
+    KEXPECT(strncmp(e.message, "kfree: heap overflow", 20) == 0);
+
+    /* The caught kfree() panicked before freeing; repair, then free for real. */
+    p[40] = KMALLOC_REDZONE; // NOLINT(clang-analyzer-unix.Malloc): not freed, see above
+    kfree(p);
+}
+
+KTEST(kmalloc_exact_size_use_is_not_an_overflow)
+{
+    /* Every size up to a class boundary, written in full, frees cleanly. */
+    for (usize n = 1; n <= 300; n++) {
+        u8 *p = kmalloc(n);
+
+        memset(p, 0xEE, n);
+        kfree(p);
+    }
+}
+
 #endif /* CONFIG_DEBUG */

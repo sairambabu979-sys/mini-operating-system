@@ -20,8 +20,10 @@ whose output matches every --expect regex, in order.
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -29,6 +31,21 @@ EXIT_SUCCESS = (0x10 << 1) | 1  # 33
 EXIT_FAILURE = (0x11 << 1) | 1  # 35
 
 TAP_PLAN = re.compile(r"^1\.\.(\d+)$")
+
+# OVMF (UEFI firmware for QEMU) as packaged by Debian/Ubuntu (`apt install ovmf`).
+OVMF_CODE_CANDIDATES = ["/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_CODE.fd"]
+
+
+def ovmf_drives(workdir: Path) -> list[str]:
+    """pflash drives for OVMF: read-only code plus a private copy of the variables."""
+    for code in map(Path, OVMF_CODE_CANDIDATES):
+        vars_template = code.with_name(code.name.replace("CODE", "VARS"))
+        if code.exists() and vars_template.exists():
+            vars_copy = workdir / "OVMF_VARS.fd"
+            shutil.copyfile(vars_template, vars_copy)
+            return ["-drive", f"if=pflash,format=raw,readonly=on,file={code}",
+                    "-drive", f"if=pflash,format=raw,file={vars_copy}"]
+    sys.exit("run_tests: OVMF not found (apt install ovmf); cannot run a UEFI test")
 TAP_RESULT = re.compile(r"^(not ok|ok) (\d+) - (.+)$")
 
 
@@ -67,6 +84,7 @@ def main() -> int:
     ap.add_argument("--image", type=Path, required=True)
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--memory", default="128M", help="guest RAM, e.g. 128M or 4G")
+    ap.add_argument("--uefi", action="store_true", help="boot through OVMF instead of the BIOS")
     ap.add_argument("--log-dir", type=Path, default=Path("build/logs"))
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run must end in a kernel panic")
@@ -79,7 +97,9 @@ def main() -> int:
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
     log_path = args.log_dir / f"{args.image.stem}-{args.memory}.serial.log"
-    cmd = qemu_command(args.image, args.memory, args.qemu_args)
+    workdir = Path(tempfile.mkdtemp(prefix="minios-qemu-"))
+    firmware = ovmf_drives(workdir) if args.uefi else []
+    cmd = qemu_command(args.image, args.memory, firmware + args.qemu_args)
 
     start = time.monotonic()
     try:
@@ -90,6 +110,7 @@ def main() -> int:
         status, timed_out = None, True
         output, stderr = e.stdout or b"", e.stderr or b""
     elapsed = time.monotonic() - start
+    shutil.rmtree(workdir, ignore_errors=True)
 
     text = output.decode("utf-8", errors="replace").replace("\r\n", "\n")
     log_path.write_text(text)

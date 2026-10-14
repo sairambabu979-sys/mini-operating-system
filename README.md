@@ -1,7 +1,7 @@
 # mini-operating-system
 
 A small x86_64 kernel written from scratch in C17 and NASM. It boots from
-its own two-stage BIOS loader, runs on its own 4-level page tables with
+its own two-stage BIOS loader or its own UEFI loader, runs on its own 4-level page tables with
 W^X enforced everywhere, handles every CPU exception and hardware
 interrupt, preemptively schedules kernel threads and ring-3 processes,
 and isolates those processes from the kernel and from each other.
@@ -39,13 +39,16 @@ then the ring-3 programs, some of them deliberately hostile.
 
 ## Quick start
 
-Requirements: `clang`, `lld`, `llvm`, `nasm`, `gcc`, `make`, `python3`, `qemu-system-x86`.
-On Ubuntu 24.04: `apt install clang lld llvm nasm gcc make python3 qemu-system-x86`.
+Requirements: `clang`, `lld`, `llvm`, `nasm`, `gcc`, `make`, `python3`, `qemu-system-x86`,
+and for UEFI `ovmf` and `mtools`. On Ubuntu 24.04:
+`apt install clang lld llvm nasm gcc make python3 qemu-system-x86 ovmf mtools`.
 
 ```sh
 make            # bootloader, kernel, user programs, disk images  -> build/debug/
 make run        # boot in QEMU, console on stdio (Ctrl-C to quit)
-make test       # everything below, as CI runs it
+make run-uefi   # the same kernel through OVMF and the UEFI loader
+make test       # every test suite below
+make check      # format + lint + test: exactly what CI checks; run before committing
 ```
 
 | Option | Effect |
@@ -54,14 +57,14 @@ make test       # everything below, as CI runs it
 | `V=1` | show full commands |
 | `CMDLINE="..."` | kernel options for `make run`, e.g. `loglevel=debug` |
 | `make bench` | microbenchmarks |
-| `make debug` | QEMU waits for gdb on `:1234` (`gdb -x tools/gdb/gdbinit build/debug/kernel.elf`) |
+| `make debug` | QEMU waits for gdb on `:1234` (`gdb -x tools/gdb/gdbinit build/debug/kernel.elf`); adds `minios-tasks` and `minios-ptwalk ADDR` |
 | `make lint` / `make format` | clang-tidy, clang-format |
 
 ## What is in it
 
 | Area | Highlights |
 |------|------------|
-| **Boot** | Own MBR + stage 2. A20 by three methods, each verified. E820 map. Unreal-mode kernel load. Real mode straight to long mode. ELF64 loading with full bounds checks. A versioned `boot_info` ABI defined once in C, with NASM offsets generated from it. |
+| **Boot** | Own UEFI loader (PE32+, no SDK) and own BIOS loader, with an identical hand-off: one kernel binary, one test suite, both firmwares. BIOS path: own MBR + stage 2. A20 by three methods, each verified. E820 map. Unreal-mode kernel load. Real mode straight to long mode. ELF64 loading with full bounds checks. A versioned `boot_info` ABI defined once in C, with NASM offsets generated from it. |
 | **Traps** | GDT/TSS with IST stacks for `#DF`, NMI and `#MC`. 256 generated entry stubs, one trap-frame layout. Decoded panics with symbolized backtraces (two-pass symbol-table link). Exception-table fixups. |
 | **Memory** | E820 sanitizer. Buddy allocator (pure, fuzzed on the host). Own page tables bootstrapped without an allocator. Direct map of RAM only: non-executable, with the kernel image read-only through it. NX, WP, SMEP, SMAP. Guard-paged `vmalloc`. Slab `kmalloc` with use-after-free and double-free detection. |
 | **Interrupts** | 8259 PIC with spurious-IRQ handling, PIT at 1 kHz, TSC calibration. IRQ-safe spinlocks that report recursive locking instead of deadlocking. |
@@ -85,6 +88,7 @@ make test       # everything below, as CI runs it
  │   drivers/ serial (16550), PIC (8259), QEMU debug exit                │
  ├───────────────────────────────────────────────────────────────────────┤
  │  boot/   stage1 (MBR) → stage2: A20, E820, unreal mode, long mode, ELF │
+ │          efi/loader.c: UEFI → same boot_info, same page tables          │
  └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -108,6 +112,7 @@ Virtual memory:
 | In-kernel tests | 79 `KTEST()`s, TAP over serial, booted with **128 MiB and 4 GiB** of RAM. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
 | Crash path | A deliberate kernel page fault; the panic decode and backtrace are matched against patterns. | `disk-panic.img` |
 | Whole system | Boots the real `init`, which runs 11 programs and passes only if each ends as expected. | `disk-demo.img` |
+| UEFI | The whole in-kernel suite and the `init` demo again, booted through OVMF and the UEFI loader. | `disk-uefi-*.img` |
 | Benchmarks | Smoke run of `make bench`. | `disk-bench.img` |
 
 Some of what the in-kernel tests prove:
@@ -123,8 +128,9 @@ Some of what the in-kernel tests prove:
 - memory is fully reclaimed after hundreds of threads and processes.
 
 The QEMU runner fails on timeout, triple fault, kernel-reported failure or
-a TAP count mismatch. It was itself checked by injecting a failing test
-and a triple fault. Timing-sensitive tests were run repeatedly with 6 QEMU
+a TAP count mismatch, and `make test` proves it: `tests/qemu/check_runner.py`
+boots kernels that hang and that triple-fault, and requires the runner to
+reject each for the right reason. Timing-sensitive tests were run repeatedly with 6 QEMU
 instances competing for 4 host cores.
 
 ## Benchmarks
@@ -152,7 +158,11 @@ These are deliberate scope cuts (see [`docs/PLAN.md`](docs/PLAN.md)):
   started by name; there is `spawn`, but no `fork`/`exec`.
 - **No signals, pipes or IPC.** Processes talk only through exit statuses.
 - **Console only:** serial output, no input driver.
-- **BIOS only;** no UEFI loader. The `boot_info` ABI is loader-agnostic.
+- **Not physically relocatable.** Both loaders place the kernel at 1 MiB. The
+  UEFI loader asks the firmware for that range and fails cleanly if it is
+  taken, which some real firmware may do.
+- **Legacy timer on real hardware.** Some recent platforms gate off the 8254
+  PIT, the kernel's only timer; HPET/LAPIC timers are not implemented.
 - **Only partly tested under TCG.** On real CPUs a non-canonical RIP
   in `iretq` raises `#GP` in ring 0, the path the exception-table
   recovery handles. TCG skips that check, so that exact path is exercised
@@ -161,7 +171,7 @@ These are deliberate scope cuts (see [`docs/PLAN.md`](docs/PLAN.md)):
 ## Documentation
 
 - [`docs/PLAN.md`](docs/PLAN.md): architecture, decisions, milestones, risks, and how the build differed from the plan
-- [`docs/design/boot.md`](docs/design/boot.md): boot sequence, memory layout, debugging
+- [`docs/design/boot.md`](docs/design/boot.md): BIOS and UEFI boot paths, memory layout, debugging
 - [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers, IRQs, locks
 - [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, page tables, heaps
 - [`docs/design/scheduler.md`](docs/design/scheduler.md): context switch, preemption, lost-wakeup safety
@@ -170,7 +180,7 @@ These are deliberate scope cuts (see [`docs/PLAN.md`](docs/PLAN.md)):
 ## Repository layout
 
 ```
-boot/            stage1.asm (MBR), stage2.asm, layout.inc
+boot/            stage1.asm (MBR), stage2.asm, layout.inc; efi/ (UEFI loader)
 kernel/arch/     x86_64: entry, GDT/TSS/IDT, isr/syscall/switch asm, FPU, user copies
 kernel/core/     kmain, panic, klog, irq, time, ksyms, UBSan, ktest, bench
 kernel/mm/       memmap, buddy, pmm, vmm, vmalloc, kmalloc
@@ -180,7 +190,7 @@ kernel/drivers/  serial, PIC, QEMU exit
 kernel/include/  headers (uapi/ is shared with user space)
 user/            crt0, libsys, programs/
 tests/           host/ (Linux), kernel/ (KTEST), qemu/run_tests.py
-tools/           mkimage, gen_ksyms, gen_user_images, check_kernel, gdb/
+tools/           mkimage, mkesp, gen_ksyms, gen_user_images, check_kernel, gdb/
 ```
 
 ## License

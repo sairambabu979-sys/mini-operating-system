@@ -6,6 +6,7 @@
 #   make run             boot build/<config>/disk.img in QEMU (CMDLINE="..." to pass options)
 #   make debug           same, halted at reset waiting for gdb on :1234
 #   make test            host unit tests, binary checks, in-kernel tests under QEMU
+#   make check           check-format + lint + test: what CI runs (gate commits on it)
 #   make lint            clang-tidy over kernel sources
 #   make format          reformat all C sources in place
 #   make check-format    fail if any C source is not clang-formatted
@@ -75,7 +76,8 @@ KERNEL_CFLAGS += -O2 -g -DCONFIG_DEBUG=1
 KERNEL_UBSAN_FLAGS := -fsanitize=undefined -fno-sanitize=function
 KERNEL_CFLAGS += $(KERNEL_UBSAN_FLAGS)
 else
-KERNEL_CFLAGS += -O2 -DNDEBUG
+# Debug info in release too: kernel.elf stays debuggable; disk images are stripped.
+KERNEL_CFLAGS += -O2 -g -DNDEBUG
 endif
 
 # Host unit-test flags: kernel library code built for Linux under ASan/UBSan.
@@ -140,10 +142,17 @@ $(KERNEL_C_OBJS): $(BUILD)/%.o: %.c $(FLAGS_STAMP)
 	$(call msg,CC,$<)
 	$(Q)$(CC) $(KERNEL_CFLAGS) -MMD -MP -c $< -o $@
 
+# NASM 2.16's -MD leaves %include'd files out of the dependency file (it
+# lists only the source), so a separate -M pass, which gets them right,
+# writes it. Without this, changing a struct layout in asm-offsets.inc did
+# not rebuild the assembly that uses it.
+nasm_deps = $(NASM) $(1) -M -MF $(2) -MP -MT $(3) $(4)
+
 $(BUILD)/kernel/%.asm.o: kernel/%.asm | $(ASM_OFFSETS)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$<)
-	$(Q)$(NASM) $(KERNEL_ASFLAGS) -MD $(@:.o=.d) -MP $< -o $@
+	$(Q)$(call nasm_deps,$(KERNEL_ASFLAGS),$(@:.o=.d),$@,$<)
+	$(Q)$(NASM) $(KERNEL_ASFLAGS) $< -o $@
 
 # --------------------------------------------------------------------------
 # User programs, embedded in the kernel image (kernel/proc/process.c)
@@ -233,7 +242,8 @@ STAGE2 := $(BUILD)/boot/stage2.bin
 $(BUILD)/boot/%.bin: boot/%.asm | $(ASM_OFFSETS)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$<)
-	$(Q)$(NASM) $(BOOT_ASFLAGS) -MD $(@:.bin=.d) -MP -MT $@ $< -o $@
+	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS),$(@:.bin=.d),$@,$<)
+	$(Q)$(NASM) $(BOOT_ASFLAGS) $< -o $@
 
 # Same kernel binary in both images; only the command line differs, so the
 # tests exercise exactly what `make run` boots.
@@ -241,42 +251,80 @@ DISK_IMG := $(BUILD)/disk.img
 TEST_IMG := $(BUILD)/disk-ktest.img
 CMDLINE  ?=
 
-PANIC_IMG := $(BUILD)/disk-panic.img
-DEMO_IMG  := $(BUILD)/disk-demo.img
-BENCH_IMG := $(BUILD)/disk-bench.img
+PANIC_IMG       := $(BUILD)/disk-panic.img
+DEMO_IMG        := $(BUILD)/disk-demo.img
+BENCH_IMG       := $(BUILD)/disk-bench.img
+HANG_IMG        := $(BUILD)/disk-selftest-hang.img
+TRIPLEFAULT_IMG := $(BUILD)/disk-selftest-triplefault.img
 
-$(BENCH_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "bench" -o $@
+# $(call bios_image,<image>,<command line>): a BIOS disk image of the same kernel.
+define bios_image
+$(1): $$(STAGE1) $$(STAGE2) $$(KERNEL_STRIPPED) tools/mkimage.py
+	$$(call msg,IMAGE,$$@)
+	$$(Q)$$(PYTHON) tools/mkimage.py --stage1 $$(STAGE1) --stage2 $$(STAGE2) \
+	  --kernel $$(KERNEL_STRIPPED) --cmdline "$(2)" -o $$@
+endef
 
-$(DEMO_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
+$(eval $(call bios_image,$(TEST_IMG),ktest))
+$(eval $(call bios_image,$(PANIC_IMG),selftest=panic))
+$(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
+$(eval $(call bios_image,$(BENCH_IMG),bench))
+$(eval $(call bios_image,$(HANG_IMG),selftest=hang))
+$(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
 
-$(PANIC_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "selftest=panic" -o $@
+# --------------------------------------------------------------------------
+# UEFI loader (boot/efi) and UEFI boot images
+# --------------------------------------------------------------------------
+
+EFI_CFLAGS := --target=x86_64-unknown-windows -std=c17 \
+	-ffreestanding -nostdinc -isystem $(CLANG_RESOURCE_DIR)/include \
+	-mno-red-zone -mgeneral-regs-only -mno-stack-arg-probe -fno-stack-protector -O2 \
+	-Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes -Wvla \
+	-ffile-prefix-map=$(CURDIR)/= -Ikernel/include
+EFI_SRCS   := boot/efi/loader.c kernel/lib/printf.c kernel/lib/string.c
+EFI_OBJS   := $(EFI_SRCS:%.c=$(BUILD)/efi/%.o)
+EFI_LOADER := $(BUILD)/efi/BOOTX64.EFI
+
+$(BUILD)/efi/%.o: %.c $(FLAGS_STAMP)
+	@mkdir -p $(@D)
+	$(call msg,CC-EFI,$<)
+	$(Q)$(CC) $(EFI_CFLAGS) -MMD -MP -c $< -o $@
+
+$(EFI_LOADER): $(EFI_OBJS)
+	$(call msg,LD,$@)
+	$(Q)lld-link /nologo /subsystem:efi_application /entry:efi_main /nodefaultlib \
+	  /machine:x64 /out:$@ $(EFI_OBJS)
+
+UEFI_IMG       := $(BUILD)/disk-uefi.img
+UEFI_TEST_IMG  := $(BUILD)/disk-uefi-ktest.img
+UEFI_DEMO_IMG  := $(BUILD)/disk-uefi-demo.img
+
+# $(call uefi_image,<image>,<command line>): the same kernel behind the UEFI loader.
+define uefi_image
+$(1): $$(EFI_LOADER) $$(KERNEL_STRIPPED) tools/mkesp.py $(3)
+	$$(call msg,ESP,$$@)
+	$$(Q)$$(PYTHON) tools/mkesp.py --loader $$(EFI_LOADER) --kernel $$(KERNEL_STRIPPED) \
+	  --cmdline "$(2)" -o $$@
+endef
+
+$(eval $(call uefi_image,$(UEFI_TEST_IMG),ktest))
+$(eval $(call uefi_image,$(UEFI_DEMO_IMG),exit-after-init))
 
 # The run image embeds $(CMDLINE); this stamp changes only when it does.
 CMDLINE_STAMP := $(BUILD)/cmdline.stamp
 $(shell mkdir -p $(BUILD) && { printf '%s' '$(CMDLINE)' | cmp -s - $(CMDLINE_STAMP) || \
 	printf '%s' '$(CMDLINE)' > $(CMDLINE_STAMP); })
 
+$(eval $(call uefi_image,$(UEFI_IMG),$(CMDLINE),$(CMDLINE_STAMP)))
+
 $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_STAMP)
 	$(call msg,IMAGE,$@)
 	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
 	  --kernel $(KERNEL_STRIPPED) --cmdline "$(CMDLINE)" -o $@
 
-$(TEST_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
-	$(call msg,IMAGE,$@)
-	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "ktest" -o $@
-
 .PHONY: all
-all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(KERNEL_ELF)
+all: $(DISK_IMG) $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
+	$(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -287,7 +335,16 @@ QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display none -monitor n
               -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
               -drive file=$(DISK_IMG),format=raw,if=ide
 
-.PHONY: run debug bench
+.PHONY: run run-uefi debug bench
+
+# Boots disk-uefi.img through OVMF (apt install ovmf).
+OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd))
+run-uefi: $(UEFI_IMG)
+	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
+	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
+	$(QEMU) $(subst $(DISK_IMG),$(UEFI_IMG),$(QEMU_FLAGS)) \
+	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA)
 # Numbers under TCG reflect the emulator too; use QEMU_EXTRA="-enable-kvm -cpu host" for real ones.
 bench: $(BENCH_IMG)
 	$(Q)$(QEMU) $(subst $(DISK_IMG),$(BENCH_IMG),$(QEMU_FLAGS)) $(QEMU_EXTRA) | grep --line-buffered 'bench:' || true
@@ -329,8 +386,12 @@ $(HOST_TEST_BIN): $(HOST_TEST_OBJS)
 	$(call msg,HOSTLD,$@)
 	$(Q)$(HOSTCC) $(HOST_CFLAGS) $^ -o $@
 
-.PHONY: test host-test qemu-test check-binary
-test: host-test check-binary qemu-test
+.PHONY: test host-test qemu-test check-binary gdb-test
+test: host-test check-binary qemu-test gdb-test
+
+# The gdb helpers (tools/gdb/minios.py), driven against a live kernel.
+gdb-test: $(DISK_IMG) $(KERNEL_ELF)
+	$(Q)$(PYTHON) tests/gdb/test_gdb_helpers.py --image $(DISK_IMG) --kernel $(KERNEL_ELF)
 
 host-test: $(HOST_TEST_BIN)
 	$(Q)$(HOST_TEST_BIN)
@@ -338,7 +399,10 @@ host-test: $(HOST_TEST_BIN)
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
 # The 4G run puts RAM above the 4 GiB PCI hole, exercising a sparse memory map.
-qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG)
+qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) $(TRIPLEFAULT_IMG) \
+	  $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG)
+	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
+	  --triplefault-image $(TRIPLEFAULT_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --memory 4G
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
@@ -354,6 +418,10 @@ qemu-test: $(TEST_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG)
 	  --expect 'init: pid [0-9]+, starting 11 programs' \
 	  --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_DEMO_IMG) --log-dir $(BUILD)/logs \
+	  --no-tap --expect 'loader: UEFI' --expect 'init: all children reaped, 0 unexpected' \
+	  --expect 'init exited with status 0'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BENCH_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --expect 'bench: context switch' --expect 'bench: syscall round trip' \
 	  --expect 'user benchmark exit 0'
@@ -366,7 +434,12 @@ check-binary: $(KERNEL_ELF)
 # Code quality
 # --------------------------------------------------------------------------
 
-FORMAT_SRCS := $(shell find kernel tests user -name '*.c' -o -name '*.h')
+FORMAT_SRCS := $(shell find boot kernel tests user -name '*.c' -o -name '*.h')
+
+# Everything CI checks for this configuration, in CI's order. Run before every commit.
+.PHONY: check
+check: check-format lint
+	$(Q)$(MAKE) --no-print-directory test
 
 .PHONY: format check-format lint
 format:
@@ -378,6 +451,7 @@ check-format:
 lint: $(ASM_OFFSETS)
 	$(Q)clang-tidy --quiet $(KERNEL_C_SRCS) -- $(KERNEL_CFLAGS)
 	$(Q)clang-tidy --quiet $(wildcard user/lib/*.c user/programs/*.c) -- $(USER_CFLAGS)
+	$(Q)clang-tidy --quiet boot/efi/loader.c -- $(EFI_CFLAGS)
 
 .PHONY: clean
 clean:

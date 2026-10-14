@@ -19,6 +19,7 @@ KTEST(boot_info_is_valid)
     KEXPECT_EQ(bi->version, BOOT_INFO_VERSION);
     KEXPECT(bi->mmap_count > 0 && bi->mmap_count <= BOOT_MMAP_MAX);
     KEXPECT(strnlen(bi->cmdline, BOOT_CMDLINE_MAX) < BOOT_CMDLINE_MAX);
+    KEXPECT(bi->loader == BOOT_LOADER_BIOS || bi->loader == BOOT_LOADER_UEFI);
 }
 
 KTEST(kernel_loaded_at_link_address)

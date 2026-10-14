@@ -16,7 +16,7 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -33,19 +33,19 @@ jobs:
       matrix:
         config: [debug, release]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang lld llvm nasm gcc make python3 qemu-system-x86
+            clang lld llvm nasm gcc make python3 qemu-system-x86 ovmf mtools gdb
       - name: Build
         run: make -j"$(nproc)" CONFIG=${{ matrix.config }}
       - name: Test
         run: make test CONFIG=${{ matrix.config }}
       - name: Upload build outputs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: minios-${{ matrix.config }}
           path: |
