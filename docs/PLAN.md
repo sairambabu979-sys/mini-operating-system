@@ -1,6 +1,8 @@
 # Mini Operating System — Engineering Plan
 
-> Status: **v1.0.0** tagged (M0–M8) · **v1.1.0** adds what §11 lists as built after v1.0 · Target: x86_64, single core, QEMU first
+> Status: **v1.0.0** = M0–M8 · **v1.1.0** = everything merged after it: what §11 lists as
+> built after v1.0, plus the audit fixes it records, several of which fix v1.0.0 code ·
+> Target: x86_64, single core, QEMU first, never yet booted on real hardware
 >
 > This is the plan as written before any code, kept as the record of what was
 > intended. §11 records where the build is known to differ from it, and why.
@@ -488,8 +490,9 @@ M6 carry most of the schedule risk.
       register contract.
 - [x] README: a one-paragraph pitch, a quickstart (3 commands), the architecture diagram,
       the memory map, a test matrix, benchmarks, and known limitations.
-- [x] Tag `v1.0.0`: on `8cf9fa5`, the merge of M0–M8. Its boot banner still reads
-      `minios 0.1.0`, because the version string was not raised until v1.1.0.
+- [x] Tag `v1.0.0`: on `8cf9fa5`, the merge of M0–M8, tagged when v1.1.0 was released.
+      Its boot banner still reads `minios 0.1.0`: the version string was not raised
+      until v1.1.0.
 
 ---
 
@@ -537,7 +540,7 @@ or something the implementation taught us.
 |------|-------|
 | UEFI loader | Promoted from stretch goal 6. Same `boot_info` hand-off as the BIOS path (version 2 adds `loader`), so the whole suite runs under both firmwares in `make test`. |
 | Screen console | The plan had only a VGA text mirror of serial, and v1.0 shipped without it. Real machines rarely have a serial port, so a first hardware boot would show nothing. UEFI GOP framebuffer (write-combining through the PAT) or BIOS VGA text, both on a pure, host-fuzzed text grid. Drawing never happens with interrupts off once they run. See [design/console.md](design/console.md). |
-| LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. Since hardened for real hardware: an x2APIC hand-off is kept, every calibration wait is bounded, a dead HPET falls back to the PIT, and no working clock is a clear panic (tested with `pit=off` and `pit=off,hpet=off`). The `x2apic` option switches to x2APIC mode, and `make test-x2apic` runs the whole suite that way under QEMU 9 (CI builds 9.2.0; Ubuntu 24.04's 8.2 cannot emulate x2APIC under TCG). See [design/interrupts.md](design/interrupts.md). |
+| LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. Since hardened for real hardware: an x2APIC hand-off is kept, every calibration wait is bounded, a dead HPET falls back to the PIT (a path no test reaches), and no working clock is a clear panic (tested with `pit=off` and `pit=off,hpet=off`). The `x2apic` option switches to x2APIC mode, and `make test-x2apic` runs the whole suite that way under QEMU 9 (CI builds 9.2.0; Ubuntu 24.04's 8.2 cannot emulate x2APIC under TCG). See [design/interrupts.md](design/interrupts.md). |
 | Runner self-tests | `check_runner.py` boots kernels that hang and triple-fault, and requires `run_tests.py` to reject them. |
 
 **Learned the hard way** (each one is now covered by a test or a check)
