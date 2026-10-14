@@ -26,7 +26,7 @@ irq: using the local APIC and 24 I/O APIC pin(s)
 hpet: 100.000000 MHz, 64-bit counter, 3 comparators, at 0xfed00000
 time: tick: local APIC timer at 1000 Hz (1000004 ns/tick); TSC 2100.897 MHz; calibrated against the HPET
 sched: round robin, 10 ms slices, 16 KiB kernel stacks
-minios 0.1.0 (x86_64, debug build)
+minios 1.1.0 (x86_64, debug build)
 ...
 init: pid 3, starting 11 programs
 hello: hello from ring 3, pid 4
@@ -226,6 +226,13 @@ for hardware numbers.
 
 These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.md)):
 
+- **Never booted on real hardware.** Every test, locally and in CI, runs
+  under QEMU's TCG emulator, with SeaBIOS or OVMF as the firmware. The work
+  aimed at real machines (the UEFI loader's placement rules, the screen
+  console, bounded clock calibration, the x2APIC hand-off) follows the
+  specifications and is tested wherever QEMU can imitate the case, which for
+  the x2APIC hand-off it cannot. No real PC has run any of it, and the first
+  one is likely to find something.
 - **One CPU.** Locks use atomic exchange and are written for SMP, but
   there is no AP bring-up, no per-CPU run queues and no TLB shootdown.
 - **ISA interrupts only.** No PCI interrupt routing, no MSI, and no ACPI AML

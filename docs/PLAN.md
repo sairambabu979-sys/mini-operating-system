@@ -1,6 +1,6 @@
 # Mini Operating System — Engineering Plan
 
-> Status: **v1.0 implemented** (M0–M8) · Target: x86_64, single core, QEMU first
+> Status: **v1.0.0** tagged (M0–M8) · **v1.1.0** adds what §11 lists as built after v1.0 · Target: x86_64, single core, QEMU first
 >
 > This is the plan as written before any code, kept as the record of what was
 > intended. §11 records where the build is known to differ from it, and why.
@@ -488,7 +488,8 @@ M6 carry most of the schedule risk.
       register contract.
 - [x] README: a one-paragraph pitch, a quickstart (3 commands), the architecture diagram,
       the memory map, a test matrix, benchmarks, and known limitations.
-- [ ] Tag `v1.0.0`: left to the repository owner.
+- [x] Tag `v1.0.0`: on `8cf9fa5`, the merge of M0–M8. Its boot banner still reads
+      `minios 0.1.0`, because the version string was not raised until v1.1.0.
 
 ---
 
@@ -530,7 +531,7 @@ or something the implementation taught us.
 | A KTEST that spawns and reaps 10k threads (§9) | Scaled down: 200 threads after a 200-thread warm-up round, and 40 processes, each run required to give back every frame. |
 | `-mno-red-zone` checked in CI | Done differently: the Makefile refuses to build without `-mno-red-zone`, `-mgeneral-regs-only` and `-mcmodel=kernel`, and `check_kernel.py` rejects vector registers in the binary. |
 
-**Built after v1.0** (beyond the original scope)
+**Built after v1.0** (beyond the original scope; released as v1.1.0)
 
 | Item | Notes |
 |------|-------|
