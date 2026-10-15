@@ -40,6 +40,10 @@ static bool in_sequence(struct lineedit *le, u8 c)
         le->esc = ESC_NONE;
         return false;
     }
+    if (c == '[' && le->esc_len == 0) { /* the Linux console's F1-F5: ESC [ [ A..E */
+        le->esc_len++;
+        return true;
+    }
     if ((c >= 0x40 && c <= 0x7E) || ++le->esc_len >= ESC_SEQ_MAX)
         le->esc = ESC_NONE; /* the final byte, or too long to be one */
     return true;

@@ -69,8 +69,16 @@ TEST(kbdmap_control_keys)
     EXPECT_EQ(out[0], 0x03);
     EXPECT_EQ(FEED(&k, out, 0x1D, 0x2A, 0x2E, 0xAE, 0xAA, 0x9D), 1); /* Ctrl-Shift-C */
     EXPECT_EQ(out[0], 0x03);
-    EXPECT_EQ(FEED(&k, out, 0x1D, 0x02, 0x82, 0x1C, 0x9C, 0x0E, 0x8E, 0x9D),
-              0);                            /* Ctrl-1, -Enter, -BS */
+    /* Ctrl with a non-letter types nothing: 1, Enter, Backspace, Tab, Esc, Space, keypad. */
+    EXPECT_EQ(FEED(&k, out, 0x1D, 0x02, 0x82, 0x1C, 0x9C, 0x0E, 0x8E, 0x9D), 0);
+    EXPECT_EQ(FEED(&k, out, 0x1D, 0x0F, 0x8F, 0x01, 0x81, 0x39, 0xB9, 0x9D), 0);
+    EXPECT_EQ(FEED(&k, out, 0x1D, 0xE0, 0x1C, 0xE0, 0x9C, 0xE0, 0x35, 0xE0, 0xB5, 0x9D), 0);
+    EXPECT_EQ(FEED(&k, out, 0xE0, 0x1D, 0xE0, 0x1C, 0xE0, 0x9C, 0xE0, 0x9D), 0);
+    /* Left and right Ctrl are separate: releasing one leaves the other held. */
+    EXPECT_EQ(FEED(&k, out, 0x1D, 0xE0, 0x1D, 0xE0, 0x9D, 0x2E, 0xAE, 0x9D), 1);
+    EXPECT_EQ(out[0], 0x03);
+    EXPECT_EQ(FEED(&k, out, 0xE0, 0x1D, 0x1D, 0x9D, 0x2E, 0xAE, 0xE0, 0x9D), 1);
+    EXPECT_EQ(out[0], 0x03);
     EXPECT_EQ(FEED(&k, out, 0x01, 0x81), 1); /* Esc */
     EXPECT_EQ(out[0], 0x1B);
     EXPECT_EQ(FEED(&k, out, 0xE0, 0x1C, 0xE0, 0x9C), 1); /* keypad Enter */
@@ -115,17 +123,83 @@ TEST(kbdmap_shifts_and_fillers)
     EXPECT_EQ(out[0], 'A');
     EXPECT_EQ(FEED(&k, out, 0xB6, 0x1E, 0x9E), 1);
     EXPECT_EQ(out[0], 'a');
-    /* The fake shifts around E0 keys shift nothing. */
+    /* Releasing the right Shift leaves the left one held, too. */
+    EXPECT_EQ(FEED(&k, out, 0x2A, 0x36, 0xB6, 0x1E, 0x9E, 0xAA), 1);
+    EXPECT_EQ(out[0], 'A');
+    /* The fake shifts around E0 keys shift nothing, with or without a real Shift held. */
     EXPECT_EQ(FEED(&k, out, 0xE0, 0x2A, 0x1E, 0x9E, 0xE0, 0xAA), 1);
     EXPECT_EQ(out[0], 'a');
+    EXPECT_EQ(FEED(&k, out, 0xE0, 0x36, 0x1E, 0x9E, 0xE0, 0xB6), 1);
+    EXPECT_EQ(out[0], 'a');
+    /* Shift + Left, then a */
+    EXPECT_EQ(FEED(&k, out, 0x2A, 0xE0, 0xAA, 0xE0, 0x4B, 0xE0, 0xCB, 0xE0, 0x2A, 0x1E, 0x9E, 0xAA),
+              1);
+    EXPECT_EQ(out[0], 'A');
+    /* right Shift + Delete, then a */
+    EXPECT_EQ(FEED(&k, out, 0x36, 0xE0, 0xB6, 0xE0, 0x53, 0xE0, 0xD3, 0xE0, 0x36, 0x1E, 0x9E, 0xB6),
+              1);
+    EXPECT_EQ(out[0], 'A');
+    /* Shift + keypad / */
+    EXPECT_EQ(FEED(&k, out, 0x2A, 0xE0, 0xAA, 0xE0, 0x35, 0xE0, 0xB5, 0xE0, 0x2A, 0xAA), 1);
+    EXPECT_EQ(out[0], '/');
+    EXPECT_EQ(k.mods, 0);
     /* ACK, resend and echo type nothing and change nothing. */
     EXPECT_EQ(FEED(&k, out, 0xFA, 0xFE, 0xEE, 0x2A, 0xFA, 0x1E, 0x9E, 0xAA), 1);
     EXPECT_EQ(out[0], 'A');
+    /* ... nor a pending prefix: the E0 survives an ACK, and so does the E1 count. */
+    EXPECT_EQ(FEED(&k, out, 0xE0, 0xFA, 0x2A, 0x1E, 0x9E, 0xE0, 0xAA), 1);
+    EXPECT_EQ(out[0], 'a');
+    EXPECT_EQ(FEED(&k, out, 0xE1, 0xFA, 0x1E, 0x1F, 0x20, 0xA0), 1);
+    EXPECT_EQ(out[0], 'd');
     /* An error byte drops a pending prefix: the 0x1C after it is plain Enter. */
     EXPECT_EQ(FEED(&k, out, 0xE0, 0x00, 0x1C, 0x9C), 1);
     EXPECT_EQ(out[0], '\n');
     EXPECT_EQ(FEED(&k, out, 0xE1, 0xFF, 0x1E, 0x9E), 1);
     EXPECT_EQ(out[0], 'a');
+}
+
+/* With either Ctrl held, a letter types its control byte and every other key nothing. */
+TEST(kbdmap_ctrl_with_every_key)
+{
+    for (int right = 0; right < 2; right++) {
+        for (size_t i = 0; i < TEST_KEY_COUNT; i++) {
+            struct kbdmap k = {0};
+            const struct test_key *t = &test_keys[i];
+            uint8_t out[4];
+            size_t n = right ? FEED(&k, out, 0xE0, 0x1D, t->make, t->make | 0x80, 0xE0, 0x9D)
+                             : FEED(&k, out, 0x1D, t->make, t->make | 0x80, 0x9D);
+            bool letter = t->ch >= 'a' && t->ch <= 'z';
+            bool capital = t->ch >= 'A' && t->ch <= 'Z'; /* the same key as its letter */
+
+            if (letter && (n != 1 || out[0] != (t->ch & 0x1F)))
+                test_fail(__FILE__, __LINE__, "Ctrl-%c (right %d): %zu byte(s)", t->ch, right, n);
+            if (!letter && !capital && n != 0)
+                test_fail(__FILE__, __LINE__, "Ctrl with key 0x%02x (right %d) typed %#x", t->make,
+                          right, out[0]);
+            EXPECT_EQ(k.mods, 0);
+        }
+    }
+}
+
+/* The keypad types its own characters, the same with either Shift. Shift-Space is a space. */
+TEST(kbdmap_keypad_ignores_shift)
+{
+    for (size_t i = 0; i < TEST_KEYPAD_COUNT; i++) {
+        const struct test_key *t = &test_keypad[i];
+        uint8_t make = t->make, brk = t->make | 0x80;
+        struct kbdmap k = {0};
+        uint8_t out[8];
+
+        if (FEED(&k, out, make, brk, 0x2A, make, brk, 0xAA, 0x36, make, brk, 0xB6) != 3 ||
+            out[0] != (uint8_t)t->ch || out[1] != (uint8_t)t->ch || out[2] != (uint8_t)t->ch)
+            test_fail(__FILE__, __LINE__, "keypad 0x%02x does not type '%c' three times", make,
+                      t->ch);
+    }
+    struct kbdmap k = {0};
+    uint8_t out[4];
+
+    EXPECT_EQ(FEED(&k, out, 0x2A, 0x39, 0xB9, 0xAA), 1);
+    EXPECT_EQ(out[0], ' ');
 }
 
 /* Every reachable state, every byte: at most one byte out, always in the alphabet, state valid. */

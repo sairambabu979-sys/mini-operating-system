@@ -14,6 +14,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The spec's numbers, stated here rather than taken from the header under test. */
+_Static_assert(LE_LINE_MAX == 32, "a line holds 31 characters");
+#define LINE_CHARS  31
+#define PROMPT_COLS 4
+
 /* Feeds a string; collects the echo, the last event, and every finished line ("a|b|"). */
 struct run {
     char echo[4096];
@@ -55,10 +60,11 @@ TEST(lineedit_types_and_erases)
     EXPECT_STREQ(r.lines, "hello|");
     EXPECT_STREQ(r.echo, "hellp\b \bo\n");
 
+    /* Erasing past the start does nothing. */
     r = (struct run){0};
     FEED(&le, &r,
          "\b\x7f"
-         "ab\b\b\bc\n"); /* erasing past the start does nothing */
+         "ab\b\b\bc\n");
     EXPECT_STREQ(r.lines, "c|");
     EXPECT_STREQ(r.echo, "ab\b \b\b \bc\n");
 
@@ -112,13 +118,23 @@ TEST(lineedit_swallows_escape_sequences)
     struct run r = {0};
 
     le_reset(&le);
-    FEED(&le, &r, "\x1b[Ahi\x1b[1;5D\n");      /* Up, Ctrl-Left */
-    FEED(&le, &r, "\x1bOPx\n");                /* F1 as SS3 */
-    FEED(&le, &r, "ab\x1b[12\n");              /* cut short by Enter, which still ends the line */
-    FEED(&le, &r, "\x1bq\n");                  /* a lone ESC is dropped, the byte kept */
-    FEED(&le, &r, "\x1b[1111111111111111q\n"); /* 16 bytes is too long to be a sequence */
+    FEED(&le, &r, "\x1b[Ahi\x1b[1;5D\n"); /* Up, Ctrl-Left */
+    FEED(&le, &r, "\x1bOPx\n");           /* F1 as SS3 */
+    FEED(&le, &r, "ab\x1b[12\n");         /* cut short by Enter, which still ends the line */
+    FEED(&le, &r, "\x1bq\n");             /* a lone ESC is dropped, the byte kept */
+    /* 16 bytes is too long to be a sequence: what follows is typed */
+    FEED(&le, &r, "\x1b[1111111111111111q\n");
     EXPECT_STREQ(r.lines, "hi|x|ab|q|q|");
     EXPECT_STREQ(r.echo, "hi\nx\nab\nq\nq\n");
+
+    r = (struct run){0};
+    FEED(&le, &r, "\x1b[[Ahi\n"); /* the Linux console's F1 */
+    FEED(&le, &r, "\x1b[23@x\n"); /* '@', the lowest final byte */
+    FEED(&le, &r, "\x1b[~y\n");   /* '~', the highest */
+    /* the 16-byte bound counts every byte, not only parameters */
+    FEED(&le, &r, "\x1b[                z\n");
+    FEED(&le, &r, "\x1b[\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80w\n");
+    EXPECT_STREQ(r.lines, "hi|x|y|z|w|");
 }
 
 TEST(lineedit_caps_the_line_and_ignores_the_rest)
@@ -132,14 +148,34 @@ TEST(lineedit_caps_the_line_and_ignores_the_rest)
     le_reset(&le);
     feed(&le, &r, forty, 40);
     FEED(&le, &r, "\n");
-    EXPECT_EQ(strlen(r.lines), LE_LINE_MAX - 1 + 1); /* 31 characters and the '|' */
-    EXPECT_EQ(r.echo_len, LE_LINE_MAX - 1 + 1);
+    EXPECT_EQ(strlen(r.lines), LINE_CHARS + 1); /* 31 characters and the '|' */
+    EXPECT_EQ(r.echo_len, LINE_CHARS + 1);
 
+    /* Ctrl-U on a full line: the longest echo there is, 31 erases. */
+    r = (struct run){0};
+    feed(&le, &r, forty, LINE_CHARS);
+    size_t typed = r.echo_len;
+
+    FEED(&le, &r, "\x15");
+    EXPECT_EQ(r.echo_len - typed, 3 * LINE_CHARS);
+    EXPECT_TRUE(3 * LINE_CHARS <= LE_ECHO_MAX);
+    for (size_t i = 0; i < LINE_CHARS; i++)
+        EXPECT_EQ(memcmp(r.echo + typed + 3 * i, "\b \b", 3), 0);
+    EXPECT_EQ(le.len, 0);
+
+    /* Backspace on a full line makes room for exactly one more. */
+    r = (struct run){0};
+    feed(&le, &r, forty, LINE_CHARS);
+    FEED(&le, &r, "\x7fxy\n");
+    EXPECT_EQ(strlen(r.lines), LINE_CHARS + 1);
+    EXPECT_EQ(r.lines[LINE_CHARS - 1], 'x');
+
+    /* High bytes, Tab and ^A are ignored. */
     r = (struct run){0};
     FEED(&le, &r,
          "a\x80\xff"
          "b\tc\x01\x7f\x7f"
-         "d\n"); /* high bytes, Tab and ^A ignored */
+         "d\n");
     EXPECT_STREQ(r.lines, "ad|");
 }
 
@@ -161,6 +197,10 @@ static enum le_event model_feed(struct model *m, uint8_t c)
 
     m->after_cr = false;
     if (m->esc == 2) {
+        if (c == '[' && m->esc_len == 0) { /* ESC [ [ x */
+            m->esc_len = 1;
+            return LE_MORE;
+        }
         if (c >= 0x20) {
             m->esc_len++;
             if ((c >= 0x40 && c <= 0x7E) || m->esc_len >= 16)
@@ -195,7 +235,7 @@ static enum le_event model_feed(struct model *m, uint8_t c)
             return LE_EOF;
     } else if (c == 0x1B) {
         m->esc = 1;
-    } else if (c >= 0x20 && c <= 0x7E && m->len < LE_LINE_MAX - 1) {
+    } else if (c >= 0x20 && c <= 0x7E && m->len < LINE_CHARS) {
         m->line[m->len++] = (char)c;
     }
     return LE_MORE;
@@ -209,14 +249,28 @@ static void no_draw(void *ctx, uint32_t col, uint32_t row, uint8_t ch)
     (void)ctx, (void)col, (void)row, (void)ch;
 }
 
-/* Interesting bytes are common; the rest of the byte range shows up too. */
+/*
+ * Interesting bytes are common; the rest of the byte range shows up too.
+ * Now and then a burst of one printable, so full lines and the 16-byte
+ * sequence bound are reached, not only short lines.
+ */
+static int burst;
+static uint8_t burst_byte;
+
 static uint8_t random_byte(void)
 {
     static const uint8_t common[] = {'a',  'z',  ' ', '~', 0x7F, 0x08, '\r', '\n', 0x15, 0x03,
                                      0x04, 0x1B, '[', 'O', '1',  ';',  'A',  '\t', 0x80, 0xFF};
-    int pick = rand() % 4;
 
-    if (pick == 0)
+    if (burst) {
+        burst--;
+        return burst_byte;
+    }
+    if (rand() % 64 == 0) {
+        burst = 20 + rand() % 30;
+        burst_byte = rand() % 2 ? 'k' : '1';
+    }
+    if (rand() % 4 == 0)
         return (uint8_t)rand();
     return common[rand() % (int)sizeof(common)];
 }
@@ -229,16 +283,21 @@ TEST(lineedit_fuzz_against_model_and_text_grid)
     struct model m = {0};
     char echo[LE_ECHO_MAX];
     usize echo_len;
+    int full_lines = 0, full_erases = 0, long_sequences = 0;
 
     memset(cells, ' ', sizeof(cells));
     memset(shown, ' ', sizeof(shown));
     textgrid_init(&g, cells, shown, COLS, ROWS, no_draw, NULL);
-    textgrid_write(&g, "sh> ", 4);
+    textgrid_write(&g, "sh> ", PROMPT_COLS);
     le_reset(&le);
     srand(7);
 
     for (int i = 0; i < 200000; i++) {
         uint8_t c = random_byte();
+
+        full_lines += m.len == LINE_CHARS && c >= 0x20 && c <= 0x7E && !m.esc;
+        full_erases += m.len == LINE_CHARS && c == 0x15 && !m.esc;
+        long_sequences += m.esc == 2 && m.esc_len == 15 && c >= 0x20 && !(c >= 0x40 && c <= 0x7E);
         enum le_event want = model_feed(&m, c);
         enum le_event got = le_feed(&le, c, echo, &echo_len);
 
@@ -255,18 +314,19 @@ TEST(lineedit_fuzz_against_model_and_text_grid)
         if (got != LE_MORE) { /* what the shell does next: a new prompt */
             if (got == LE_EOF)
                 textgrid_write(&g, "\n", 1);
-            textgrid_write(&g, "sh> ", 4);
+            textgrid_write(&g, "sh> ", PROMPT_COLS);
             m.len = 0;
             continue;
         }
         /* The cursor row shows exactly the prompt and the line; nothing wrapped. */
-        bool ok = !g.wrap_pending && g.col == 4 + le.len && le.len == m.len &&
+        bool ok = !g.wrap_pending && g.col == PROMPT_COLS + le.len &&
+                  g.col <= PROMPT_COLS + LINE_CHARS && le.len == m.len &&
                   memcmp(le.buf, m.line, m.len) == 0;
 
         for (uint32_t col = 0; ok && col < COLS; col++) {
-            uint8_t want_ch = col < 4            ? (uint8_t) "sh> "[col]
-                              : col < 4 + le.len ? (uint8_t)le.buf[col - 4]
-                                                 : ' ';
+            uint8_t want_ch = col < PROMPT_COLS            ? (uint8_t) "sh> "[col]
+                              : col < PROMPT_COLS + le.len ? (uint8_t)le.buf[col - PROMPT_COLS]
+                                                           : ' ';
             ok = textgrid_cell(&g, col, g.row) == want_ch;
         }
         if (!ok) {
@@ -276,4 +336,8 @@ TEST(lineedit_fuzz_against_model_and_text_grid)
             return;
         }
     }
+    /* The fuzz reached the edges it exists for. */
+    EXPECT_TRUE(full_lines > 0);
+    EXPECT_TRUE(full_erases > 0);
+    EXPECT_TRUE(long_sequences > 0);
 }

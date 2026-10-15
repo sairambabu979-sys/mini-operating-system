@@ -13,7 +13,8 @@
  *   - Ctrl-C (0x03) cancels the line ("^C\n"); Ctrl-D (0x04) on an empty
  *     line is end of input, elsewhere ignored;
  *   - escape sequences (ESC [ ... or ESC O x, from a terminal's arrow or
- *     function keys) are swallowed whole;
+ *     function keys, and the Linux console's ESC [ [ x) are swallowed
+ *     whole; one that runs to 16 bytes without its final byte ends there;
  *   - Tab, other control bytes and bytes from 0x80 are ignored.
  * A line holds at most LE_LINE_MAX - 1 characters, so after a 4-column
  * prompt the cursor never passes column 35: the echo never wraps on an

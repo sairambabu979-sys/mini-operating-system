@@ -45,4 +45,17 @@ static const struct test_key test_keys[] = {
 
 #define TEST_KEY_COUNT (sizeof(test_keys) / sizeof(test_keys[0]))
 
+/*
+ * The keypad, which types the same with or without Shift (no Num Lock
+ * state): QEMU's kp_* qcodes, also set 1 make codes. Keypad Enter and
+ * keypad '/' are E0 keys and tested as such.
+ */
+static const struct test_key test_keypad[] = {
+    {'*', 0x37, 0}, {'7', 0x47, 0}, {'8', 0x48, 0}, {'9', 0x49, 0}, {'-', 0x4A, 0},
+    {'4', 0x4B, 0}, {'5', 0x4C, 0}, {'6', 0x4D, 0}, {'+', 0x4E, 0}, {'1', 0x4F, 0},
+    {'2', 0x50, 0}, {'3', 0x51, 0}, {'0', 0x52, 0}, {'.', 0x53, 0},
+};
+
+#define TEST_KEYPAD_COUNT (sizeof(test_keypad) / sizeof(test_keypad[0]))
+
 #endif /* MINIOS_TESTS_COMMON_KBD_KEYMAP_H */
