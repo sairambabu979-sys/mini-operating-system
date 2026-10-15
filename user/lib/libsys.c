@@ -44,6 +44,11 @@ long sys_time_ms(void)
     return syscall3(SYS_TIME_MS, 0, 0, 0);
 }
 
+long sys_read(int fd, void *buf, usize len)
+{
+    return syscall3(SYS_READ, fd, (long)buf, (long)len);
+}
+
 /* One write per printf call, so concurrent processes never interleave mid-line. */
 int printf(const char *fmt, ...)
 {

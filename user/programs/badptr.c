@@ -35,6 +35,15 @@ int main(void)
     expect("spawn(no such image)", sys_spawn("no-such-program"), -ENOENT);
     expect("spawn(name too long)", sys_spawn("aaaaaaaaaaaaaaaaaaaaaaaa"), -ENAMETOOLONG);
     expect("wait(no children)", sys_wait(-1, &status), -ECHILD);
+    /* read() rejects all of these before it could block or take a byte. */
+    expect("read(bad fd)", sys_read(7, buf, 3), -EBADF);
+    expect("read(stdout)", sys_read(1, buf, 3), -EBADF);
+    expect("read(len 0)", sys_read(0, buf, 0), 0);
+    expect("read(kernel pointer)", sys_read(0, (void *)0xFFFFFFFF80100000ull, 8), -EFAULT);
+    expect("read(range wraps)", sys_read(0, buf, ~0ul), -EFAULT);
+    expect("read(range crosses USER_TOP)", sys_read(0, (void *)0x7FFFFFFFFFF0ull, 64), -EFAULT);
+    expect("read(unmapped)", sys_read(0, (void *)0x1000, 8), -EFAULT);
+    expect("read(read-only)", sys_read(0, (void *)(unsigned long)&read_only, 4), -EFAULT);
     expect("unknown syscall", syscall3(1000, 0, 0, 0), -ENOSYS);
     expect("negative syscall", syscall3(-1, 0, 0, 0), -ENOSYS);
 
