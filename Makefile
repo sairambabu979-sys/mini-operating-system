@@ -161,8 +161,9 @@ $(BUILD)/kernel/%.asm.o: kernel/%.asm | $(ASM_OFFSETS)
 # User programs, embedded in the kernel image (kernel/proc/process.c)
 # --------------------------------------------------------------------------
 
-USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/kernel/lib/printf.o \
-	$(BUILD)/user/kernel/lib/string.o $(BUILD)/user/user/lib/crt0.asm.o
+USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/user/lib/lineedit.o \
+	$(BUILD)/user/kernel/lib/printf.o $(BUILD)/user/kernel/lib/string.o \
+	$(BUILD)/user/user/lib/crt0.asm.o
 USER_PROGRAMS := $(sort $(basename $(notdir $(wildcard user/programs/*.c user/programs/*.asm))))
 USER_ELFS     := $(USER_PROGRAMS:%=$(BUILD)/user/bin/%.elf)
 USER_IMAGES   := $(BUILD)/gen/user_images.o
@@ -394,13 +395,14 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
 	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c \
-	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c
+	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c kernel/lib/kbdmap.c
+HOST_TEST_USER_SRCS   := user/lib/lineedit.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 
 
 HOST_TEST_OBJS := $(HOST_TEST_SRCS:%.c=$(BUILD)/host/%.o) \
-	$(HOST_TEST_KERNEL_SRCS:%.c=$(BUILD)/host/%.o)
+	$(HOST_TEST_KERNEL_SRCS:%.c=$(BUILD)/host/%.o) $(HOST_TEST_USER_SRCS:%.c=$(BUILD)/host/%.o)
 
 $(BUILD)/host/tests/%.o: tests/%.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
@@ -412,6 +414,12 @@ $(BUILD)/host/kernel/%.o: kernel/%.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,HOSTCC,$<)
 	$(Q)$(HOSTCC) $(HOST_CFLAGS) -include tests/host/kernel_shim.h -MMD -MP -c $< -o $@
+
+# Pure user-space library code: no libc calls, so no renaming needed.
+$(BUILD)/host/user/%.o: user/%.c $(FLAGS_STAMP)
+	@mkdir -p $(@D)
+	$(call msg,HOSTCC,$<)
+	$(Q)$(HOSTCC) $(HOST_CFLAGS) -Iuser/lib -MMD -MP -c $< -o $@
 
 $(HOST_TEST_BIN): $(HOST_TEST_OBJS)
 	@mkdir -p $(@D)
