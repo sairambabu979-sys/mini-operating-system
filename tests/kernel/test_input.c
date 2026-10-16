@@ -159,9 +159,11 @@ static int consume(void *arg)
 
 KTEST(input_never_loses_a_wakeup)
 {
-    struct stream s = {.deadline = time_ticks() + DEADLINE_MS};
+    static struct stream s; /* static: a consumer left stuck must not write into a dead frame */
+    static const u8 pad[INPUT_QUEUE_SIZE / 2];
     int status;
 
+    s = (struct stream){.deadline = time_ticks() + DEADLINE_MS};
     input_test_flush();
     struct task *c = kthread_create(consume, &s, "consume", 0);
     struct task *p = kthread_create(produce, &s, "produce", 0);
@@ -174,11 +176,19 @@ KTEST(input_never_loses_a_wakeup)
     KEXPECT(wait_count(&s.consumed, STREAM_BYTES));
     KEXPECT(!s.out_of_order);
     KEXPECT_EQ(task_wait(ppid, &status), ppid);
-    if (s.consumed < STREAM_BYTES) { /* lost a wakeup: feed the consumer to its end */
-        static u8 pad[STREAM_BYTES];
+    /*
+     * A lost wakeup leaves the consumer asleep with bytes queued, and more
+     * of them missing than the queue holds: feed it to its end a little at
+     * a time, each inject waking it again.
+     */
+    u64 deadline = time_ticks() + DEADLINE_MS;
 
-        input_inject(pad, STREAM_BYTES - s.consumed);
+    while (s.consumed < STREAM_BYTES && time_ticks() < deadline) {
+        input_inject(pad, MIN(sizeof(pad), (usize)(STREAM_BYTES - s.consumed)));
+        sleep_ms(1);
     }
+    if (s.consumed < STREAM_BYTES)
+        return; /* never woken at all: leaking it beats hanging the run */
     KEXPECT_EQ(task_wait(cpid, &status), cpid);
 }
 
