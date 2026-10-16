@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 /*
  * The console input queue, through input_inject(): no device needed, so
- * these never skip. Reads that block run in kernel threads, and the test
- * task waits for one only with a deadline, then frees it by feeding it
- * or leaves it behind: a lost wakeup fails a test instead of hanging the
- * run. State a thread can still touch after its test gives up is static.
+ * these never skip. Reads that block run in detached kernel threads that
+ * flag when they are done, and the test task waits for that flag only
+ * with a deadline, freeing a stuck reader by feeding it: a lost wakeup
+ * fails a test instead of hanging the run. A reader that is never woken
+ * stays blocked, but it is no child of the test task, so no later
+ * task_wait() waits on it; the state it can still touch is static.
  * input_test_flush() starts the ring indices just below the u32 wrap, so
  * every test that moves 100 bytes or more crosses it.
  */
@@ -97,6 +99,7 @@ KTEST(input_full_queue_drops_newest_and_counts)
 struct reader {
     u8 buf[8];
     volatile u32 got;
+    volatile u32 done;
 };
 
 static int read_once(void *arg)
@@ -104,27 +107,24 @@ static int read_once(void *arg)
     struct reader *r = arg;
 
     r->got = (u32)input_read(r->buf, sizeof(r->buf));
+    r->done = 1;
     return 0;
 }
 
-/* Starts a reader on whatever is queued; NULL if the thread could not be made. */
-static struct task *start_reader(struct reader *r)
+/* Starts a detached reader on whatever is queued; false if it could not be made. */
+static bool start_reader(struct reader *r)
 {
     *r = (struct reader){0};
-    struct task *t = kthread_create(read_once, r, "reader", 0);
+    struct task *t = kthread_create(read_once, r, "reader", KTHREAD_DETACHED);
 
     KEXPECT(t != NULL);
-    return t;
+    return t != NULL;
 }
 
-/* Frees the reader if it is stuck, then reaps it; leaves it behind if it never wakes. */
-static void finish_reader(struct reader *r, int pid)
+/* Frees the reader if it is stuck, and checks it ran to its end. */
+static void finish_reader(struct reader *r)
 {
-    int status;
-
-    if (!feed_until(&r->got, 1, (const u8 *)"!", 1))
-        return;
-    KEXPECT_EQ(task_wait(pid, &status), pid);
+    KEXPECT(feed_until(&r->done, 1, (const u8 *)"!", 1));
 }
 
 KTEST(input_reader_sleeps_until_injected)
@@ -133,18 +133,19 @@ KTEST(input_reader_sleeps_until_injected)
 
     input_test_flush();
     u64 before = sleeps();
-    struct task *t = start_reader(&r);
 
-    if (!t)
+    if (!start_reader(&r))
         return;
-    int pid = t->pid;
+    KEXPECT(wait_sleeping(before)); /* it found the queue empty */
+    u64 asleep = sleeps();
 
-    KEXPECT(wait_sleeping(before)); /* asleep on an empty queue, not spinning */
+    sleep_ms(20);
+    KEXPECT_EQ(sleeps(), asleep); /* and sleeps: a reader that polled would look again */
     KEXPECT_EQ(r.got, 0);
     inject_str("x");
     KEXPECT(wait_count(&r.got, 1)); /* the wakeup came */
     KEXPECT_EQ(r.buf[0], 'x');
-    finish_reader(&r, pid);
+    finish_reader(&r);
 }
 
 /*
@@ -159,21 +160,17 @@ KTEST(input_byte_arriving_as_reader_sleeps_is_not_lost)
 
     input_test_flush();
     input_test_inject_at_next_sleep('z');
-    struct task *t = start_reader(&r);
-
-    if (!t)
+    if (!start_reader(&r))
         return;
-    int pid = t->pid;
-
     KEXPECT(wait_count(&r.got, 1));
     KEXPECT_EQ(r.buf[0], 'z');
-    finish_reader(&r, pid);
+    finish_reader(&r);
 }
 
 #define STREAM_BYTES 3000
 
 struct stream {
-    volatile u32 produced, consumed;
+    volatile u32 produced, consumed, consumer_done;
     volatile bool out_of_order;
     u64 deadline; /* the producer gives up then, so a stuck consumer cannot hang it */
 };
@@ -212,6 +209,7 @@ static int consume(void *arg)
                 s->out_of_order = true;
         s->consumed += (u32)n;
     }
+    s->consumer_done = 1;
     return 0;
 }
 
@@ -223,21 +221,27 @@ KTEST(input_never_loses_a_wakeup)
 
     s = (struct stream){.deadline = time_ticks() + DEADLINE_MS};
     input_test_flush();
-    struct task *c = kthread_create(consume, &s, "consume", 0);
+    struct task *c = kthread_create(consume, &s, "consume", KTHREAD_DETACHED);
+
+    KEXPECT(c != NULL);
+    if (!c)
+        return;
+    /* the producer always ends, by its deadline at the latest: it is reaped */
     struct task *p = kthread_create(produce, &s, "produce", 0);
 
-    KEXPECT(c != NULL && p != NULL);
-    if (!c || !p)
-        return; /* cannot happen at boot; leaking a stuck thread beats hanging */
-    int cpid = c->pid, ppid = p->pid;
+    KEXPECT(p != NULL);
+    if (!p) {
+        s.deadline = 0;
+        feed_until(&s.consumer_done, 1, pad, sizeof(pad));
+        return;
+    }
+    int ppid = p->pid;
 
     KEXPECT(wait_count(&s.consumed, STREAM_BYTES));
     KEXPECT(!s.out_of_order);
     KEXPECT_EQ(task_wait(ppid, &status), ppid);
     /* more bytes may be missing than the queue holds: feed a little at a time */
-    if (!feed_until(&s.consumed, STREAM_BYTES, pad, sizeof(pad)))
-        return;
-    KEXPECT_EQ(task_wait(cpid, &status), cpid);
+    KEXPECT(feed_until(&s.consumer_done, 1, pad, sizeof(pad)));
 }
 
 #define SHARED_BYTES 200
@@ -283,17 +287,17 @@ KTEST(input_two_readers_share_bytes)
     static struct share_arg args[2] = {{&s, 0}, {&s, 1}};
     static const u8 ends[2] = {END, END};
     u8 bytes[SHARED_BYTES];
-    struct task *t[2];
-    int pid[2], status;
 
     memset((void *)&s, 0, sizeof(s));
     input_test_flush();
     for (int i = 0; i < 2; i++) {
-        t[i] = kthread_create(share_reader, &args[i], "sharer", 0);
-        KEXPECT(t[i] != NULL);
-        if (!t[i])
+        struct task *t = kthread_create(share_reader, &args[i], "sharer", KTHREAD_DETACHED);
+
+        KEXPECT(t != NULL);
+        if (!t) {
+            feed_until(&s.done, (u32)i, ends, 1);
             return;
-        pid[i] = t[i]->pid;
+        }
     }
     for (int i = 0; i < SHARED_BYTES; i++)
         bytes[i] = (u8)i;
@@ -306,8 +310,6 @@ KTEST(input_two_readers_share_bytes)
     KEXPECT(wait_count(&s.done, 2));
     if (!feed_until(&s.done, 2, ends, 1))
         return;
-    for (int i = 0; i < 2; i++)
-        KEXPECT_EQ(task_wait(pid[i], &status), pid[i]);
     for (int i = 0; i < SHARED_BYTES; i++)
         if (s.seen[i] != 1)
             ktest_fail(__FILE__, __LINE__, "byte %d delivered %u times", i, s.seen[i]);
