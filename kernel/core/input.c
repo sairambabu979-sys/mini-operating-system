@@ -54,22 +54,25 @@ void input_inject(const u8 *bytes, usize n)
         wake_up_all(&input_wq);
 }
 
+/*
+ * The sleep condition of wait_event(), which evaluates it only after the
+ * task is marked BLOCKED and on the queue: a byte pushed from here on
+ * wakes it, so no wakeup can be lost (the argument is sched.c's, and is
+ * tested there). A false answer is followed by a sleep, and is counted so
+ * a test can tell that a reader is about to wait for the byte it injects.
+ */
+static bool data_ready(void)
+{
+    if (!queue_empty())
+        return true;
+    __atomic_fetch_add(&stats.sleeps, 1, __ATOMIC_RELAXED);
+    return false;
+}
+
 usize input_read(u8 *buf, usize max)
 {
     for (;;) {
-        /*
-         * wait_event(), open-coded to count a sleep only once the task is
-         * BLOCKED and has seen the queue empty: a test that sees the count
-         * rise knows a byte it injects now must come through a wakeup.
-         */
-        for (;;) {
-            sched_prepare_wait(&input_wq);
-            if (!queue_empty())
-                break;
-            __atomic_fetch_add(&stats.sleeps, 1, __ATOMIC_RELAXED);
-            schedule();
-        }
-        sched_finish_wait(&input_wq);
+        wait_event(&input_wq, data_ready());
 
         irqflags_t flags = spin_lock_irqsave(&input_lock);
         u32 t = tail;

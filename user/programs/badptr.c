@@ -19,6 +19,7 @@ static void expect(const char *what, long got, long want)
 }
 
 static const int read_only = 1; /* nonzero: .rodata, mapped but not writable */
+static char big[4096];          /* mapped for far more than read() would ever fill */
 
 int main(void)
 {
@@ -42,6 +43,9 @@ int main(void)
     expect("read(kernel pointer)", sys_read(0, (void *)0xFFFFFFFF80100000ull, 8), -EFAULT);
     expect("read(range wraps)", sys_read(0, buf, ~0ul), -EFAULT);
     expect("read(range crosses USER_TOP)", sys_read(0, (void *)0x7FFFFFFFFFF0ull, 64), -EFAULT);
+    /* The range is judged on the whole length, not on the part read() would use. */
+    expect("read(valid buffer, length wraps)", sys_read(0, big, ~0ul), -EFAULT);
+    expect("read(valid buffer, length past USER_TOP)", sys_read(0, big, 1ull << 47), -EFAULT);
     expect("read(unmapped)", sys_read(0, (void *)0x1000, 8), -EFAULT);
     expect("read(read-only)", sys_read(0, (void *)(unsigned long)&read_only, 4), -EFAULT);
     expect("unknown syscall", syscall3(1000, 0, 0, 0), -ENOSYS);

@@ -27,7 +27,7 @@
 struct input_stats {
     u64 injected; /* bytes pushed by input_inject() */
     u64 dropped;  /* bytes lost to a full queue */
-    u64 sleeps;   /* times a reader went to sleep on an empty queue */
+    u64 sleeps;   /* times a reader found the queue empty and went to wait */
     u32 queued;   /* bytes waiting now */
 };
 
