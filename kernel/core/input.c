@@ -3,9 +3,7 @@
  * Console input queue. See <core/input.h>.
  *
  * The ring indices run free (u32) and are masked on access: head - tail
- * is the number of bytes queued. Both change only under input_lock;
- * readers' sleep condition reads them without it, with acquire loads,
- * which is safe because a stale answer only costs one more check.
+ * is the number of bytes queued. Both are touched only under input_lock.
  */
 #define pr_fmt(fmt) "input: " fmt
 
@@ -30,14 +28,8 @@ static bool push_locked(u8 byte)
         stats.dropped++;
         return false;
     }
-    ring[head % INPUT_QUEUE_SIZE] = byte;
-    __atomic_store_n(&head, head + 1, __ATOMIC_RELEASE);
+    ring[head++ % INPUT_QUEUE_SIZE] = byte;
     return true;
-}
-
-static bool queue_empty(void)
-{
-    return __atomic_load_n(&head, __ATOMIC_ACQUIRE) == __atomic_load_n(&tail, __ATOMIC_ACQUIRE);
 }
 
 void input_inject(const u8 *bytes, usize n)
@@ -54,38 +46,44 @@ void input_inject(const u8 *bytes, usize n)
         wake_up_all(&input_wq);
 }
 
+static bool racing_armed; /* see input_test_inject_at_next_sleep() */
+static u8 racing_byte;
+
 /*
- * The sleep condition of wait_event(), which evaluates it only after the
- * task is marked BLOCKED and on the queue: a byte pushed from here on
- * wakes it, so no wakeup can be lost (the argument is sched.c's, and is
- * tested there). A false answer is followed by a sleep, and is counted so
- * a test can tell that a reader is about to wait for the byte it injects.
+ * The sleep condition of input_read(): takes up to max bytes, puts their
+ * count in *taken, and is false if there were none. wait_event()
+ * evaluates it only after the task is marked BLOCKED and on the queue, so
+ * a byte pushed from then on wakes it and no wakeup is lost (the argument
+ * is sched.c's, and is tested there). False is followed by a sleep, and is
+ * counted so a test can tell that a reader is about to wait for the byte
+ * it injects.
  */
-static bool data_ready(void)
+static bool take(u8 *buf, usize max, usize *taken)
 {
-    if (!queue_empty())
-        return true;
-    __atomic_fetch_add(&stats.sleeps, 1, __ATOMIC_RELAXED);
-    return false;
+    irqflags_t flags = spin_lock_irqsave(&input_lock);
+    bool race = false;
+    usize n = 0;
+
+    for (; n < max && tail != head; n++)
+        buf[n] = ring[tail++ % INPUT_QUEUE_SIZE];
+    if (!n) {
+        stats.sleeps++;
+        race = racing_armed;
+        racing_armed = false;
+    }
+    spin_unlock_irqrestore(&input_lock, flags);
+    if (race) /* as an interrupt between this check and the sleep would */
+        input_inject(&racing_byte, 1);
+    *taken = n;
+    return n != 0;
 }
 
 usize input_read(u8 *buf, usize max)
 {
-    for (;;) {
-        wait_event(&input_wq, data_ready());
+    usize n;
 
-        irqflags_t flags = spin_lock_irqsave(&input_lock);
-        u32 t = tail;
-        usize n = 0;
-
-        for (; n < max && t != head; n++)
-            buf[n] = ring[t++ % INPUT_QUEUE_SIZE];
-        __atomic_store_n(&tail, t, __ATOMIC_RELEASE);
-        spin_unlock_irqrestore(&input_lock, flags);
-        if (n)
-            return n;
-        /* another reader took the bytes first: wait again */
-    }
+    wait_event(&input_wq, take(buf, max, &n));
+    return n;
 }
 
 bool input_present(void)
@@ -98,16 +96,28 @@ void input_get_stats(struct input_stats *out)
     irqflags_t flags = spin_lock_irqsave(&input_lock);
 
     *out = stats;
-    out->sleeps = __atomic_load_n(&stats.sleeps, __ATOMIC_RELAXED);
     out->queued = head - tail;
     spin_unlock_irqrestore(&input_lock, flags);
 }
+
+/* Just below the u32 wrap: every test that moves 100 bytes or more crosses it. */
+#define TEST_INDEX_START ((u32)0 - 100)
 
 void input_test_flush(void)
 {
     irqflags_t flags = spin_lock_irqsave(&input_lock);
 
-    __atomic_store_n(&tail, head, __ATOMIC_RELEASE);
+    head = tail = TEST_INDEX_START;
+    racing_armed = false;
+    spin_unlock_irqrestore(&input_lock, flags);
+}
+
+void input_test_inject_at_next_sleep(u8 byte)
+{
+    irqflags_t flags = spin_lock_irqsave(&input_lock);
+
+    racing_byte = byte;
+    racing_armed = true;
     spin_unlock_irqrestore(&input_lock, flags);
 }
 

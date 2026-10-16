@@ -345,8 +345,34 @@ KTEST(read_blocks_until_input)
     } while (st.sleeps == before && time_ticks() < deadline);
     KEXPECT(st.sleeps != before);
     input_inject((const u8 *)"ok\n", 3);
-    KEXPECT_EQ(task_wait(pid, &status), pid);
-    KEXPECT_EQ(status, 0);
+    deadline = time_ticks() + 2000;
+    do { /* until it woke and took the line: a lost wakeup fails here, not in task_wait */
+        sleep_ms(1);
+        input_get_stats(&st);
+    } while (st.queued && time_ticks() < deadline);
+    KEXPECT_EQ(st.queued, 0);
+    if (st.queued == 0) { /* else leave it asleep rather than hang the run */
+        KEXPECT_EQ(task_wait(pid, &status), pid);
+        KEXPECT_EQ(status, 0);
+    }
+    input_test_set_present(was);
+}
+
+/* A read far longer than one read() returns: all that is queued, and not a byte past it. */
+KTEST(read_returns_at_most_256_bytes)
+{
+    static u8 bytes[INPUT_READ_MAX];
+    bool was = input_test_set_present(true);
+    struct input_stats st;
+
+    static_assert(INPUT_READ_MAX == 256 && INPUT_QUEUE_SIZE >= 256, "readmax expects 256 bytes");
+    input_test_flush();
+    for (usize i = 0; i < sizeof(bytes); i++)
+        bytes[i] = (u8)(i * 3 + 1);
+    input_inject(bytes, sizeof(bytes));
+    KEXPECT_EQ(run("readmax"), 0);
+    input_get_stats(&st);
+    KEXPECT_EQ(st.queued, 0);
     input_test_set_present(was);
 }
 

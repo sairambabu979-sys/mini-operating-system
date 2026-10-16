@@ -47,6 +47,13 @@ int main(void)
     expect("read(valid buffer, length wraps)", sys_read(0, big, ~0ul), -EFAULT);
     expect("read(valid buffer, length past USER_TOP)", sys_read(0, big, 1ull << 47), -EFAULT);
     expect("read(unmapped)", sys_read(0, (void *)0x1000, 8), -EFAULT);
+    /* The probe covers every byte read() could fill: here the last 4 run past the stack. */
+    expect("read(straddles the stack top)", sys_read(0, (void *)(0x7FFFFFFF0000ull - 4), 8),
+           -EFAULT);
+    /* The checks come in the documented order: the fd, then the range, then len 0. */
+    expect("read(bad fd and kernel pointer)", sys_read(7, (void *)0xFFFFFFFF80100000ull, 8),
+           -EBADF);
+    expect("read(kernel pointer, len 0)", sys_read(0, (void *)0xFFFFFFFF80100000ull, 0), -EFAULT);
     expect("read(read-only)", sys_read(0, (void *)(unsigned long)&read_only, 4), -EFAULT);
     expect("unknown syscall", syscall3(1000, 0, 0, 0), -ENOSYS);
     expect("negative syscall", syscall3(-1, 0, 0, 0), -ENOSYS);

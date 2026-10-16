@@ -40,13 +40,22 @@ bool input_present(void);
 /* Queues bytes as if a device had delivered them. Any context. */
 void input_inject(const u8 *bytes, usize n);
 
-/* Blocks until at least one byte is queued; returns 1 to max bytes. Process context only. */
+/* Blocks until at least one byte is queued; returns 1 to max (>= 1) bytes. Process context only. */
 usize input_read(u8 *buf, usize max);
 
 void input_get_stats(struct input_stats *out);
 
-/* For tests only: drops whatever is queued. */
+/*
+ * For tests only: drops whatever is queued, disarms the hook below, and
+ * restarts the ring indices just below the u32 wrap so tests cross it.
+ */
 void input_test_flush(void);
+
+/*
+ * For tests only: the next reader to find the queue empty has `byte`
+ * pushed right after, before it sleeps, as an interrupt there would.
+ */
+void input_test_inject_at_next_sleep(u8 byte);
 
 /* For tests only: overrides input_present(); returns the previous value. */
 bool input_test_set_present(bool present);
