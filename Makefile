@@ -168,6 +168,16 @@ USER_PROGRAMS := $(sort $(basename $(notdir $(wildcard user/programs/*.c user/pr
 USER_ELFS     := $(USER_PROGRAMS:%=$(BUILD)/user/bin/%.elf)
 USER_IMAGES   := $(BUILD)/gen/user_images.o
 
+# The shell's `help` lists the embedded programs. Generated as the Makefile
+# is read, and rewritten only when the list changes (as cmdline.stamp is).
+comma := ,
+USER_PROGRAMS_H    := $(BUILD)/gen/user_programs.h
+USER_PROGRAMS_LINE := \#define USER_PROGRAM_NAMES $(patsubst %,"%"$(comma),$(USER_PROGRAMS))
+$(shell mkdir -p $(BUILD)/gen && { printf '%s\n' '$(USER_PROGRAMS_LINE)' | \
+	cmp -s - $(USER_PROGRAMS_H) || printf '%s\n' '$(USER_PROGRAMS_LINE)' > $(USER_PROGRAMS_H); })
+$(BUILD)/user/user/programs/sh.o: $(USER_PROGRAMS_H)
+$(BUILD)/user/user/programs/sh.o: USER_CFLAGS += -I$(BUILD)/gen
+
 $(BUILD)/user/%.o: %.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,CC,$<)
@@ -270,6 +280,8 @@ TEST_QUIET_IMG  := $(BUILD)/disk-ktest-quiet.img
 TEST_X2APIC_IMG := $(BUILD)/disk-ktest-x2apic.img
 PANIC_IMG       := $(BUILD)/disk-panic.img
 DEMO_IMG        := $(BUILD)/disk-demo.img
+SHELL_IMG       := $(BUILD)/disk-shell.img
+BADINIT_IMG     := $(BUILD)/disk-badinit.img
 BENCH_IMG       := $(BUILD)/disk-bench.img
 HANG_IMG        := $(BUILD)/disk-selftest-hang.img
 TRIPLEFAULT_IMG := $(BUILD)/disk-selftest-triplefault.img
@@ -289,6 +301,8 @@ $(eval $(call bios_image,$(TEST_QUIET_IMG),ktest console=serial loglevel=warn))
 $(eval $(call bios_image,$(TEST_X2APIC_IMG),ktest x2apic))
 $(eval $(call bios_image,$(PANIC_IMG),selftest=panic))
 $(eval $(call bios_image,$(DEMO_IMG),exit-after-init))
+$(eval $(call bios_image,$(SHELL_IMG),init=sh exit-after-init))
+$(eval $(call bios_image,$(BADINIT_IMG),init=no-such-prog exit-after-init))
 $(eval $(call bios_image,$(BENCH_IMG),bench))
 $(eval $(call bios_image,$(HANG_IMG),selftest=hang))
 $(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
@@ -326,6 +340,7 @@ $(EFI_LOADER): $(EFI_OBJS)
 UEFI_IMG       := $(BUILD)/disk-uefi.img
 UEFI_TEST_IMG  := $(BUILD)/disk-uefi-ktest.img
 UEFI_DEMO_IMG  := $(BUILD)/disk-uefi-demo.img
+UEFI_SHELL_IMG := $(BUILD)/disk-uefi-shell.img
 
 # $(call uefi_image,<image>,<command line>): the same kernel behind the UEFI loader.
 define uefi_image
@@ -337,6 +352,7 @@ endef
 
 $(eval $(call uefi_image,$(UEFI_TEST_IMG),ktest))
 $(eval $(call uefi_image,$(UEFI_DEMO_IMG),exit-after-init))
+$(eval $(call uefi_image,$(UEFI_SHELL_IMG),init=sh exit-after-init))
 
 # The run image embeds $(CMDLINE); this stamp changes only when it does.
 CMDLINE_STAMP := $(BUILD)/cmdline.stamp
@@ -353,7 +369,7 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 .PHONY: all
 all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
 	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) \
-	$(KERNEL_ELF)
+	$(SHELL_IMG) $(BADINIT_IMG) $(UEFI_SHELL_IMG) $(KERNEL_ELF)
 
 # --------------------------------------------------------------------------
 # Running
@@ -367,7 +383,7 @@ QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display $(QEMU_DISPLAY)
               -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
               -drive file=$(DISK_IMG),format=raw,if=ide
 
-.PHONY: run run-uefi debug bench
+.PHONY: run run-uefi run-shell run-shell-uefi debug bench
 
 # Boots disk-uefi.img through OVMF (apt install ovmf).
 OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd))
@@ -383,6 +399,19 @@ bench: $(BENCH_IMG)
 
 run: $(DISK_IMG)
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_EXTRA)
+
+# The shell, typed at from this terminal (COM1): Ctrl-C reaches the guest,
+# Ctrl-A x quits QEMU. QEMU_DISPLAY=gtk opens a window to type on the PS/2
+# keyboard instead. Leaving the shell ends the run (status 33 is success).
+run-shell: $(SHELL_IMG)
+	$(QEMU) $(subst -serial stdio,-serial mon:stdio,$(subst $(DISK_IMG),$(SHELL_IMG),$(QEMU_FLAGS))) \
+	  $(QEMU_EXTRA) || test $$? -eq 33
+run-shell-uefi: $(UEFI_SHELL_IMG)
+	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
+	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
+	$(QEMU) $(subst -serial stdio,-serial mon:stdio,$(subst $(DISK_IMG),$(UEFI_SHELL_IMG),$(QEMU_FLAGS))) \
+	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA) || test $$? -eq 33
 
 # Waits for gdb on :1234 before the first instruction. In another shell:
 #   gdb -x tools/gdb/gdbinit $(KERNEL_ELF)
@@ -443,8 +472,11 @@ host-test: $(HOST_TEST_BIN)
 # by PIT channel 2 (no HPET table), APICs with no PIT at all (as on platforms
 # that gate it off), no reference clock at all (must panic, not hang), and the
 # legacy 8259 + PIT ("noapic").
+X10  := xxxxxxxxxx
+X100 := $(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)
 qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
-	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS)
+	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) $(SHELL_IMG) $(BADINIT_IMG) \
+	  $(UEFI_SHELL_IMG)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --clean-image $(DEMO_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
@@ -517,12 +549,52 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --log-suffix noi8042 --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0' -- -machine pc,i8042=off
 	$(Q)$(PYTHON) tests/qemu/boot_keypress.py --image $(DEMO_IMG) --log-dir $(BUILD)/logs
+	@# The shell, typed at on the PS/2 keyboard through QMP and on COM1. No session types an
+	@# empty line, so two prompts in a row mean a line ended twice (the runner would then type
+	@# its next step at the stale prompt, and the session could still look right).
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --type-after '^sh> ' --type 'help\n' --type-after '^sh> ' --type 'hellp\x7fo\n' \
+	  --type-after '^sh> ' --type 'xyz\x15nosuch\n' --type-after '^sh> ' --type 'abc\x03' \
+	  --type-after '^sh> ' --type 'faulter\n' --type-after '^sh> ' --type 'hello world\n' \
+	  --type-after '^sh> ' --type 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' \
+	  --type-after '^sh> ' --type 'sh\n' --type-after '^sh> ' --type '\x04' \
+	  --type-after '^sh> ' --type 'exit\n' \
+	  --expect '^input: PS/2 keyboard on IRQ 1, 8042 config 0x[0-9a-f]+ -> 0x61$$' \
+	  --expect '^sh: type a program' --expect '^  hello$$' --expect 'hellp\x08 \x08o' \
+	  --expect '^hello: hello from ring 3' --expect '^\[exit 42\]$$' \
+	  --expect 'xyz(\x08 \x08){3}nosuch' --expect '^sh: nosuch: not found$$' --expect 'abc\^C$$' \
+	  --expect 'killed by #PF' --expect '^\[exit 142\]$$' \
+	  --expect '^sh: programs take no arguments$$' --expect '^sh> a{31}$$' \
+	  --expect '^sh: name too long' --expect '^\[exit 0\]$$' --expect 'init exited with status 0' \
+	  --reject 'KERNEL PANIC' --reject 'WARNING: (i8042|input): ' --reject '^sh> \nsh> '
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --input serial --log-suffix serial \
+	  --type-after '^sh> ' --type 'hellp\x7fo\r' \
+	  --type-after '^sh> ' --type '\x1b[A\x1b[1;5Dhello\r\n' \
+	  --type-after '^sh> ' --type '$(X100)\x15hello\r' \
+	  --type-after '^sh> ' --type '\x04' \
+	  --expect 'WARNING: i8042: no controller \(status 0xff\)' --expect '^input: COM1 receive on IRQ 4' \
+	  --expect 'hellp\x08 \x08o' --expect '^\[exit 42\]$$' --expect '^\[exit 42\]$$' \
+	  --expect '^\[exit 42\]$$' --expect 'init exited with status 0' --reject '\[1;5D' \
+	  --reject '^sh> \nsh> ' \
+	  -- -machine pc,i8042=off
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --log-suffix ps2-8259 --type-after '^sh> ' --type 'hello\n' --type-after '^sh> ' --type '\x04' \
+	  --expect '^irq: using the 8259 PIC \(the CPU has no local APIC\)$$' \
+	  --expect '^input: PS/2 keyboard' --expect '^\[exit 42\]$$' --expect 'init exited with status 0' \
+	  --reject '^sh> \nsh> ' -- -cpu max,-apic
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BADINIT_IMG) --log-dir $(BUILD)/logs --expect-panic \
+	  --expect "cannot start init 'no-such-prog': -2"
 	$(Q)for m in $(A20_METHODS); do \
 	  $(PYTHON) tests/qemu/run_tests.py --image $(BUILD)/disk-a20-$$m.img --log-dir $(BUILD)/logs \
 	    --no-tap --expect "A20 test: off, then on by $$m" \
 	    --expect '^input: PS/2 keyboard on IRQ 1' \
 	    --expect 'init exited with status 0' || exit 1; \
 	done
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_SHELL_IMG) --log-dir $(BUILD)/logs \
+	  --no-tap --type-after '^sh> ' --type 'hello\n' --type-after '^sh> ' --type 'exit\n' \
+	  --expect 'loader: UEFI' --expect '-> 0x65$$' --expect '^\[exit 42\]$$' \
+	  --expect 'init exited with status 0' --reject '^sh> \nsh> '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
 	  --skips 1 --expect 'calibrated against the HPET' \
 	  --expect '^input: PS/2 keyboard on IRQ 1, 8042 config 0x[0-9a-f]+ -> 0x65$$' \
@@ -588,7 +660,7 @@ check-format:
 
 lint: $(ASM_OFFSETS)
 	$(Q)clang-tidy --quiet $(KERNEL_C_SRCS) -- $(KERNEL_CFLAGS)
-	$(Q)clang-tidy --quiet $(wildcard user/lib/*.c user/programs/*.c) -- $(USER_CFLAGS)
+	$(Q)clang-tidy --quiet $(wildcard user/lib/*.c user/programs/*.c) -- $(USER_CFLAGS) -I$(BUILD)/gen
 	$(Q)clang-tidy --quiet boot/efi/loader.c -- $(EFI_CFLAGS)
 
 .PHONY: clean

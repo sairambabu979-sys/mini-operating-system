@@ -127,7 +127,8 @@ static void apply_cmdline(const char *cmdline)
     }
     /* Under test, a panic must end the run with a failure, not hang it. */
     panic_set_exit_on_panic(cmdline_has_flag(cmdline, "ktest") ||
-                            cmdline_get(cmdline, "selftest", value, sizeof(value)));
+                            cmdline_get(cmdline, "selftest", value, sizeof(value)) ||
+                            cmdline_has_flag(cmdline, "exit-after-init"));
 }
 
 /*
@@ -169,16 +170,23 @@ static void run_selftest(const char *cmdline)
 
 /*
  * Starts user space and becomes its reaper: init's orphans are adopted by
- * this task, so it waits for anything, forever. With "exit-after-init" on
- * the command line (the demo test), init's exit status ends the QEMU run.
+ * this task, so it waits for anything, forever. The first program is
+ * "init" unless "init=NAME" names another (the shell images). With
+ * "exit-after-init" on the command line (the demo and shell tests), its
+ * exit status ends the QEMU run.
  */
 static __noreturn void run_init(const char *cmdline)
 {
-    int init_pid = process_spawn("init");
+    char name[TASK_NAME_MAX + 1] = "init"; /* one more than fits, to catch a truncation */
     int status;
 
+    if (cmdline_get(cmdline, "init", name, sizeof(name)) &&
+        (name[0] == '\0' || strlen(name) >= TASK_NAME_MAX))
+        panic("init=: a program name has 1 to %d characters", TASK_NAME_MAX - 1);
+    int init_pid = process_spawn(name);
+
     if (init_pid < 0)
-        panic("cannot start init: %d", init_pid);
+        panic("cannot start init '%s': %d", name, init_pid);
     for (;;) {
         int pid = task_wait(-1, &status);
 

@@ -157,7 +157,11 @@ now checks the scroll count too.
   checks, `mm_init` itself) reach COM1 only. The screen is mapped through
   `iomap()`. An early console drawn through the loader's identity map
   would close the gap.
-- Output only: input comes from the PS/2 keyboard and COM1, through `read()` (see `core/input.h`).
+- Input comes from the PS/2 keyboard and COM1, through `read()`
+  ([input.md](input.md)). The kernel never echoes: the reading program
+  does, through `write()`, so typed text lands in the log ring like any
+  output. A kernel message printed in the middle of a typed line is not
+  redrawn.
 - One font size; no colors or escape sequences.
 - GOP mode as the firmware set it: no mode switch.
 - BIOS graphics modes (VBE) are not used: a BIOS that boots into a

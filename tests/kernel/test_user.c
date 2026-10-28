@@ -12,8 +12,10 @@
 #include <arch/trap.h>
 #include <core/input.h>
 #include <core/ktest.h>
+#include <core/printk.h>
 #include <core/time.h>
 #include <lib/errno.h>
+#include <lib/string.h>
 #include <mm/kmalloc.h>
 #include <mm/pmm.h>
 #include <proc/process.h>
@@ -421,10 +423,121 @@ KTEST(read_returns_at_most_256_bytes)
     input_test_set_present(was);
 }
 
+/* How often `needle` occurs in the newest 4 KiB of console output. */
+static int log_count(const char *needle)
+{
+    static char tail[4096 + 1];
+    usize n = console_log_read(tail, sizeof(tail) - 1), len = strlen(needle);
+    int count = 0;
+
+    for (usize i = 0; i + len <= n; i++)
+        if (memcmp(tail + i, needle, len) == 0)
+            count++;
+    return count;
+}
+
+static bool log_has(const char *needle)
+{
+    return log_count(needle) > 0;
+}
+
 KTEST(read_without_input_device_is_enodev)
 {
     bool was = input_test_set_present(false);
 
     KEXPECT_EQ(run("readkeys"), 100); /* the bad buffers still fail first, with -EFAULT */
+    KEXPECT_EQ(run("sh"), 1);
+    KEXPECT(log_has("sh: cannot read input (-19)\n"));
+    input_test_set_present(was);
+}
+
+/*
+ * The shell, fed a session through input_inject(): each line runs and
+ * reports, and leaving it gives every task back. The output is checked in
+ * the console log (sh writes it through the console like any program).
+ */
+KTEST(shell_runs_programs_and_reports_status)
+{
+    static const char session[] = "help\nhello\n   \n hello \nnosuch\nhello world\n"
+                                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                                  "faulter\nabc\x03"
+                                  "exit\n\x04"; /* exit leaves the Ctrl-D unread */
+    static const char *const want[] = {
+        "  hello\n",
+        "[exit 42]\n",
+        "sh: nosuch: not found\n",
+        "sh: programs take no arguments\n",
+        "sh: name too long",
+        "[exit 142]\n",
+        "abc^C\n",
+    };
+    bool was = input_test_set_present(true);
+    struct sched_stats before, after;
+    char tail[9];
+
+    input_test_flush();
+    sched_get_stats(&before);
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    KEXPECT_EQ(run("sh"), 0); /* a broken exit still ends at the Ctrl-D, not in a hang */
+    KEXPECT_EQ(console_log_read(tail, sizeof(tail)), sizeof(tail));
+    KEXPECT_EQ(memcmp(tail, "sh> exit\n", sizeof(tail)), 0); /* "exit" ended it, not the Ctrl-D */
+    for (usize i = 0; i < sizeof(want) / sizeof(want[0]); i++)
+        if (!log_has(want[i]))
+            ktest_fail(__FILE__, __LINE__, "no '%s' in the console log", want[i]);
+    KEXPECT_EQ(log_count("[exit 42]\n"), 2);                      /* " hello " is hello */
+    KEXPECT_EQ(log_count("sh: programs take no arguments\n"), 1); /* and "   " is nothing */
+    sched_get_stats(&after);
+    KEXPECT_EQ(after.tasks, before.tasks);
+    input_test_flush();
+    input_test_set_present(was);
+}
+
+/*
+ * What was typed after a command's Enter belongs to the program it starts:
+ * the shell must leave readkeys its "ok". A shell holding it would leave
+ * readkeys waiting forever, so the test waits with a deadline, and then
+ * types "ok" again to free it. "exit" comes only then: readkeys takes all
+ * it can get, so typed with the rest it would join readkeys' line.
+ */
+KTEST(shell_leaves_typeahead_to_the_program_it_starts)
+{
+    static const char session[] = "readkeys\nok\n";
+    bool was = input_test_set_present(true);
+    int status = -1;
+
+    input_test_flush();
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    int pid = process_spawn("sh");
+
+    KEXPECT(pid > 0);
+    if (pid > 0) {
+        u64 deadline = time_ticks() + 2000;
+
+        while (!log_has("sh> readkeys\n[exit 0]\n") && time_ticks() < deadline)
+            sleep_ms(1);
+        if (!log_has("sh> readkeys\n[exit 0]\n")) {
+            ktest_fail(__FILE__, __LINE__, "readkeys never got the 'ok' typed after it");
+            input_inject((const u8 *)"ok\n", 3); /* free it */
+            sleep_ms(100);
+        }
+        input_inject((const u8 *)"exit\n", 5);
+        KEXPECT_EQ(task_wait(pid, &status), pid);
+        KEXPECT_EQ(status, 0);
+    }
+    input_test_flush();
+    input_test_set_present(was);
+}
+
+/* Ctrl-D on an empty line leaves, and the output still ends with a newline. */
+KTEST(shell_eof_exits_cleanly)
+{
+    bool was = input_test_set_present(true);
+    char last;
+
+    input_test_flush();
+    input_inject((const u8 *)"\x04", 1);
+    KEXPECT_EQ(run("sh"), 0);
+    KEXPECT_EQ(console_log_read(&last, 1), 1);
+    KEXPECT_EQ(last, '\n'); /* so the next TAP line starts a line of its own */
     input_test_set_present(was);
 }

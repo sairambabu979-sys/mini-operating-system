@@ -14,7 +14,13 @@ Sources: `kernel/acpi/`, `kernel/arch/x86_64/lapic.c`,
 | Chosen when | CPU has a local APIC, its APIC ID is at most 255, the MADT lists an I/O APIC that answers, no `noapic` | anything else |
 
 Drivers see neither: `irq_register(line, ...)` names an ISA line, and the
-interrupt arrives on vector `32 + line` either way. The legacy path is not
+interrupt arrives on vector `32 + line` either way. ISA lines 1 (the
+8042) and 4 (COM1) are registered at boot by `input_init()`. Both
+handlers drain until the device is empty, so an IRQ that finds nothing is
+expected, and each `irq_register()` there is followed by a drain by hand:
+a device that raised its edge while its line was masked gets no
+interrupt on the APIC path, where the I/O APIC drops a masked edge, but
+does on the 8259, which latches it ([input.md](input.md)). The legacy path is not
 dead code. It is the fallback for anything missing at boot, and
 `make test` boots it through the `noapic` option
 (`disk-ktest-noapic.img`) and through two of the automatic fallbacks: a

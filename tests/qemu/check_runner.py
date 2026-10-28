@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 """Tests for the test runner: it must FAIL, for the right reason, when the
-kernel hangs or triple-faults, and when a run that otherwise passes prints
-a line it was told to reject. A runner that cannot fail proves nothing.
+kernel hangs or triple-faults, when a run that otherwise passes prints
+a line it was told to reject, and when the prompt it is to type after never
+appears. A runner that cannot fail proves nothing.
 
   check_runner.py --hang-image H --triplefault-image T --clean-image C --log-dir DIR
 """
@@ -40,6 +41,9 @@ def main() -> int:
         expect_failure(args.triplefault_image, args.log_dir, "crash or triple fault", []),
         expect_failure(args.clean_image, args.log_dir, "output matches rejected",
                        ["--log-suffix", "reject", "--reject", "init exited with status 0"]),
+        expect_failure(args.clean_image, args.log_dir, "never appeared",
+                       ["--log-suffix", "noprompt", "--timeout", "10",
+                        "--type-after", "^NEVER$", "--type", "x"]),
     ]
     return 0 if all(results) else 1
 

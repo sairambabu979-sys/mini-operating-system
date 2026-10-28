@@ -132,7 +132,11 @@ lifts SMAP for the copy alone (`stac`/`clac`, only on CPUs that have them),
 and turns faults into `-EFAULT` through the exception table. `badptr`
 throws kernel pointers, unmapped pointers, wrapping and `USER_TOP`-crossing
 ranges, bad fds, over-long names and unknown syscall numbers at the kernel,
-and checks every errno. Its `wait` cases (kernel, unmapped and read-only
+and checks every errno. Its `read` cases also pin the order of the checks
+(a bad fd with a kernel pointer is `-EBADF`, a kernel pointer with length
+0 is `-EFAULT`) and probe every byte a read could fill (8 bytes from 4
+below the stack top). Like `wait`, `read` probes its buffer before it takes
+anything, so a bad buffer never swallows a keystroke ([input.md](input.md)). Its `wait` cases (kernel, unmapped and read-only
 status pointers) must each fail without reaping the child, which a final
 `wait` then collects.
 
@@ -189,3 +193,8 @@ starts eleven programs (well-behaved, CPU-bound, sleeping, FPU-checking,
 hostile and deliberately crashing), reaps them all, and exits 0 only if
 each one ended exactly as expected. `disk-demo.img` boots this and checks
 the result, so `make run` is itself under test.
+
+`init=NAME` starts another program first. The shell images
+(`disk-shell.img`, `disk-uefi-shell.img`) boot `init=sh exit-after-init`;
+`disk-badinit.img` boots `init=no-such-prog` and must panic with that
+name ([input.md](input.md)).
