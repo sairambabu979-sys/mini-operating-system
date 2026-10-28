@@ -26,9 +26,9 @@
 
 /*
  * Brings the keyboard port up: both ports off, the output buffer flushed,
- * the configuration byte rewritten to translation on and the mouse off
- * (read back to check it took), the keyboard port and scanning enabled,
- * and only then the keyboard IRQ. Writes the configuration byte found and
+ * the configuration byte rewritten to translation on with both ports
+ * still off (read back to check it took), then the keyboard port and
+ * scanning enabled, and only then the keyboard IRQ. Writes the configuration byte found and
  * the one left. False, with a warning, if there is no controller or it
  * stops answering; the caller then has no keyboard.
  */

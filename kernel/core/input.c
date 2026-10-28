@@ -178,6 +178,7 @@ void input_test_flush(void)
 
     head = tail = TEST_INDEX_START;
     racing_armed = false;
+    kbd = (struct kbdmap){0}; /* no Shift or prefix left over from a test that stopped early */
     spin_unlock_irqrestore(&input_lock, flags);
 }
 

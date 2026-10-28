@@ -256,7 +256,9 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 - **No filesystem.** User programs are embedded in the kernel image and
   started by name; there is `spawn`, but no `fork`/`exec`.
 - **No signals, pipes or IPC.** Processes talk only through exit statuses.
-- **Output only:** serial and screen, but no keyboard driver yet.
+- **Input from a PS/2 keyboard only** (US layout, through the 8042 on IRQ 1).
+  There is no USB stack: a USB keyboard could only reach it through the
+  firmware's PS/2 emulation, which is untested.
 - **Serial output runs with interrupts off.** Every console write (a kernel
   message, or one 256-byte chunk of a `write()` call) holds the console lock,
   with interrupts off, while COM1 is polled byte by byte. On a real UART at

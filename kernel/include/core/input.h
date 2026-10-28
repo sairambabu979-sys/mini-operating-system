@@ -58,7 +58,8 @@ usize input_read(u8 *buf, usize max);
 void input_get_stats(struct input_stats *out);
 
 /*
- * For tests only: drops whatever is queued, disarms the hook below, and
+ * For tests only: drops whatever is queued, disarms the hook below,
+ * resets the scan code decoder (no key held, no prefix pending), and
  * restarts the ring indices just below the u32 wrap so tests cross it.
  */
 void input_test_flush(void);

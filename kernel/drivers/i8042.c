@@ -136,8 +136,14 @@ bool i8042_init(u8 *old_config, u8 *new_config)
     if (!i8042_read_config(&config))
         goto dead;
     *old_config = config;
-    /* Keyboard IRQ still off: nothing may interrupt the rest of this. */
-    config = (config & I8042_CFG_SYSTEM) | I8042_CFG_AUX_OFF | I8042_CFG_TRANSLATE;
+    /*
+     * The keyboard port stays off until 0xAE: with its clock bit clear,
+     * a key still queued in the keyboard would land in the output buffer
+     * and be read back as the configuration byte. Its IRQ stays off to
+     * the end, so nothing below can be interrupted by a keystroke.
+     */
+    config =
+        (config & I8042_CFG_SYSTEM) | I8042_CFG_KBD_OFF | I8042_CFG_AUX_OFF | I8042_CFG_TRANSLATE;
     if (!write_config(config) || !i8042_read_config(&readback))
         goto dead;
     if (readback != config) {
@@ -146,9 +152,9 @@ bool i8042_init(u8 *old_config, u8 *new_config)
     }
     if (!write_cmd(CMD_KBD_ON))
         goto dead;
-    if (!enable_scanning())
+    if (!enable_scanning()) /* also drops a key that was waiting in the keyboard */
         pr_warn("keyboard did not acknowledge enable (0xf4); carrying on\n");
-    config |= I8042_CFG_KBD_IRQ;
+    config = (config & (u8)~I8042_CFG_KBD_OFF) | I8042_CFG_KBD_IRQ; /* as 0xAE left it */
     if (!write_config(config))
         goto dead;
     *new_config = config;

@@ -512,6 +512,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(DEMO_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --log-suffix noi8042 --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0' -- -machine pc,i8042=off
+	$(Q)$(PYTHON) tests/qemu/boot_keypress.py --image $(DEMO_IMG) --log-dir $(BUILD)/logs
 	$(Q)for m in $(A20_METHODS); do \
 	  $(PYTHON) tests/qemu/run_tests.py --image $(BUILD)/disk-a20-$$m.img --log-dir $(BUILD)/logs \
 	    --no-tap --expect "A20 test: off, then on by $$m" \

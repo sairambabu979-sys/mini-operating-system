@@ -391,9 +391,16 @@ KTEST(kbd_irq_wakes_a_blocked_user_reader)
     } while (st.queued && time_ticks() < deadline);
     KEXPECT_EQ(st.queued, 0);
     if (st.queued == 0) { /* else leave it asleep rather than hang the run */
+        /*
+         * Behind the typed line: a reader that got all of it has stopped at
+         * the Enter, and one that lost a key reaches its 8 bytes and exits
+         * with 4, instead of waiting in read() for an Enter never coming.
+         */
+        input_inject((const u8 *)"xxxxxxxx", 8);
         KEXPECT_EQ(task_wait(pid, &status), pid);
         KEXPECT_EQ(status, 0);
     }
+    input_test_flush();
 }
 
 /* A read far longer than one read() returns: all that is queued, and not a byte past it. */
