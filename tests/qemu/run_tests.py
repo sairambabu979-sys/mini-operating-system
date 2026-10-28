@@ -105,6 +105,8 @@ def main() -> int:
                     help="regex the output must match (in order); repeatable")
     ap.add_argument("--reject", action="append", default=[],
                     help="regex the output must not match anywhere; repeatable")
+    ap.add_argument("--stdin-file", type=Path,
+                    help="feed this file to QEMU's stdin, which reaches COM1 as typed bytes")
     ap.add_argument("qemu_args", nargs="*", help="extra QEMU arguments (after --)")
     args = ap.parse_args()
 
@@ -117,7 +119,9 @@ def main() -> int:
 
     start = time.monotonic()
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout)
+        # COM1 receives: stray terminal input must not reach the guest.
+        with open(args.stdin_file or os.devnull, "rb") as stdin:
+            proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout, stdin=stdin)
         status, timed_out = proc.returncode, False
         output, stderr = proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as e:

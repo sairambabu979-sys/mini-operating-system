@@ -4,7 +4,8 @@
  *
  * Producers push bytes from any context: the PS/2 keyboard's IRQ 1
  * handler, which decodes scan codes (set 1, <lib/kbdmap.h>) into bytes,
- * and input_inject() (tests). Readers block in
+ * COM1's IRQ 4 handler, which passes received bytes through as they are
+ * (a serial terminal sends CR for Enter), and input_inject() (tests). Readers block in
  * input_read() until at least one byte is queued. The kernel delivers
  * bytes as they come, with no line discipline and no echo: the reading
  * program edits and echoes.
@@ -31,6 +32,7 @@ struct input_stats {
     u64 sleeps;          /* times a reader found the queue empty and went to wait */
     u64 scancodes;       /* bytes read from the keyboard */
     u64 empty_kbd_polls; /* keyboard polls (IRQ 1 or input_poll_kbd()) that found nothing */
+    u64 com1_bytes;      /* bytes received on COM1 */
     u32 queued;          /* bytes waiting now */
 };
 
@@ -39,6 +41,9 @@ void input_init(void);
 
 /* True if the PS/2 keyboard is up, on IRQ 1. */
 bool input_have_kbd(void);
+
+/* True if COM1 receive is up, on IRQ 4. */
+bool input_have_com1(void);
 
 /*
  * Reads what the keyboard has sent, at most 16 bytes, decodes it and

@@ -157,7 +157,7 @@ now checks the scroll count too.
   checks, `mm_init` itself) reach COM1 only. The screen is mapped through
   `iomap()`. An early console drawn through the loader's identity map
   would close the gap.
-- Output only: input comes from the PS/2 keyboard, through `read()` (see `core/input.h`).
+- Output only: input comes from the PS/2 keyboard and COM1, through `read()` (see `core/input.h`).
 - One font size; no colors or escape sequences.
 - GOP mode as the firmware set it: no mode switch.
 - BIOS graphics modes (VBE) are not used: a BIOS that boots into a
