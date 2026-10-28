@@ -38,6 +38,23 @@ enum {
 static bool serial_present;
 static struct serial_rx_stats rx_stats;
 
+/*
+ * Reading the line status clears its receive-error bits, which describe
+ * the byte at the head of the receive FIFO. Transmit polling reads it
+ * too, so it keeps what it saw here for the drain to apply to that byte.
+ * Both sides run with interrupts off, on the one CPU.
+ */
+static u8 lsr_rx_seen;
+
+static u8 read_lsr(void)
+{
+    u8 lsr = inb(COM1 + UART_LSR);
+
+    if (lsr != LSR_ABSENT)
+        lsr_rx_seen |= lsr & (LSR_OVERRUN | LSR_ERRORS);
+    return lsr;
+}
+
 bool serial_init(void)
 {
     outb(COM1 + UART_IER, 0x00);
@@ -62,7 +79,7 @@ bool serial_init(void)
 
 static void serial_putc_raw(char c)
 {
-    while (!(inb(COM1 + UART_LSR) & LSR_THR_EMPTY))
+    while (!(read_lsr() & LSR_THR_EMPTY))
         ;
     outb(COM1 + UART_DATA, (u8)c);
 }
@@ -124,6 +141,8 @@ usize serial_rx_drain(u8 *buf, usize cap, bool *more, bool *dead)
         }
         u8 byte = inb(COM1 + UART_DATA);
 
+        lsr |= lsr_rx_seen; /* what transmit polling saw of this byte */
+        lsr_rx_seen = 0;
         if (lsr & LSR_OVERRUN)
             rx_stats.overruns++;
         if (lsr & LSR_ERRORS) {
@@ -147,9 +166,17 @@ void serial_rx_get_stats(struct serial_rx_stats *out)
 static bool wait_tx_idle(void)
 {
     for (int spins = TX_IDLE_SPINS; spins; spins--)
-        if (inb(COM1 + UART_LSR) & LSR_TX_IDLE)
+        if (read_lsr() & LSR_TX_IDLE)
             return true;
     return false;
+}
+
+void serial_test_framing_error_seen(void)
+{
+    irqflags_t flags = arch_irq_save();
+
+    lsr_rx_seen |= 0x08; /* framing error */
+    arch_irq_restore(flags);
 }
 
 bool serial_test_loopback_inject(const u8 *bytes, usize n)

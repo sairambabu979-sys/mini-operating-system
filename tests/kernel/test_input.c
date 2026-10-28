@@ -603,3 +603,25 @@ KTEST(com1_drain_takes_all_and_stops_at_its_cap)
     KEXPECT(!more && !dead); /* exactly the cap, and nothing left */
     irq_unmask(4);
 }
+
+/*
+ * A byte whose framing error only transmit polling saw (reading the line
+ * status clears it) must still be dropped, and counted, by the drain.
+ */
+KTEST(com1_error_seen_by_transmit_polling_drops_the_byte)
+{
+    struct serial_rx_stats before, after;
+    u8 buf[4];
+    bool more, dead;
+
+    if (!input_have_com1())
+        KTEST_SKIP("no COM1 receive");
+    irq_mask(4);
+    serial_rx_get_stats(&before);
+    KEXPECT(serial_test_loopback_inject((const u8 *)"!", 1));
+    serial_test_framing_error_seen();
+    KEXPECT_EQ(serial_rx_drain(buf, sizeof(buf), &more, &dead), 0);
+    serial_rx_get_stats(&after);
+    KEXPECT_EQ(after.errors - before.errors, 1);
+    irq_unmask(4);
+}

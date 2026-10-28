@@ -54,4 +54,11 @@ void serial_rx_get_stats(struct serial_rx_stats *out);
  */
 bool serial_test_loopback_inject(const u8 *bytes, usize n);
 
+/*
+ * For tests: as if transmit polling had read the line status while the
+ * byte at the head of the receive FIFO had a framing error. Reading the
+ * status clears those bits, so the drain must still drop that byte.
+ */
+void serial_test_framing_error_seen(void);
+
 #endif /* MINIOS_DRIVERS_SERIAL_H */
