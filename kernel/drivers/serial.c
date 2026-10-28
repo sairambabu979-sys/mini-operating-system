@@ -143,19 +143,25 @@ void serial_rx_get_stats(struct serial_rx_stats *out)
     arch_irq_restore(flags);
 }
 
+/* Spins until the transmitter has sent everything; false if it never does. */
+static bool wait_tx_idle(void)
+{
+    for (int spins = TX_IDLE_SPINS; spins; spins--)
+        if (inb(COM1 + UART_LSR) & LSR_TX_IDLE)
+            return true;
+    return false;
+}
+
 bool serial_test_loopback_inject(const u8 *bytes, usize n)
 {
     irqflags_t flags = arch_irq_save();
-    bool ok = n <= 14;
+    bool ok = n <= 14 && wait_tx_idle(); /* what the console sent last must go out, not loop back */
 
-    outb(COM1 + UART_MCR, MCR_LOOPBACK | MCR_OUT2 | MCR_DTR_RTS);
+    if (ok)
+        outb(COM1 + UART_MCR, MCR_LOOPBACK | MCR_OUT2 | MCR_DTR_RTS);
     for (usize i = 0; ok && i < n; i++) {
-        int spins = TX_IDLE_SPINS;
-
         outb(COM1 + UART_DATA, bytes[i]);
-        while (!(inb(COM1 + UART_LSR) & LSR_TX_IDLE) && --spins)
-            ;
-        ok = spins != 0;
+        ok = wait_tx_idle();
     }
     outb(COM1 + UART_MCR, MCR_OUT2 | MCR_DTR_RTS);
     arch_irq_restore(flags);

@@ -13,6 +13,7 @@
 #include <core/input.h>
 #include <core/irq.h>
 #include <core/ktest.h>
+#include <core/printk.h>
 #include <core/time.h>
 #include <drivers/i8042.h>
 #include <drivers/serial.h>
@@ -70,6 +71,40 @@ static bool wait_sleeping(u64 before)
     while (sleeps() == before && time_ticks() < deadline)
         sleep_ms(1);
     return sleeps() != before;
+}
+
+/*
+ * First in this file, before any test flushes the queue: what arrived on
+ * COM1 during boot is still queued. Normally nothing. The typeahead run
+ * feeds bytes 0, 1, 2, ... on QEMU's stdin, so they must come out rising
+ * strictly; some may be lost before the kernel takes the UART, which
+ * keeps them rising, but none may be reordered.
+ */
+KTEST(input_bytes_typed_during_boot_keep_their_order)
+{
+    static u8 got[INPUT_QUEUE_SIZE];
+    struct input_stats st;
+    u64 last, deadline = time_ticks() + DEADLINE_MS;
+
+    input_get_stats(&st);
+    do { /* until no more arrive for 50 ms */
+        last = st.com1_bytes;
+        sleep_ms(50);
+        input_get_stats(&st);
+    } while (st.com1_bytes != last && time_ticks() < deadline);
+    if (st.queued == 0)
+        return;
+    usize n = st.queued;
+
+    KEXPECT_EQ(input_read(got, n), n);
+    for (usize i = 1; i < n; i++) {
+        if (got[i] <= got[i - 1]) {
+            ktest_fail(__FILE__, __LINE__, "byte %u (%#x) came after %#x", (unsigned)i, got[i],
+                       got[i - 1]);
+            return;
+        }
+    }
+    kprintf("typeahead: %u bytes, in order\n", (unsigned)n);
 }
 
 KTEST(input_queue_keeps_order_and_partial_reads)
@@ -563,5 +598,8 @@ KTEST(com1_drain_takes_all_and_stops_at_its_cap)
     KEXPECT_EQ(serial_rx_drain(buf, sizeof(buf), &more, &dead), 6);
     KEXPECT(!more && !dead);
     KEXPECT_EQ(memcmp(buf, "456789", 6), 0);
+    KEXPECT(serial_test_loopback_inject((const u8 *)"wxyz", 4));
+    KEXPECT_EQ(serial_rx_drain(buf, 4, &more, &dead), 4);
+    KEXPECT(!more && !dead); /* exactly the cap, and nothing left */
     irq_unmask(4);
 }

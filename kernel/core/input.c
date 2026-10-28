@@ -271,15 +271,17 @@ void input_init(void)
             u8 buf[COM1_DRAIN_MAX];
             bool more, dead;
             /*
-             * Whatever arrived before now raised no interrupt: take it, then
-             * enable the interrupt, with nothing able to slip in between.
+             * Whatever arrived before now raised no interrupt: take it and
+             * queue it, then enable the interrupt, all with interrupts off.
+             * Bytes arriving meanwhile wait in the FIFO and come with the
+             * first IRQ 4, so they are queued after these, in order.
              */
             irqflags_t flags = arch_irq_save();
             usize n = serial_rx_drain(buf, sizeof(buf), &more, &dead);
 
+            push_com1(buf, n);
             serial_rx_enable();
             arch_irq_restore(flags);
-            push_com1(buf, n);
             have_com1 = true;
             pr_info("COM1 receive on IRQ 4\n");
         } else {

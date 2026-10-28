@@ -47,7 +47,8 @@ void serial_rx_get_stats(struct serial_rx_stats *out);
 /*
  * For tests: sends `bytes` (at most 14, so the 16-byte FIFO has room)
  * through the UART's loopback, so they arrive as if typed on the other
- * end and raise IRQ 4 once interrupts come back on. Interrupts stay off
+ * end and raise IRQ 4 once interrupts come back on. It waits for the
+ * console's last bytes to go out first, and interrupts stay off
  * throughout, so nothing printed can loop back with them. False if the
  * transmitter never drained.
  */
