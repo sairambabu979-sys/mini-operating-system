@@ -15,6 +15,7 @@
 #include <core/ktest.h>
 #include <core/time.h>
 #include <drivers/i8042.h>
+#include <drivers/serial.h>
 #include <lib/string.h>
 #include <sched/sched.h>
 
@@ -471,4 +472,96 @@ KTEST(kbd_control_and_extended_keys)
     input_test_flush();
     KEXPECT(type_codes(codes, sizeof(codes)));
     expect_queued("\x03\na");
+}
+
+/*
+ * COM1 receive, through the UART's own loopback: bytes written with the
+ * loopback on arrive in the receiver as if typed on the other end, and
+ * raise IRQ 4 once interrupts are back on. They pass through undecoded.
+ */
+KTEST(com1_bytes_reach_the_queue_through_irq4)
+{
+    struct input_stats st;
+
+    if (!input_have_com1())
+        KTEST_SKIP("no COM1 receive");
+    input_test_flush();
+    input_get_stats(&st);
+    u64 before = st.com1_bytes, irqs = irq_count(4);
+
+    KEXPECT(serial_test_loopback_inject((const u8 *)"ab\r", 3));
+    u64 deadline = time_ticks() + 100;
+
+    while (st.com1_bytes - before < 3 && time_ticks() < deadline) {
+        sleep_ms(1);
+        input_get_stats(&st);
+    }
+    KEXPECT_EQ(st.com1_bytes - before, 3);
+    KEXPECT(irq_count(4) - irqs >= 1);
+    expect_queued("ab\r");
+}
+
+/* As much as the FIFO holds, in one burst: every byte arrives, in order. */
+KTEST(com1_takes_a_full_fifo_in_order)
+{
+    static const u8 bytes[14] = "0123456789abcd";
+    struct input_stats st;
+
+    if (!input_have_com1())
+        KTEST_SKIP("no COM1 receive");
+    input_test_flush();
+    input_get_stats(&st);
+    u64 before = st.com1_bytes;
+
+    KEXPECT(serial_test_loopback_inject(bytes, sizeof(bytes)));
+    u64 deadline = time_ticks() + 100;
+
+    while (st.com1_bytes - before < sizeof(bytes) && time_ticks() < deadline) {
+        sleep_ms(1);
+        input_get_stats(&st);
+    }
+    KEXPECT_EQ(st.com1_bytes - before, sizeof(bytes));
+    expect_queued("0123456789abcd");
+}
+
+KTEST(com1_irq_wakes_a_blocked_reader)
+{
+    static struct reader r;
+
+    if (!input_have_com1())
+        KTEST_SKIP("no COM1 receive");
+    input_test_flush();
+    u64 before = sleeps();
+
+    if (!start_reader(&r))
+        return;
+    KEXPECT(wait_sleeping(before));
+    KEXPECT(serial_test_loopback_inject((const u8 *)"q", 1));
+    KEXPECT(wait_count(&r.got, 1)); /* IRQ 4 woke it */
+    KEXPECT_EQ(r.buf[0], 'q');
+    finish_reader(&r);
+}
+
+/*
+ * The drain itself, with IRQ 4 masked so the handler cannot take the
+ * bytes first: it takes everything waiting, and stops at its cap saying
+ * more is left. Under QEMU an early stop goes unseen otherwise, as the
+ * UART raises a fresh interrupt for what is left; real hardware need not.
+ */
+KTEST(com1_drain_takes_all_and_stops_at_its_cap)
+{
+    u8 buf[16];
+    bool more, dead;
+
+    if (!input_have_com1())
+        KTEST_SKIP("no COM1 receive");
+    irq_mask(4);
+    KEXPECT(serial_test_loopback_inject((const u8 *)"0123456789", 10));
+    KEXPECT_EQ(serial_rx_drain(buf, 4, &more, &dead), 4);
+    KEXPECT(more && !dead);
+    KEXPECT_EQ(memcmp(buf, "0123", 4), 0);
+    KEXPECT_EQ(serial_rx_drain(buf, sizeof(buf), &more, &dead), 6);
+    KEXPECT(!more && !dead);
+    KEXPECT_EQ(memcmp(buf, "456789", 6), 0);
+    irq_unmask(4);
 }

@@ -7,12 +7,14 @@
  */
 #define pr_fmt(fmt) "input: " fmt
 
+#include <arch/irqflags.h>
 #include <core/input.h>
 #include <core/irq.h>
 #include <core/klog.h>
 #include <core/spinlock.h>
 #include <core/time.h>
 #include <drivers/i8042.h>
+#include <drivers/serial.h>
 #include <lib/kbdmap.h>
 #include <sched/sched.h>
 
@@ -29,6 +31,12 @@ static struct kbdmap kbd; /* decoder state: under input_lock */
 
 #define KBD_DRAIN_MAX 16 /* bytes per call: QEMU raises a fresh edge for each one */
 #define KBD_IRQ       1
+
+static bool have_com1;
+static bool com1_dead_reported;
+
+#define COM1_DRAIN_MAX 64 /* bytes per IRQ 4; more waiting re-arms the interrupt */
+#define COM1_IRQ       4
 
 /* Under input_lock. Returns false if the byte was dropped. */
 static bool push_locked(u8 byte)
@@ -118,6 +126,51 @@ void input_poll_kbd(void)
     spin_unlock_irqrestore(&input_lock, flags);
     if (pushed)
         wake_up_all(&input_wq);
+}
+
+/* Queues bytes from COM1, then wakes readers. Any context. */
+static void push_com1(const u8 *bytes, usize n)
+{
+    irqflags_t flags = spin_lock_irqsave(&input_lock);
+    bool pushed = false;
+
+    for (usize i = 0; i < n; i++) {
+        stats.com1_bytes++;
+        pushed |= push_locked(bytes[i]);
+    }
+    spin_unlock_irqrestore(&input_lock, flags);
+    if (pushed)
+        wake_up_all(&input_wq);
+}
+
+/*
+ * IRQ 4. Only this handler reads the receiver once it is enabled (init
+ * and the test hook run with interrupts off), so the drain needs no lock.
+ */
+static void com1_irq(struct trap_frame *frame, void *ctx)
+{
+    u8 buf[COM1_DRAIN_MAX];
+    bool more, dead;
+
+    (void)frame;
+    (void)ctx;
+    usize n = serial_rx_drain(buf, sizeof(buf), &more, &dead);
+
+    push_com1(buf, n);
+    if (dead) {
+        serial_rx_disable();
+        if (!com1_dead_reported) {
+            com1_dead_reported = true;
+            pr_warn("COM1 reads as absent: receive turned off\n");
+        }
+    } else if (more) {
+        serial_rx_kick(); /* the edge for what is still waiting was spent on this IRQ */
+    }
+}
+
+bool input_have_com1(void)
+{
+    return have_com1;
 }
 
 static void kbd_irq(struct trap_frame *frame, void *ctx)
@@ -213,7 +266,27 @@ void input_init(void)
             pr_warn("IRQ 1 is not available: no keyboard\n");
         }
     }
-    present = have_kbd;
+    if (serial_is_present()) {
+        if (irq_register(COM1_IRQ, com1_irq, NULL) == 0) {
+            u8 buf[COM1_DRAIN_MAX];
+            bool more, dead;
+            /*
+             * Whatever arrived before now raised no interrupt: take it, then
+             * enable the interrupt, with nothing able to slip in between.
+             */
+            irqflags_t flags = arch_irq_save();
+            usize n = serial_rx_drain(buf, sizeof(buf), &more, &dead);
+
+            serial_rx_enable();
+            arch_irq_restore(flags);
+            push_com1(buf, n);
+            have_com1 = true;
+            pr_info("COM1 receive on IRQ 4\n");
+        } else {
+            pr_warn("IRQ 4 is not available: no COM1 receive\n");
+        }
+    }
+    present = have_kbd || have_com1;
     if (!present)
         pr_warn("no input device: read() returns -ENODEV\n");
 }

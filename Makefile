@@ -450,11 +450,11 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
 	  --expect 'calibrated against the HPET' \
 	  --expect '^input: PS/2 keyboard on IRQ 1, 8042 config 0x[0-9a-f]+ -> 0x61$$' \
-	  --reject 'WARNING: (i8042|input): '
+	  --expect '^input: COM1 receive on IRQ 4$$' --reject 'WARNING: (i8042|input): '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 6 \
 	  --log-suffix noi8042 --expect 'calibrated against the HPET' \
 	  --expect 'WARNING: i8042: no controller \(status 0xff\)' \
-	  --expect 'WARNING: input: no input device' -- -machine pc,i8042=off
+	  --expect '^input: COM1 receive on IRQ 4$$' -- -machine pc,i8042=off
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
 	  --memory 4G --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 3 \

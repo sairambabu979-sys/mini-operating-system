@@ -117,7 +117,8 @@ def main() -> int:
 
     start = time.monotonic()
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout)
+        proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout,
+                              stdin=subprocess.DEVNULL)  # COM1 receives: no stray terminal input
         status, timed_out = proc.returncode, False
         output, stderr = proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as e:
