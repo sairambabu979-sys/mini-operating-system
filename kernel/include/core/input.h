@@ -8,7 +8,7 @@
  * bytes as they come, with no line discipline and no echo: the reading
  * program edits and echoes.
  *
- * Invariants (see docs/design/input.md):
+ * Invariants:
  *   - one leaf spinlock guards the ring and the stats; nothing else is
  *     taken under it, and wakeups happen after it is released;
  *   - a producer publishes `head` under the lock, then wakes every
