@@ -13,6 +13,7 @@
 #include <boot/boot_info.h>
 #include <core/bench.h>
 #include <core/boot.h>
+#include <core/input.h>
 #include <core/irq.h>
 #include <core/klog.h>
 #include <core/ktest.h>
@@ -225,6 +226,7 @@ __noreturn void kmain(u64 boot_info_phys)
             (unsigned long long)boot_info->kernel_phys_start,
             (unsigned long long)boot_info->kernel_phys_end, (void *)__kernel_start);
     print_memory_map(boot_info);
+    input_init();
 
     if (cmdline_has_flag(boot_info->cmdline, "bench")) {
         bench_run_all();

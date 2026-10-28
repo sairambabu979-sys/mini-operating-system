@@ -17,8 +17,9 @@
 #define SYS_SPAWN    5 /* spawn(const char *name) -> child pid */
 #define SYS_WAIT     6 /* wait(int pid or -1, int *status) -> pid */
 #define SYS_TIME_MS  7 /* time_ms() -> milliseconds since boot */
+#define SYS_READ     8 /* read(int fd, void *buf, size_t len) -> bytes; fd 0 only, blocks for >= 1 */
 
-#define SYS_COUNT 8
+#define SYS_COUNT 9
 
 /* Exit status of a process killed by CPU exception `vector`. */
 #define EXIT_STATUS_FAULT(vector) (128 + (vector))

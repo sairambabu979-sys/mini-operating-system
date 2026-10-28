@@ -123,6 +123,7 @@ outcome and documents why.
 | 5 | `spawn(name)` | name copied byte by byte (it may end just before an unmapped page); `-EAGAIN` at `TASK_MAX` tasks |
 | 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
+| 8 | `read(fd, buf, len)` | fd 0 only: console input as raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EBADF`, `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device |
 
 **User memory** is reached only through `copy_from_user`, `copy_to_user`
 and `strncpy_from_user`. Each checks that the whole range lies below

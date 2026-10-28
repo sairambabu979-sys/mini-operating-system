@@ -11,6 +11,7 @@
 #include <arch/msr.h>
 #include <arch/segments.h>
 #include <arch/trap.h>
+#include <core/input.h>
 #include <core/printk.h>
 #include <core/time.h>
 #include <lib/errno.h>
@@ -112,6 +113,39 @@ static s64 sys_wait(u64 pid, u64 user_status, u64 a2)
     return r;
 }
 
+/*
+ * read(0, buf, len): console input, raw bytes, at least one. The order of
+ * the checks is part of the ABI: -EBADF, then -EFAULT for the range, then
+ * 0 for an empty read, then -EFAULT for a buffer that is not mapped and
+ * writable, then -ENODEV with no input device. Every failure comes before
+ * anything is taken off the queue, and the buffer is probed, its contents
+ * kept, rather than merely range-checked (the sys_wait precedent): a bad
+ * buffer must not swallow a keystroke. The process is single-threaded, so
+ * nothing can unmap the buffer between the probe and the copy out.
+ */
+static s64 sys_read(u64 fd, u64 user_buf, u64 len)
+{
+    u8 buf[INPUT_READ_MAX];
+    usize n;
+
+    if (fd != 0)
+        return -EBADF;
+    if (!user_range_ok(user_buf, len))
+        return -EFAULT;
+    n = (usize)MIN(len, (u64)INPUT_READ_MAX);
+    if (n == 0)
+        return 0;
+    if (copy_from_user(buf, (const void *)user_buf, n) != 0 ||
+        copy_to_user((void *)user_buf, buf, n) != 0)
+        return -EFAULT;
+    if (!input_present())
+        return -ENODEV;
+    n = input_read(buf, n);
+    if (copy_to_user((void *)user_buf, buf, n) != 0)
+        return -EFAULT; /* cannot happen: probed above */
+    return (s64)n;
+}
+
 static s64 sys_time_ms(u64 a0, u64 a1, u64 a2)
 {
     (void)a0;
@@ -123,7 +157,7 @@ static s64 sys_time_ms(u64 a0, u64 a1, u64 a2)
 static const syscall_fn syscall_table[SYS_COUNT] = {
     [SYS_EXIT] = sys_exit,     [SYS_WRITE] = sys_write,       [SYS_YIELD] = sys_yield,
     [SYS_GETPID] = sys_getpid, [SYS_SLEEP_MS] = sys_sleep_ms, [SYS_SPAWN] = sys_spawn,
-    [SYS_WAIT] = sys_wait,     [SYS_TIME_MS] = sys_time_ms,
+    [SYS_WAIT] = sys_wait,     [SYS_TIME_MS] = sys_time_ms,   [SYS_READ] = sys_read,
 };
 
 /* Called from syscall.asm with interrupts enabled. Result goes in RAX. */

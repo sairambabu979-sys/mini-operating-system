@@ -28,6 +28,7 @@ long sys_sleep_ms(u64 ms);
 long sys_spawn(const char *name);
 long sys_wait(int pid, int *status);
 long sys_time_ms(void);
+long sys_read(int fd, void *buf, usize len);
 
 int printf(const char *fmt, ...) __printf(1, 2);
 

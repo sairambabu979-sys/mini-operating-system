@@ -10,6 +10,7 @@
 #include <arch/paging.h>
 #include <arch/segments.h>
 #include <arch/trap.h>
+#include <core/input.h>
 #include <core/ktest.h>
 #include <core/time.h>
 #include <lib/errno.h>
@@ -299,4 +300,86 @@ KTEST(task_creation_stops_at_the_limit)
 KTEST(init_runs_the_whole_tour)
 {
     KEXPECT_EQ(run("init"), 0); /* 0 = every child ended exactly as expected */
+}
+
+/*
+ * read(): `readkeys` first hands read() two bad buffers, which must fail
+ * without taking a byte, then reads a line that must be exactly "ok\n",
+ * with nothing written past the count. Input comes from input_inject(),
+ * so these run with or without a device.
+ */
+KTEST(read_rejects_bad_buffers_without_consuming)
+{
+    bool was = input_test_set_present(true);
+    struct input_stats st;
+
+    input_test_flush();
+    input_inject((const u8 *)"ok\n", 3); /* queued before the bad reads: they must leave it */
+    KEXPECT_EQ(run("readkeys"), 0);
+    input_get_stats(&st);
+    KEXPECT_EQ(st.queued, 0);
+    input_test_set_present(was);
+}
+
+KTEST(read_blocks_until_input)
+{
+    bool was = input_test_set_present(true);
+    struct input_stats st;
+    int status = -1;
+
+    input_test_flush();
+    input_get_stats(&st);
+    u64 before = st.sleeps;
+    int pid = process_spawn("readkeys");
+
+    KEXPECT(pid > 0);
+    if (pid <= 0) {
+        input_test_set_present(was);
+        return;
+    }
+    u64 deadline = time_ticks() + 2000;
+
+    do { /* until the process is asleep in read() */
+        sleep_ms(1);
+        input_get_stats(&st);
+    } while (st.sleeps == before && time_ticks() < deadline);
+    KEXPECT(st.sleeps != before);
+    input_inject((const u8 *)"ok\n", 3);
+    deadline = time_ticks() + 2000;
+    do { /* until it woke and took the line: a lost wakeup fails here, not in task_wait */
+        sleep_ms(1);
+        input_get_stats(&st);
+    } while (st.queued && time_ticks() < deadline);
+    KEXPECT_EQ(st.queued, 0);
+    if (st.queued == 0) { /* else leave it asleep rather than hang the run */
+        KEXPECT_EQ(task_wait(pid, &status), pid);
+        KEXPECT_EQ(status, 0);
+    }
+    input_test_set_present(was);
+}
+
+/* A read far longer than one read() returns: all that is queued, and not a byte past it. */
+KTEST(read_returns_at_most_256_bytes)
+{
+    static u8 bytes[INPUT_READ_MAX];
+    bool was = input_test_set_present(true);
+    struct input_stats st;
+
+    static_assert(INPUT_READ_MAX == 256 && INPUT_QUEUE_SIZE >= 256, "readmax expects 256 bytes");
+    input_test_flush();
+    for (usize i = 0; i < sizeof(bytes); i++)
+        bytes[i] = (u8)(i * 3 + 1);
+    input_inject(bytes, sizeof(bytes));
+    KEXPECT_EQ(run("readmax"), 0);
+    input_get_stats(&st);
+    KEXPECT_EQ(st.queued, 0);
+    input_test_set_present(was);
+}
+
+KTEST(read_without_input_device_is_enodev)
+{
+    bool was = input_test_set_present(false);
+
+    KEXPECT_EQ(run("readkeys"), 100); /* the bad buffers still fail first, with -EFAULT */
+    input_test_set_present(was);
 }
