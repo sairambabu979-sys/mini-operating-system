@@ -17,15 +17,25 @@ truncated log, so it can never be mistaken for success.
 With --expect-panic the run must instead end in a kernel panic (status 35)
 whose output matches every --expect regex, in order. Any run fails if its
 output matches a --reject regex anywhere.
+
+With --type-after REGEX --type TEXT (repeatable, in pairs) the runner types
+into the guest: it waits for each REGEX to appear after the previous match,
+then types TEXT (backslash escapes allowed, e.g. '\\n', '\\x03'). --input
+ps2 (the default) types keys on the PS/2 keyboard through QMP send-key;
+--input serial writes the bytes to COM1.
 """
 
 import argparse
+import codecs
+import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -73,6 +83,141 @@ def qemu_command(image: Path, memory: str, extra: list[str]) -> list[str]:
     ]
 
 
+# The US keyboard, as QMP qcodes: a character's key, and whether Shift is held.
+QCODE_NAMED = {" ": "spc", "\n": "ret", "\t": "tab", "\b": "backspace", "\x7f": "backspace",
+               "\x1b": "esc", "-": "minus", "=": "equal", "[": "bracket_left",
+               "]": "bracket_right", "\\": "backslash", ";": "semicolon", "'": "apostrophe",
+               "`": "grave_accent", ",": "comma", ".": "dot", "/": "slash"}
+QCODE_SHIFTED = {"!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8",
+                 "(": "9", ")": "0", "_": "minus", "+": "equal", "{": "bracket_left",
+                 "}": "bracket_right", "|": "backslash", ":": "semicolon", '"': "apostrophe",
+                 "~": "grave_accent", "<": "comma", ">": "dot", "?": "slash"}
+
+
+def qcodes(ch: str) -> list[str]:
+    """The keys to press together to type `ch`; ValueError if no key types it."""
+    if ch in QCODE_NAMED:
+        return [QCODE_NAMED[ch]]
+    if ch in QCODE_SHIFTED:
+        return ["shift", QCODE_NAMED.get(QCODE_SHIFTED[ch], QCODE_SHIFTED[ch])]
+    if "a" <= ch <= "z" or "0" <= ch <= "9":
+        return [ch]
+    if "A" <= ch <= "Z":
+        return ["shift", ch.lower()]
+    if "\x01" <= ch <= "\x1a":
+        return ["ctrl", chr(ord(ch) + 0x60)]
+    raise ValueError(f"no key types {ch!r}")
+
+
+class Qmp:
+    """Just enough of the QEMU Machine Protocol to press keys."""
+
+    def __init__(self, path: str, deadline: float):
+        self.sock = socket.socket(socket.AF_UNIX)
+        while True:
+            try:
+                self.sock.connect(path)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.05)
+        self.sock.settimeout(max(1.0, deadline - time.monotonic()))
+        self.buf = b""
+        self.reply()  # the greeting
+        self.command({"execute": "qmp_capabilities"})
+
+    def reply(self) -> dict:
+        while True:
+            while b"\n" not in self.buf:
+                data = self.sock.recv(4096)
+                if not data:
+                    raise OSError("QMP connection closed")
+                self.buf += data
+            line, self.buf = self.buf.split(b"\n", 1)
+            msg = json.loads(line)
+            if "event" not in msg:  # events (e.g. RESET) are not replies
+                return msg
+
+    def command(self, cmd: dict) -> None:
+        self.sock.sendall(json.dumps(cmd).encode() + b"\n")
+        msg = self.reply()
+        if "error" in msg:
+            raise OSError(f"QMP {cmd['execute']}: {msg['error']}")
+
+    def type(self, text: str) -> None:
+        for ch in text:
+            keys = [{"type": "qcode", "data": k} for k in qcodes(ch)]
+            self.command({"execute": "send-key", "arguments": {"keys": keys}})
+
+
+def run_typing(cmd: list[str], args, workdir: Path):
+    """Runs QEMU while typing the --type steps. Returns (status, timed_out, out, err, problems)."""
+    steps = list(zip(args.type_after, (codecs.decode(t, "unicode_escape") for t in args.type)))
+    deadline = time.monotonic() + args.timeout
+    qmp_path = str(workdir / "qmp.sock")
+    if args.input == "ps2":
+        if len(qmp_path.encode()) >= 108:
+            sys.exit(f"run_tests: QMP socket path too long for AF_UNIX: {qmp_path}")
+        cmd = cmd + ["-qmp", f"unix:{qmp_path},server=on,wait=off"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            stdin=subprocess.PIPE if args.input == "serial" else subprocess.DEVNULL)
+    out, err, lock = bytearray(), bytearray(), threading.Lock()
+
+    def collect(stream, buf):
+        for chunk in iter(lambda: stream.read1(4096), b""):
+            with lock:
+                buf.extend(chunk)
+
+    readers = [threading.Thread(target=collect, args=(proc.stdout, out), daemon=True),
+               threading.Thread(target=collect, args=(proc.stderr, err), daemon=True)]
+    for t in readers:
+        t.start()
+    problems, qmp, pos = [], None, 0
+    try:
+        for k, (pattern, text) in enumerate(steps, 1):
+            regex = re.compile(pattern, re.MULTILINE)
+            while True:
+                with lock:
+                    now = out.decode("utf-8", errors="replace").replace("\r\n", "\n")
+                if m := regex.search(now, pos):
+                    pos = m.end()
+                    break
+                if proc.poll() is not None:
+                    problems.append(f"prompt /{pattern}/ never appeared before QEMU exited; "
+                                    f"did not type step {k}, {text!r}")
+                    break
+                if time.monotonic() > deadline:
+                    problems.append(f"prompt /{pattern}/ never appeared in {args.timeout:.0f}s; "
+                                    f"did not type step {k}, {text!r}")
+                    break
+                time.sleep(0.01)
+            if problems:
+                break
+            try:
+                if args.input == "serial":
+                    proc.stdin.write(text.encode("latin-1"))
+                    proc.stdin.flush()
+                else:
+                    if qmp is None:
+                        qmp = Qmp(qmp_path, deadline)
+                    qmp.type(text)
+            except (OSError, ValueError) as e:
+                problems.append(f"QEMU exited while typing step {k} ({e})")
+                break
+        status = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        status, timed_out = proc.wait(), True
+    finally:
+        if qmp is not None:
+            qmp.sock.close()
+    for t in readers:
+        t.join(timeout=5)
+    return status, timed_out, bytes(out), bytes(err), problems
+
+
 def parse_tap(lines: list[str]) -> tuple[int | None, list[tuple[bool, int, str]]]:
     plan = None
     results = []
@@ -107,8 +252,18 @@ def main() -> int:
                     help="regex the output must not match anywhere; repeatable")
     ap.add_argument("--stdin-file", type=Path,
                     help="feed this file to QEMU's stdin, which reaches COM1 as typed bytes")
+    ap.add_argument("--type-after", action="append", default=[], metavar="REGEX",
+                    help="wait for REGEX after the previous match, then type the paired --type")
+    ap.add_argument("--type", action="append", default=[], metavar="TEXT",
+                    help="text to type (backslash escapes allowed); pairs with --type-after")
+    ap.add_argument("--input", choices=["ps2", "serial"], default="ps2",
+                    help="type on the PS/2 keyboard (QMP send-key) or into COM1")
     ap.add_argument("qemu_args", nargs="*", help="extra QEMU arguments (after --)")
     args = ap.parse_args()
+    if len(args.type_after) != len(args.type):
+        ap.error("--type-after and --type come in pairs")
+    if args.type and args.stdin_file:
+        ap.error("--stdin-file and --type cannot be combined")
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"-{args.log_suffix}" if args.log_suffix else ""
@@ -118,15 +273,19 @@ def main() -> int:
     cmd = qemu_command(args.image, args.memory, firmware + args.qemu_args)
 
     start = time.monotonic()
-    try:
-        # COM1 receives: stray terminal input must not reach the guest.
-        with open(args.stdin_file or os.devnull, "rb") as stdin:
-            proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout, stdin=stdin)
-        status, timed_out = proc.returncode, False
-        output, stderr = proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired as e:
-        status, timed_out = None, True
-        output, stderr = e.stdout or b"", e.stderr or b""
+    typing_problems = []
+    if args.type:
+        status, timed_out, output, stderr, typing_problems = run_typing(cmd, args, workdir)
+    else:
+        try:
+            # COM1 receives: stray terminal input must not reach the guest.
+            with open(args.stdin_file or os.devnull, "rb") as stdin:
+                proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout, stdin=stdin)
+            status, timed_out = proc.returncode, False
+            output, stderr = proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as e:
+            status, timed_out = None, True
+            output, stderr = e.stdout or b"", e.stderr or b""
     elapsed = time.monotonic() - start
     shutil.rmtree(workdir, ignore_errors=True)
 
@@ -139,7 +298,7 @@ def main() -> int:
     for line in lines:
         print(f"  | {line}")
 
-    problems = []
+    problems = list(typing_problems)
     if timed_out:
         problems.append(f"timed out after {args.timeout:.0f}s")
     elif args.expect_panic:

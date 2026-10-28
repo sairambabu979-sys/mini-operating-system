@@ -198,12 +198,13 @@ Locks and their nesting order (outer first):
 | `pmm` | the buddy allocator, including block owner tags |
 | `sched` | task states, run queue, sleep list, wait queues, task tree ([scheduler.md](scheduler.md)) |
 | `ioapic` | the I/O APICs' index/data register pairs |
+| `input` | the console input queue, its stats and the scan code decoder; taken by the IRQ 1 and IRQ 4 handlers and by `read()`, which wake readers only after releasing it ([input.md](input.md)) |
 | `console` | whole printk messages and the log ring (bypassed once a panic starts) |
 
 Apart from printing, only two nestings occur: `kmalloc` takes `pmm` when
 a slab grows or shrinks, and a page-table lock takes `pmm` for a new
 table. `vmalloc` takes nothing while held (it maps pages after dropping
-its lock), and neither do `sched` and `ioapic`. `console` is innermost: a
+its lock), and neither do `sched`, `ioapic` and `input`. `console` is innermost: a
 message may be printed with any other lock held. Nothing calls `kmalloc`
 or `vmalloc` while holding a page-table or `pmm` lock.
 

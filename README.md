@@ -4,7 +4,9 @@ A small x86_64 kernel written from scratch in C17 and NASM. It boots from
 its own two-stage BIOS loader or its own UEFI loader, runs on its own 4-level page tables with
 W^X enforced everywhere, handles every CPU exception and hardware
 interrupt, preemptively schedules kernel threads and ring-3 processes,
-and isolates those processes from the kernel and from each other.
+and isolates those processes from the kernel and from each other. A small
+shell, typed at on the PS/2 keyboard or over the serial line, runs those
+programs by name.
 
 Nearly every feature ships with a test that boots in CI; the main paths no
 test reaches are listed under [Known limitations](#known-limitations).
@@ -69,6 +71,7 @@ apt install clang lld llvm nasm gcc make python3 qemu-system-x86 ovmf mtools gdb
 make            # bootloader, kernel, user programs, disk images  -> build/debug/
 make run        # boot in QEMU, console on stdio (Ctrl-C to quit)
 make run-uefi   # the same kernel through OVMF and the UEFI loader
+make run-shell  # the shell (init=sh), typed at from this terminal; Ctrl-A x quits
 make test       # every test suite below but the x2APIC run, for one CONFIG
 make check      # check-format + lint + test, for one CONFIG; run before committing
 ```
@@ -85,7 +88,8 @@ QEMU=<a QEMU 9.x qemu-system-x86_64>`. CI lints with the debug flags only.
 | `CONFIG=release` | the same `-O2 -g`, without kernel UBSan and without the `CONFIG_DEBUG` checks: kmalloc poison, redzones and double-free scan, `buddy_verify()` at boot, `assert()`, and the panic when the screen is drawn with interrupts off or preemption on |
 | `V=1` | show full commands |
 | `CMDLINE="..."` | kernel options for `make run` and `make run-uefi` (see below) |
-| `QEMU_DISPLAY=gtk` | also open a window showing the screen console (`none` by default) |
+| `QEMU_DISPLAY=gtk` | also open a window showing the screen console (`none` by default); with `make run-shell`, typing in it reaches the PS/2 keyboard |
+| `make run-shell` / `make run-shell-uefi` | boot the shell image; this terminal is COM1 (Ctrl-C goes to the guest, Ctrl-A x quits QEMU) |
 | `make bench` | microbenchmarks |
 | `make test-x2apic QEMU=...` | the in-kernel suite in x2APIC mode; needs QEMU 9.0 or later (see [Testing](#testing)) |
 | `make debug` | QEMU waits for gdb on `:1234` (`gdb -x tools/gdb/gdbinit build/debug/kernel.elf`); adds `minios-tasks` and `minios-ptwalk ADDR` |
@@ -105,19 +109,22 @@ the first line break). Unknown options are ignored.
 | `nohpet` | calibrate against PIT channel 2 instead of the HPET |
 | `ktest` | run the in-kernel test suite, report TAP, exit QEMU with its result |
 | `bench` | run the microbenchmarks, exit QEMU |
-| `exit-after-init` | exit QEMU when `init` exits: success if its status is 0, failure otherwise |
+| `init=NAME` | start the program `NAME` (1 to 15 characters) as the first process instead of `init`; a bad name panics |
+| `exit-after-init` | exit QEMU when the first process exits: success if its status is 0, failure otherwise |
 | `selftest=panic` | a deliberate kernel page fault, to test the panic output |
 | `selftest=hang`, `selftest=triplefault` | halt forever with interrupts off, or triple-fault: kernels the test runner must reject. Any other `selftest=` value panics |
 
-`ktest` and any `selftest=` also make a panic exit QEMU with a failure status
-instead of halting, so a crashed test run ends at once. The test images are the
+`ktest`, any `selftest=` and `exit-after-init` also make a panic exit QEMU with
+a failure status instead of halting, so a crashed test run ends at once. The test images are the
 same kernel with a fixed command line: `disk-ktest.img` and
 `disk-uefi-ktest.img` (`ktest`), `disk-ktest-noapic.img` (`ktest noapic`),
 `disk-ktest-nohpet.img` (`ktest nohpet`), `disk-ktest-quiet.img` (`ktest
 console=serial loglevel=warn`), `disk-ktest-x2apic.img` (`ktest x2apic`),
 `disk-panic.img` (`selftest=panic`), `disk-demo.img`, `disk-uefi-demo.img` and
-the three `disk-a20-*.img` (`exit-after-init`), `disk-bench.img` (`bench`), and
-the two `disk-selftest-*.img`.
+the three `disk-a20-*.img` (`exit-after-init`), `disk-shell.img` and
+`disk-uefi-shell.img` (`init=sh exit-after-init`), `disk-badinit.img`
+(`init=no-such-prog exit-after-init`), `disk-bench.img` (`bench`), and the two
+`disk-selftest-*.img`.
 
 ## What is in it
 
@@ -130,23 +137,24 @@ the two `disk-selftest-*.img`.
 | **Interrupts** | ACPI discovery (RSDP, RSDT/XSDT, MADT, HPET; parser fuzzed on the host). Local APIC (xAPIC, or x2APIC when the firmware chose it or the `x2apic` option asks) + I/O APIC with interrupt source overrides honored. LAPIC timer and TSC calibrated against the HPET (or PIT channel 2), with each endpoint bracketed so a preemption cannot skew it, every wait bounded and implausible rates rejected: a broken HPET falls back to the PIT, and no working clock at all is a clear panic, not a hang. The 8259 + PIT path kept as a tested fallback (`noapic`). IRQ-safe spinlocks that report recursive locking instead of deadlocking. |
 | **Scheduling** | Preemptive round robin. Preemption on interrupt exit, only when no lock is held. Wait queues that cannot lose wakeups, even when preempted mid-wait. Sleeping mutexes, sleep, exit codes, orphan adoption. |
 | **Processes** | Per-process address spaces, ELF loader, syscall/sysret. SYSRET avoided for non-canonical returns (CVE-2012-0217), with recovery when `iretq` itself faults. Validated user copies. Eager FPU switching, from a zeroed initial state. Faults kill only the faulting process (a machine check panics). RFLAGS.NT and AC set in ring 3 can neither crash another task nor switch SMAP off. |
+| **Input** | PS/2 keyboard through the 8042 (translation to scan code set 1, US layout, every controller wait bounded, the A20 and reset lines never touched) on IRQ 1, and COM1 receive on IRQ 4, into one queue that `read()` drains: raw bytes, no echo. `read()` blocks without losing a wakeup and rejects a bad buffer before taking a byte. The shell edits the line itself (Backspace, Ctrl-U, Ctrl-C, Ctrl-D; escape sequences swallowed) and runs programs by name. |
 | **Hardening** | W^X in kernel and user space, kernel UBSan, stack protector, guard pages, poisoned heap (debug builds), and build-time checks for the flags whose absence corrupts silently. |
 
 ## Architecture
 
 ```
  ┌───────────────────────────────────────────────────────────────────────┐
- │  ring 3   init · hello · spinner · sleeper · fpu · badptr · hostile …  │
- │           user/lib: crt0, syscall wrappers, printf                     │
+ │  ring 3   init · sh · hello · spinner · sleeper · fpu · badptr · …     │
+ │           user/lib: crt0, syscall wrappers, printf, line editor        │
  ├───────────────── syscall / sysret · interrupts · exceptions ──────────┤
  │  ring 0                                                               │
  │   proc/    process spawn, ELF validation, syscalls, user copies       │
  │   sched/   round robin, wait queues, sleep, mutex   ── switch.asm     │
  │   mm/      vmalloc · kmalloc · VMM (page tables) · PMM (buddy)        │
- │   core/    panic + ksyms, klog, irq, time, UBSan, ktest, bench        │
+ │   core/    panic + ksyms, klog, irq, time, input, UBSan, ktest, bench │
  │   arch/    GDT/TSS, IDT + isr.asm, syscall.asm, FPU, per-CPU, LAPIC   │
  │   acpi/    RSDP/RSDT/XSDT discovery, MADT + HPET parsing (pure)       │
- │   drivers/ serial, screen, I/O APIC, HPET, PIT, PIC, QEMU debug exit  │
+ │   drivers/ serial, 8042, screen, I/O APIC, HPET, PIT, PIC, QEMU exit  │
  ├───────────────────────────────────────────────────────────────────────┤
  │  boot/   stage1 (MBR) → stage2: A20, E820, unreal mode, long mode, ELF │
  │          efi/loader.c: UEFI → same boot_info, same page tables          │
@@ -171,9 +179,10 @@ both debug and release, and the x2APIC run in a job of its own.
 |-------|-----------|-------|
 | Host unit tests | Kernel code built for Linux under ASan + UBSan. printf against glibc (20k random formats); memory-map sanitizer against brute force; buddy allocator fuzz with full verification; ELF validator and ACPI table parser against hostile and randomly corrupted input; the console's text grid against a reference terminal model on random output, and its pixel drawing exact to the byte. | `tests/host/` |
 | Binary checks | No SSE/AVX in kernel code; W^X segment layout; entry point. Build-time guard for `-mno-red-zone`, `-mgeneral-regs-only`, `-mcmodel=kernel`. | `tools/check_kernel.py`, `Makefile` |
-| In-kernel tests | 138 `KTEST()`s (131 in release builds, which compile out the 7 that test debug-only checks), TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with an HPET, without one, with `nohpet` and without a PIT, and on the legacy 8259 path: chosen by `noapic`, or automatically on a CPU without a local APIC. A machine with neither clock, and the 8259 path without a PIT, must panic with a clear message. Each run states its exact number of skipped tests (from 1 on the default path to 11 on the 8259 path without an HPET) and, except under `loglevel=warn`, which hides the line, the clock the calibration must report. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
+| In-kernel tests | 140 `KTEST()`s (133 in release builds, which compile out the 7 that test debug-only checks), TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with an HPET, without one, with `nohpet` and without a PIT, and on the legacy 8259 path: chosen by `noapic`, or automatically on a CPU without a local APIC. A machine with neither clock, and the 8259 path without a PIT, must panic with a clear message. Each run states its exact number of skipped tests (from 1 on the default path to 11 on the 8259 path without an HPET) and, except under `loglevel=warn`, which hides the line, the clock the calibration must report. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
 | Crash path | A deliberate kernel page fault; the panic decode and backtrace are matched against patterns. | `disk-panic.img` |
 | Whole system | Boots the real `init`, which runs 11 programs and passes only if each ends as expected; again on a machine without ACPI, where the kernel must choose the 8259 and the PIT by itself. | `disk-demo.img` |
+| Shell | The shell image, typed at for real: on the PS/2 keyboard through QMP `send-key` (on the APIC path, the 8259 path and UEFI) and on COM1 with no 8042. Each keystroke goes through the 8042 or the UART, IRQ 1 or 4, the scan code decoder, `read()` and the line editor; the runs check the echo, the editing keys, each program's `[exit N]` and every error message. A key pressed during boot must still leave a keyboard, and bytes typed during boot must arrive in order. A bad `init=` must panic with its name. | `disk-shell.img`, `disk-uefi-shell.img`, `disk-badinit.img` |
 | UEFI | The whole in-kernel suite and the `init` demo again, booted through OVMF and the UEFI loader. The demo boots a second time with 8 GiB of RAM, where OVMF loads the loader above 4 GiB; the run requires the loader's logged address to be above 4 GiB. Without a GOP (`-vga none`) and with a Blt-only one, the console must stay on serial; a panic drawn on the framebuffer must complete with no nested panic. | `disk-uefi-*.img` |
 | A20 | Three test builds of stage 2, one per method (`bios`, `kbc`, `fast`). Each turns A20 off, checks that addresses wrap, lets only its own method turn A20 back on, prints `A20 test: off, then on by <method>`, and boots through to the end of `init`. | `disk-a20-*.img` |
 | x2APIC | The whole in-kernel suite with the `x2apic` option, which switches the local APIC to x2APIC mode; a test requires that mode. Needs QEMU 9.0 or later, so it is a separate target: `make test-x2apic QEMU=...`. CI builds QEMU 9.2.0 for it. | `disk-ktest-x2apic.img` |
@@ -207,9 +216,9 @@ The QEMU runner fails on timeout, triple fault, kernel-reported failure or
 a TAP count mismatch, and `make test` proves it: `tests/qemu/check_runner.py`
 boots kernels that hang and that triple-fault, and requires the runner to
 reject each for the right reason. It also fails a run whose number of
-skipped tests differs from the one the Makefile gives it, or whose output
-matches a line the run must not print (`--reject`), which `check_runner.py`
-checks too. Timing-sensitive
+skipped tests differs from the one the Makefile gives it, whose output
+matches a line the run must not print (`--reject`), or whose prompt never
+appears before it types, all of which `check_runner.py` checks too. Timing-sensitive
 tests were run repeatedly with up to 10 QEMU instances competing for the
 host's cores.
 
@@ -256,9 +265,28 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 - **No filesystem.** User programs are embedded in the kernel image and
   started by name; there is `spawn`, but no `fork`/`exec`.
 - **No signals, pipes or IPC.** Processes talk only through exit statuses.
-- **Input from a PS/2 keyboard** (US layout, through the 8042 on IRQ 1) **or
-  COM1** (IRQ 4) only. There is no USB stack: a USB keyboard could only reach
-  it through the firmware's PS/2 emulation, which is untested.
+- **Input from a PS/2 keyboard or COM1 only.** There is no USB stack: a USB
+  keyboard can only reach it through the firmware's PS/2 emulation, and
+  UEFI-booted PCs that drop that emulation, or have no 8042, have no keyboard
+  (use serial). The keyboard tests type through QEMU's 8042 command 0xD2 and
+  the serial tests through the UART's loopback; both are QEMU-only and would
+  fail, not skip, on hardware without them. US layout, scan code set 1
+  through the controller's translation only; no lock keys or LEDs (the keypad
+  always types digits), no arrows, Home, End, Delete, F-keys or Alt, no mouse.
+- **One shared console input.** Keyboard and COM1 bytes merge into one
+  256-byte queue (the rest is dropped and counted), and the shell echoes to
+  both the screen and COM1. There is no foreground process: with two readers,
+  which one gets a byte is unspecified. `read()` blocks uninterruptibly, with
+  no timeout; there are no signals, so Ctrl-C only cancels the line being
+  typed, and a program that never gets input waits forever.
+- **A minimal shell.** Programs run by name, without arguments; lines hold
+  31 characters; no history. Echo comes from the shell, so typeahead shows
+  only when it reads, and kernel messages printed mid-line are not redrawn.
+  A serial terminal must be at least 36 columns wide for erasing to be exact.
+  Outside `exit-after-init`, leaving the shell leaves the system idle. On a
+  real UART a paste can overrun the 16-byte receive FIFO while the console
+  transmits with interrupts off; overruns are counted, and QEMU cannot show
+  them.
 - **Serial output runs with interrupts off.** Every console write (a kernel
   message, or one 256-byte chunk of a `write()` call) holds the console lock,
   with interrupts off, while COM1 is polled byte by byte. On a real UART at
@@ -305,6 +333,7 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 - [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, page tables, heaps
 - [`docs/design/scheduler.md`](docs/design/scheduler.md): context switch, preemption, lost-wakeup safety
 - [`docs/design/usermode.md`](docs/design/usermode.md): processes, syscall entry/exit, SYSRET hazard, user memory access
+- [`docs/design/input.md`](docs/design/input.md): the 8042 and COM1 receive, the input queue, `read()`, the shell
 
 ## Repository layout
 
@@ -312,15 +341,15 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 boot/            stage1.asm (MBR), stage2.asm, layout.inc; efi/ (UEFI loader)
 kernel/arch/     x86_64: entry, GDT/TSS/IDT, isr/syscall/switch asm, FPU, user copies, LAPIC
 kernel/acpi/     table discovery and (pure) parsing
-kernel/core/     kmain, panic, klog, irq, time, ksyms, UBSan, ktest, bench
+kernel/core/     kmain, panic, klog, irq, time, input, ksyms, UBSan, ktest, bench
 kernel/mm/       memmap, buddy, pmm, vmm, vmalloc, kmalloc
 kernel/sched/    scheduler, mutex
 kernel/proc/     processes, ELF validation, syscalls
-kernel/drivers/  serial, screen (framebuffer, VGA text), I/O APIC, HPET, PIT, PIC, QEMU exit
-kernel/lib/      printf, strings, cmdline, text grid, framebuffer drawing, font
+kernel/drivers/  serial, 8042, screen (framebuffer, VGA text), I/O APIC, HPET, PIT, PIC, QEMU exit
+kernel/lib/      printf, strings, cmdline, scan code decoder, text grid, framebuffer drawing, font
 kernel/include/  headers (uapi/ is shared with user space)
-user/            crt0, libsys, programs/
-tests/           host/ (Linux), kernel/ (KTEST), qemu/ (runner and its self-test), gdb/
+user/            crt0, libsys, line editor, programs/ (init, sh, and what they run)
+tests/           host/ (Linux), kernel/ (KTEST), qemu/ (runner, its self-test, typing), gdb/
 tools/           mkimage, mkesp, gen_ksyms, gen_user_images, check_kernel, gdb/
 ```
 

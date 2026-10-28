@@ -369,6 +369,8 @@ struct task {
 | 4 | `sleep_ms(ms)` | |
 | 5 | `spawn(name)` | spawns an embedded image, returns its pid |
 | 6 | `wait(pid, *status)` | reaps a zombie child |
+| 7 | `time_ms()` | added during M7 (see §11) |
+| 8 | `read(fd, buf, len)` | fd 0 only: console input, blocks for at least one byte; added after v1.1 (see §11 and [design/input.md](design/input.md)) |
 
 - **User-pointer validation**: a range check (`addr + len` must not overflow and must stay
   below the user ceiling), plus the exception-table fixup for unmapped pages. **No syscall
@@ -544,6 +546,12 @@ or something the implementation taught us.
 | LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. Since hardened for real hardware, though never run on it: an x2APIC hand-off is kept, every calibration wait is bounded and a dead HPET falls back to the PIT (no test reaches these three), and no working clock is a clear panic (the `pit=off,hpet=off` run boots into it; `pit=off` shows the APIC path needs no PIT). The `x2apic` option switches to x2APIC mode, and `make test-x2apic` runs the whole in-kernel suite that way (debug build) under QEMU 9 (CI builds 9.2.0; Ubuntu 24.04's 8.2 cannot emulate x2APIC under TCG). See [design/interrupts.md](design/interrupts.md). |
 | Runner self-tests | `check_runner.py` boots kernels that hang and triple-fault, and requires `run_tests.py` to reject them. |
 
+**Built after v1.1** (beyond the original scope)
+
+| Item | Notes |
+|------|-------|
+| Keyboard, COM1 receive and a shell | A PS/2 keyboard through the 8042 on IRQ 1 and COM1 receive on IRQ 4 feed one queue that `read()` (syscall 8) drains. The kernel decodes scan codes, because only it sees the keyboard; the reading program edits the line and echoes, because only it knows what a line is. `init=NAME` picks the first process, and `sh` runs programs by name. Tests type without host input through the 8042's command `0xD2` and the UART's loopback; `run_tests.py` types real sessions through QMP `send-key` and over COM1. See [design/input.md](design/input.md). |
+
 **Learned the hard way** (each one is now covered by a test or a check)
 
 - The early page-table pool sits in the kernel image, whose direct-map
@@ -569,6 +577,19 @@ or something the implementation taught us.
   the stale loader's version). Every assembly file had the same gap.
   Dependencies now come from a separate `-M` pass, and touching
   `asm-offsets.inc` was checked to rebuild them all.
+- The 8042's first configuration write re-enabled the keyboard port that
+  `0xAD` had just turned off, so a key pressed during boot was read back
+  as the configuration byte, and the boot came up without a keyboard (3
+  of 3 tries). The port now stays off until `0xAE`, and a run presses a
+  key during boot.
+- COM1 bytes drained at init were queued after interrupts came back on,
+  so bytes arriving during the drain overtook them (4 of 5 boots with
+  stdin fed during boot). A run now feeds rising bytes during boot and
+  requires them to stay rising.
+- Reading a 16550's line status clears its receive-error bits, and the
+  console's transmit polling reads it, so a byte with a framing error
+  arriving while the kernel printed would have been taken as good. Found
+  in review; QEMU never reports receive errors.
 - Drawing the console inside its lock, with interrupts off, took up to
   8.4 ms per line on a framebuffer once it scrolled (measured under TCG):
   enough to lose timer ticks, which are the clock. The screen is now fed
