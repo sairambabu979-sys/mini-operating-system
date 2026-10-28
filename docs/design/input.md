@@ -185,8 +185,10 @@ end of file: Ctrl-D is just the byte `0x04`.
 15 characters`. A name that does not exist panics with `cannot start init
 'NAME': -2`. `exit-after-init` now also makes a panic exit QEMU (status 35).
 
-`sh` reads into a 64-byte buffer, so typeahead waits there, and feeds each
-byte to the line editor, writing each echo with one `write()`. The editor
+`sh` reads one byte at a time, so whatever was typed after a command's
+Enter stays in the kernel's queue for the program that command starts (a
+paste of `readkeys\nok\n` gives `readkeys` its `ok`). It feeds each byte
+to the line editor, writing each echo with one `write()`. The editor
 handles Backspace and DEL, Ctrl-U, Ctrl-C (`^C`, the line dropped), Ctrl-D
 (end of input on an empty line), and swallows escape sequences. Lines hold
 31 characters, so after the 4-column prompt the echo never wraps on an

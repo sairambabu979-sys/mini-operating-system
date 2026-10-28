@@ -6,6 +6,10 @@
  * the line and says what to echo. Not in init's tour: boot it with
  * init=sh (the shell images).
  *
+ * It reads one byte at a time, so whatever was typed after a command's
+ * Enter stays in the kernel's queue for the program that command starts:
+ * a paste of "readkeys\nok\n" gives readkeys its "ok".
+ *
  * Every way out ends its output with "\n", so whatever prints next (a TAP
  * line, the kernel's "init exited") starts on a fresh line. The shell
  * always waits for the program it started, so it never holds more than
@@ -19,10 +23,6 @@
 #include <user_programs.h> /* generated: USER_PROGRAM_NAMES */
 
 static const char *const programs[] = {USER_PROGRAM_NAMES};
-
-/* Input read but not fed to the editor yet: typeahead stays here. */
-static u8 pending[64];
-static usize pending_len, pending_pos;
 
 static void put(const char *s, usize n)
 {
@@ -93,18 +93,15 @@ int main(void)
     printf("sh: type a program name to run it; 'help' lists them; 'exit' or Ctrl-D leaves\n");
     put("sh> ", 4);
     for (;;) {
-        if (pending_pos == pending_len) {
-            long got = sys_read(0, pending, sizeof(pending));
+        u8 c;
+        long got = sys_read(0, &c, 1);
 
-            if (got <= 0) {
-                printf("\nsh: cannot read input (%ld)\n", got);
-                return 1;
-            }
-            pending_len = (usize)got;
-            pending_pos = 0;
+        if (got != 1) {
+            printf("\nsh: cannot read input (%ld)\n", got);
+            return 1;
         }
         usize echo_len;
-        enum le_event ev = le_feed(&le, pending[pending_pos++], echo, &echo_len);
+        enum le_event ev = le_feed(&le, c, echo, &echo_len);
 
         put(echo, echo_len); /* one write per byte fed: the echo never splits */
         switch (ev) {

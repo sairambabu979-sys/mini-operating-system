@@ -492,6 +492,42 @@ KTEST(shell_runs_programs_and_reports_status)
     input_test_set_present(was);
 }
 
+/*
+ * What was typed after a command's Enter belongs to the program it starts:
+ * the shell must leave readkeys its "ok". A shell holding it would leave
+ * readkeys waiting forever, so the test waits with a deadline, and then
+ * types "ok" again to free it. "exit" comes only then: readkeys takes all
+ * it can get, so typed with the rest it would join readkeys' line.
+ */
+KTEST(shell_leaves_typeahead_to_the_program_it_starts)
+{
+    static const char session[] = "readkeys\nok\n";
+    bool was = input_test_set_present(true);
+    int status = -1;
+
+    input_test_flush();
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    int pid = process_spawn("sh");
+
+    KEXPECT(pid > 0);
+    if (pid > 0) {
+        u64 deadline = time_ticks() + 2000;
+
+        while (!log_has("sh> readkeys\n[exit 0]\n") && time_ticks() < deadline)
+            sleep_ms(1);
+        if (!log_has("sh> readkeys\n[exit 0]\n")) {
+            ktest_fail(__FILE__, __LINE__, "readkeys never got the 'ok' typed after it");
+            input_inject((const u8 *)"ok\n", 3); /* free it */
+            sleep_ms(100);
+        }
+        input_inject((const u8 *)"exit\n", 5);
+        KEXPECT_EQ(task_wait(pid, &status), pid);
+        KEXPECT_EQ(status, 0);
+    }
+    input_test_flush();
+    input_test_set_present(was);
+}
+
 /* Ctrl-D on an empty line leaves, and the output still ends with a newline. */
 KTEST(shell_eof_exits_cleanly)
 {
