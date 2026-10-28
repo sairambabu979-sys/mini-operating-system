@@ -448,7 +448,13 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --clean-image $(DEMO_IMG) --log-dir $(BUILD)/logs
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
-	  --expect 'calibrated against the HPET'
+	  --expect 'calibrated against the HPET' \
+	  --expect '^input: PS/2 keyboard on IRQ 1, 8042 config 0x[0-9a-f]+ -> 0x61$$' \
+	  --reject 'WARNING: (i8042|input): '
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 6 \
+	  --log-suffix noi8042 --expect 'calibrated against the HPET' \
+	  --expect 'WARNING: i8042: no controller \(status 0xff\)' \
+	  --expect 'WARNING: input: no input device' -- -machine pc,i8042=off
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 1 \
 	  --memory 4G --expect 'calibrated against the HPET'
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_IMG) --log-dir $(BUILD)/logs --skips 3 \
@@ -489,7 +495,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_QUIET_IMG) --log-dir $(BUILD)/logs --skips 4 \
 	  --expect 'WARNING: traps: 1 NMI\(s\) received' \
 	  --expect 'screen_shows_printed_text # SKIP no screen console' \
-	  --reject '^(cpu|vmm|pmm|screen|acpi|ioapic|lapic|irq|hpet|time|sched|traps|proc|syscall): '
+	  --reject '^(cpu|vmm|pmm|screen|acpi|ioapic|lapic|irq|hpet|time|sched|traps|proc|syscall|input|i8042): '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
 	  --expect 'KERNEL PANIC' \
@@ -503,13 +509,19 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --expect 'init: pid [0-9]+, starting 11 programs' \
 	  --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(DEMO_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --log-suffix noi8042 --expect 'init: all children reaped, 0 unexpected' \
+	  --expect 'init exited with status 0' -- -machine pc,i8042=off
 	$(Q)for m in $(A20_METHODS); do \
 	  $(PYTHON) tests/qemu/run_tests.py --image $(BUILD)/disk-a20-$$m.img --log-dir $(BUILD)/logs \
 	    --no-tap --expect "A20 test: off, then on by $$m" \
+	    --expect '^input: PS/2 keyboard on IRQ 1' \
 	    --expect 'init exited with status 0' || exit 1; \
 	done
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
-	  --skips 1 --expect 'calibrated against the HPET'
+	  --skips 1 --expect 'calibrated against the HPET' \
+	  --expect '^input: PS/2 keyboard on IRQ 1, 8042 config 0x[0-9a-f]+ -> 0x65$$' \
+	  --reject 'WARNING: (i8042|input): '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
 	  --log-suffix nogop --skips 4 \
 	  --expect 'minios-efi: no usable framebuffer \(no graphics output protocol\)' \
