@@ -8,8 +8,12 @@
 #define pr_fmt(fmt) "input: " fmt
 
 #include <core/input.h>
+#include <core/irq.h>
 #include <core/klog.h>
 #include <core/spinlock.h>
+#include <core/time.h>
+#include <drivers/i8042.h>
+#include <lib/kbdmap.h>
 #include <sched/sched.h>
 
 static_assert((INPUT_QUEUE_SIZE & (INPUT_QUEUE_SIZE - 1)) == 0, "the ring is masked");
@@ -20,6 +24,11 @@ static u8 ring[INPUT_QUEUE_SIZE];
 static u32 head, tail; /* free-running: head - tail bytes queued */
 static struct input_stats stats;
 static bool present;
+static bool have_kbd;
+static struct kbdmap kbd; /* decoder state: under input_lock */
+
+#define KBD_DRAIN_MAX 16 /* bytes per call: QEMU raises a fresh edge for each one */
+#define KBD_IRQ       1
 
 /* Under input_lock. Returns false if the byte was dropped. */
 static bool push_locked(u8 byte)
@@ -86,6 +95,66 @@ usize input_read(u8 *buf, usize max)
     return n;
 }
 
+void input_poll_kbd(void)
+{
+    irqflags_t flags = spin_lock_irqsave(&input_lock);
+    bool pushed = false;
+    int i;
+
+    for (i = 0; i < KBD_DRAIN_MAX; i++) {
+        int sc = i8042_read_kbd();
+        u8 c;
+
+        if (sc == I8042_EMPTY)
+            break;
+        if (sc == I8042_AUX)
+            continue;
+        stats.scancodes++;
+        if (kbdmap_feed(&kbd, (u8)sc, &c))
+            pushed |= push_locked(c);
+    }
+    if (i == 0)
+        stats.empty_kbd_polls++;
+    spin_unlock_irqrestore(&input_lock, flags);
+    if (pushed)
+        wake_up_all(&input_wq);
+}
+
+static void kbd_irq(struct trap_frame *frame, void *ctx)
+{
+    (void)frame;
+    (void)ctx;
+    input_poll_kbd();
+}
+
+bool input_have_kbd(void)
+{
+    return have_kbd;
+}
+
+bool input_test_kbd_put(u8 scancode)
+{
+    struct input_stats st;
+
+    if (!have_kbd)
+        return false;
+    input_get_stats(&st);
+    u64 before = st.scancodes;
+
+    if (!i8042_test_put(scancode))
+        return false;
+    /* A second 0xD2 would overwrite this byte: wait until IRQ 1 took it. */
+    u64 end = rdtsc() + 100 * tsc_khz();
+
+    do {
+        input_get_stats(&st);
+        if (st.scancodes != before)
+            return true;
+        __builtin_ia32_pause();
+    } while (rdtsc() < end);
+    return false;
+}
+
 bool input_present(void)
 {
     return __atomic_load_n(&present, __ATOMIC_RELAXED);
@@ -109,6 +178,7 @@ void input_test_flush(void)
 
     head = tail = TEST_INDEX_START;
     racing_armed = false;
+    kbd = (struct kbdmap){0}; /* no Shift or prefix left over from a test that stopped early */
     spin_unlock_irqrestore(&input_lock, flags);
 }
 
@@ -128,7 +198,22 @@ bool input_test_set_present(bool value)
 
 void input_init(void)
 {
-    /* No input device yet: read() fails with -ENODEV until one is found. */
-    present = false;
-    pr_warn("no input device: read() returns -ENODEV\n");
+    u8 old_config, new_config;
+
+    if (i8042_init(&old_config, &new_config)) {
+        if (irq_register(KBD_IRQ, kbd_irq, NULL) == 0) {
+            have_kbd = true;
+            /*
+             * A byte that arrived before the line was unmasked raised its
+             * edge while masked, and the I/O APIC drops those: drain by hand.
+             */
+            input_poll_kbd();
+            pr_info("PS/2 keyboard on IRQ 1, 8042 config %#x -> %#x\n", old_config, new_config);
+        } else {
+            pr_warn("IRQ 1 is not available: no keyboard\n");
+        }
+    }
+    present = have_kbd;
+    if (!present)
+        pr_warn("no input device: read() returns -ENODEV\n");
 }

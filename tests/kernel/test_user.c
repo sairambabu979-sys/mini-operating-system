@@ -358,6 +358,51 @@ KTEST(read_blocks_until_input)
     input_test_set_present(was);
 }
 
+/* The same, with the line typed on the PS/2 keyboard: IRQ 1 must wake the process. */
+KTEST(kbd_irq_wakes_a_blocked_user_reader)
+{
+    static const u8 ok[] = {0x18, 0x98, 0x25, 0xA5, 0x1C, 0x9C}; /* o, k, Enter */
+    struct input_stats st;
+    int status = -1;
+
+    if (!input_have_kbd())
+        KTEST_SKIP("no 8042");
+    input_test_flush();
+    input_get_stats(&st);
+    u64 before = st.sleeps;
+    int pid = process_spawn("readkeys");
+
+    KEXPECT(pid > 0);
+    if (pid <= 0)
+        return;
+    u64 deadline = time_ticks() + 2000;
+
+    do { /* until the process is asleep in read() */
+        sleep_ms(1);
+        input_get_stats(&st);
+    } while (st.sleeps == before && time_ticks() < deadline);
+    KEXPECT(st.sleeps != before);
+    for (usize i = 0; i < sizeof(ok); i++)
+        KEXPECT(input_test_kbd_put(ok[i]));
+    deadline = time_ticks() + 2000;
+    do { /* until it woke and took the line */
+        sleep_ms(1);
+        input_get_stats(&st);
+    } while (st.queued && time_ticks() < deadline);
+    KEXPECT_EQ(st.queued, 0);
+    if (st.queued == 0) { /* else leave it asleep rather than hang the run */
+        /*
+         * Behind the typed line: a reader that got all of it has stopped at
+         * the Enter, and one that lost a key reaches its 8 bytes and exits
+         * with 4, instead of waiting in read() for an Enter never coming.
+         */
+        input_inject((const u8 *)"xxxxxxxx", 8);
+        KEXPECT_EQ(task_wait(pid, &status), pid);
+        KEXPECT_EQ(status, 0);
+    }
+    input_test_flush();
+}
+
 /* A read far longer than one read() returns: all that is queued, and not a byte past it. */
 KTEST(read_returns_at_most_256_bytes)
 {

@@ -171,7 +171,7 @@ both debug and release, and the x2APIC run in a job of its own.
 |-------|-----------|-------|
 | Host unit tests | Kernel code built for Linux under ASan + UBSan. printf against glibc (20k random formats); memory-map sanitizer against brute force; buddy allocator fuzz with full verification; ELF validator and ACPI table parser against hostile and randomly corrupted input; the console's text grid against a reference terminal model on random output, and its pixel drawing exact to the byte. | `tests/host/` |
 | Binary checks | No SSE/AVX in kernel code; W^X segment layout; entry point. Build-time guard for `-mno-red-zone`, `-mgeneral-regs-only`, `-mcmodel=kernel`. | `tools/check_kernel.py`, `Makefile` |
-| In-kernel tests | 126 `KTEST()`s (119 in release builds, which compile out the 7 that test debug-only checks), TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with an HPET, without one, with `nohpet` and without a PIT, and on the legacy 8259 path: chosen by `noapic`, or automatically on a CPU without a local APIC. A machine with neither clock, and the 8259 path without a PIT, must panic with a clear message. Each run states its exact number of skipped tests (from 1 on the default path to 11 on the 8259 path without an HPET) and, except under `loglevel=warn`, which hides the line, the clock the calibration must report. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
+| In-kernel tests | 132 `KTEST()`s (125 in release builds, which compile out the 7 that test debug-only checks), TAP over serial, booted with **128 MiB and 4 GiB** of RAM, on the APIC path with an HPET, without one, with `nohpet` and without a PIT, and on the legacy 8259 path: chosen by `noapic`, or automatically on a CPU without a local APIC. A machine with neither clock, and the 8259 path without a PIT, must panic with a clear message. Each run states its exact number of skipped tests (from 1 on the default path to 11 on the 8259 path without an HPET) and, except under `loglevel=warn`, which hides the line, the clock the calibration must report. Every protection is checked by attempting the forbidden access. | `tests/kernel/` |
 | Crash path | A deliberate kernel page fault; the panic decode and backtrace are matched against patterns. | `disk-panic.img` |
 | Whole system | Boots the real `init`, which runs 11 programs and passes only if each ends as expected; again on a machine without ACPI, where the kernel must choose the 8259 and the PIT by itself. | `disk-demo.img` |
 | UEFI | The whole in-kernel suite and the `init` demo again, booted through OVMF and the UEFI loader. The demo boots a second time with 8 GiB of RAM, where OVMF loads the loader above 4 GiB; the run requires the loader's logged address to be above 4 GiB. Without a GOP (`-vga none`) and with a Blt-only one, the console must stay on serial; a panic drawn on the framebuffer must complete with no nested panic. | `disk-uefi-*.img` |
@@ -256,7 +256,9 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 - **No filesystem.** User programs are embedded in the kernel image and
   started by name; there is `spawn`, but no `fork`/`exec`.
 - **No signals, pipes or IPC.** Processes talk only through exit statuses.
-- **Output only:** serial and screen, but no keyboard driver yet.
+- **Input from a PS/2 keyboard only** (US layout, through the 8042 on IRQ 1).
+  There is no USB stack: a USB keyboard could only reach it through the
+  firmware's PS/2 emulation, which is untested.
 - **Serial output runs with interrupts off.** Every console write (a kernel
   message, or one 256-byte chunk of a `write()` call) holds the console lock,
   with interrupts off, while COM1 is polled byte by byte. On a real UART at

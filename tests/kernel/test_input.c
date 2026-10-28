@@ -11,10 +11,14 @@
  * every test that moves 100 bytes or more crosses it.
  */
 #include <core/input.h>
+#include <core/irq.h>
 #include <core/ktest.h>
 #include <core/time.h>
+#include <drivers/i8042.h>
 #include <lib/string.h>
 #include <sched/sched.h>
+
+#include "../common/kbd_keymap.h"
 
 #define DEADLINE_MS 2000
 
@@ -315,4 +319,156 @@ KTEST(input_two_readers_share_bytes)
             ktest_fail(__FILE__, __LINE__, "byte %d delivered %u times", i, s.seen[i]);
     KEXPECT_EQ(s.per_reader[0] + s.per_reader[1], SHARED_BYTES);
     KEXPECT_EQ(s.bad_returns, 0);
+}
+
+/*
+ * The PS/2 keyboard, typed through the real 8042 with command 0xD2: the
+ * byte comes back on IRQ 1 as if the keyboard had sent it, but skips
+ * translation, so these type set 1 codes. Each is consumed before the
+ * next (input_test_kbd_put() waits), since a second 0xD2 overwrites the
+ * first. All but the first skip on a machine without a controller.
+ */
+
+/* Types `n` scan codes; false at the first one IRQ 1 did not take. */
+static bool type_codes(const u8 *codes, usize n)
+{
+    for (usize i = 0; i < n; i++)
+        if (!input_test_kbd_put(codes[i]))
+            return false;
+    return true;
+}
+
+/* Checks the queue holds exactly `want`, without blocking on a short queue. */
+static void expect_queued(const char *want)
+{
+    usize n = strlen(want);
+    struct input_stats st;
+    u8 got[INPUT_READ_MAX];
+
+    input_get_stats(&st);
+    KEXPECT_EQ(st.queued, n);
+    if (st.queued != n || n == 0 || n > sizeof(got)) {
+        input_test_flush();
+        return;
+    }
+    KEXPECT_EQ(input_read(got, n), n);
+    KEXPECT_EQ(memcmp(got, want, n), 0);
+}
+
+KTEST(kbd_controller_is_configured)
+{
+    struct input_stats st;
+    u8 config;
+
+    input_get_stats(&st);
+    if (!input_have_kbd()) {
+        KEXPECT_EQ(st.scancodes, 0); /* nothing was ever read from a missing controller */
+        return;
+    }
+    KEXPECT(i8042_read_config(&config));
+    /* keyboard IRQ on, mouse IRQ off, keyboard clock on, mouse clock off, translation on */
+    KEXPECT_EQ(config & 0x73, 0x61);
+}
+
+KTEST(kbd_scancodes_reach_the_queue_through_irq1)
+{
+    static const u8 hi[] = {0x2A, 0x23, 0xA3, 0xAA, 0x17, 0x97, 0x1C, 0x9C}; /* H, i, Enter */
+
+    if (!input_have_kbd())
+        KTEST_SKIP("no 8042");
+    input_test_flush();
+    u64 irqs = irq_count(1);
+
+    KEXPECT(type_codes(hi, sizeof(hi)));
+    KEXPECT(irq_count(1) - irqs >= sizeof(hi));
+    expect_queued("Hi\n");
+}
+
+KTEST(kbd_types_every_printable_character)
+{
+    static char want[sizeof(test_keys) / sizeof(test_keys[0]) + 1];
+    usize n = 0;
+
+    if (!input_have_kbd())
+        KTEST_SKIP("no 8042");
+    input_test_flush();
+    for (usize i = 0; i < sizeof(test_keys) / sizeof(test_keys[0]); i++) {
+        const struct test_key *k = &test_keys[i];
+        u8 codes[4];
+        usize len = 0;
+
+        if (k->shift)
+            codes[len++] = TEST_LSHIFT_MAKE;
+        codes[len++] = k->make;
+        codes[len++] = k->make | 0x80;
+        if (k->shift)
+            codes[len++] = TEST_LSHIFT_MAKE | 0x80;
+        if (!type_codes(codes, len)) {
+            ktest_fail(__FILE__, __LINE__, "IRQ 1 did not take the codes for '%c'", k->ch);
+            input_test_flush();
+            return;
+        }
+        if (k->ch == '\b')
+            want[n++] = '\x7f'; /* Backspace types DEL */
+        else
+            want[n++] = k->ch;
+        if (n == INPUT_QUEUE_SIZE / 2) { /* check in halves: the queue holds 256 */
+            want[n] = '\0';
+            expect_queued(want);
+            n = 0;
+        }
+    }
+    want[n] = '\0';
+    expect_queued(want);
+}
+
+/*
+ * A byte that reaches the controller while IRQ 1 is masked raises its
+ * edge then, and on the APIC path the I/O APIC drops a masked edge: no
+ * IRQ comes when the line is unmasked, and the controller, holding the
+ * byte, raises no new one. input_init() polls once after registering for
+ * this reason; this shows the hazard is real and the poll recovers it.
+ */
+KTEST(kbd_byte_left_pending_while_masked_is_recovered)
+{
+    static const u8 rest[] = {0x9E, 0x30, 0xB0, 0x1C, 0x9C}; /* a's break, b, Enter */
+    struct input_stats st;
+
+    if (!input_have_kbd())
+        KTEST_SKIP("no 8042");
+    input_test_flush();
+    input_get_stats(&st);
+    u64 before = st.scancodes;
+
+    irq_mask(1);
+    KEXPECT(i8042_test_put(0x1E)); /* a */
+    irq_unmask(1);
+    sleep_ms(50);
+    input_get_stats(&st);
+    if (irq_mode() == IRQ_MODE_APIC) {
+        KEXPECT_EQ(st.scancodes, before); /* the edge was lost */
+        KEXPECT(i8042_output_full());
+    }
+    input_poll_kbd();
+    input_get_stats(&st);
+    KEXPECT_EQ(st.scancodes, before + 1);
+    KEXPECT(type_codes(rest, sizeof(rest)));
+    expect_queued("ab\n");
+}
+
+KTEST(kbd_control_and_extended_keys)
+{
+    static const u8 codes[] = {
+        0x1D, 0x2E, 0xAE, 0x9D,             /* Ctrl-C */
+        0xE0, 0x48, 0xE0, 0xC8,             /* Up: nothing */
+        0xE0, 0x1C, 0xE0, 0x9C,             /* keypad Enter */
+        0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, /* Pause: nothing */
+        0x1E, 0x9E,                         /* a */
+    };
+
+    if (!input_have_kbd())
+        KTEST_SKIP("no 8042");
+    input_test_flush();
+    KEXPECT(type_codes(codes, sizeof(codes)));
+    expect_queued("\x03\na");
 }
