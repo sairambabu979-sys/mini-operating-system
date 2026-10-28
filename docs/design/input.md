@@ -223,7 +223,7 @@ keyboard.
 | 8042: the configuration byte, `Hi\n` through IRQ 1, every printable character, the masked edge, control and extended keys | command `0xD2`, which delivers a set 1 byte as if typed | `tests/kernel/test_input.c` |
 | COM1: bytes through IRQ 4, a full FIFO in order, a woken reader, the drain's cap, an error seen by transmit polling | the UART's own loopback, interrupts off | `tests/kernel/test_input.c` |
 | `read()` from ring 3: bad buffers and the check order, blocking, at most 256 bytes, never more than asked, no device, a reader woken by IRQ 1 | `readkeys`, `readmax`, `badptr` | `tests/kernel/test_user.c` |
-| the shell: every message, task count restored, Ctrl-D, `-ENODEV` | `input_inject()` | `tests/kernel/test_user.c` |
+| the shell: `[exit N]`, not found, name too long, no arguments, `^C`, blank and padded lines, `exit` (not the Ctrl-D behind it), task count restored, Ctrl-D alone, `-ENODEV` | `input_inject()` | `tests/kernel/test_user.c` |
 | boot | a key pressed during boot (`boot_keypress.py`); bytes 0-239 on stdin during boot must arrive rising (the typeahead run) | `make qemu-test` |
 | typed sessions | the shell typed at through QMP `send-key` (APIC, 8259, UEFI) and over COM1 with no 8042; a bad `init=` | `make qemu-test` |
 

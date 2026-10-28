@@ -151,9 +151,26 @@ class Qmp:
             self.command({"execute": "send-key", "arguments": {"keys": keys}})
 
 
-def run_typing(cmd: list[str], args, workdir: Path):
+def typing_steps(ap, args) -> list[tuple[re.Pattern, str]]:
+    """Checks every --type-after/--type pair before QEMU starts; a bad one is a usage error."""
+    steps = []
+    for pattern, raw in zip(args.type_after, args.type):
+        try:
+            regex = re.compile(pattern, re.MULTILINE)
+            text = codecs.decode(raw, "unicode_escape")
+            if args.input == "serial":
+                text.encode("latin-1")
+            else:
+                for ch in text:
+                    qcodes(ch)
+        except (re.error, UnicodeError, ValueError) as e:
+            ap.error(f"cannot type {raw!r} after /{pattern}/: {e}")
+        steps.append((regex, text))
+    return steps
+
+
+def run_typing(cmd: list[str], args, steps, workdir: Path):
     """Runs QEMU while typing the --type steps. Returns (status, timed_out, out, err, problems)."""
-    steps = list(zip(args.type_after, (codecs.decode(t, "unicode_escape") for t in args.type)))
     deadline = time.monotonic() + args.timeout
     qmp_path = str(workdir / "qmp.sock")
     if args.input == "ps2":
@@ -174,9 +191,10 @@ def run_typing(cmd: list[str], args, workdir: Path):
     for t in readers:
         t.start()
     problems, qmp, pos = [], None, 0
+    status, timed_out = None, False
     try:
-        for k, (pattern, text) in enumerate(steps, 1):
-            regex = re.compile(pattern, re.MULTILINE)
+        for k, (regex, text) in enumerate(steps, 1):
+            pattern = regex.pattern
             while True:
                 with lock:
                     now = out.decode("utf-8", errors="replace").replace("\r\n", "\n")
@@ -202,17 +220,20 @@ def run_typing(cmd: list[str], args, workdir: Path):
                     if qmp is None:
                         qmp = Qmp(qmp_path, deadline)
                     qmp.type(text)
-            except (OSError, ValueError) as e:
-                problems.append(f"QEMU exited while typing step {k} ({e})")
+            except OSError as e:
+                problems.append(f"QEMU stopped taking input at step {k} ({e})")
                 break
-        status = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
-        timed_out = False
+        if not problems:  # after a problem nothing more will come: do not wait out the timeout
+            status = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
-        proc.kill()
-        status, timed_out = proc.wait(), True
+        timed_out = True
     finally:
         if qmp is not None:
             qmp.sock.close()
+        if proc.poll() is None:  # never leave a QEMU behind, whatever went wrong
+            proc.kill()
+        if status is None:
+            status = proc.wait()
     for t in readers:
         t.join(timeout=5)
     return status, timed_out, bytes(out), bytes(err), problems
@@ -264,30 +285,34 @@ def main() -> int:
         ap.error("--type-after and --type come in pairs")
     if args.type and args.stdin_file:
         ap.error("--stdin-file and --type cannot be combined")
+    steps = typing_steps(ap, args)
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"-{args.log_suffix}" if args.log_suffix else ""
     log_path = args.log_dir / f"{args.image.stem}-{args.memory}{suffix}.serial.log"
     workdir = Path(tempfile.mkdtemp(prefix="minios-qemu-"))
-    firmware = ovmf_drives(workdir) if args.uefi else []
-    cmd = qemu_command(args.image, args.memory, firmware + args.qemu_args)
-
     start = time.monotonic()
     typing_problems = []
-    if args.type:
-        status, timed_out, output, stderr, typing_problems = run_typing(cmd, args, workdir)
-    else:
-        try:
-            # COM1 receives: stray terminal input must not reach the guest.
-            with open(args.stdin_file or os.devnull, "rb") as stdin:
-                proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout, stdin=stdin)
-            status, timed_out = proc.returncode, False
-            output, stderr = proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired as e:
-            status, timed_out = None, True
-            output, stderr = e.stdout or b"", e.stderr or b""
+    try:
+        firmware = ovmf_drives(workdir) if args.uefi else []
+        cmd = qemu_command(args.image, args.memory, firmware + args.qemu_args)
+        if steps:
+            status, timed_out, output, stderr, typing_problems = run_typing(cmd, args, steps,
+                                                                            workdir)
+        else:
+            try:
+                # COM1 receives: stray terminal input must not reach the guest.
+                with open(args.stdin_file or os.devnull, "rb") as stdin:
+                    proc = subprocess.run(cmd, capture_output=True, timeout=args.timeout,
+                                          stdin=stdin)
+                status, timed_out = proc.returncode, False
+                output, stderr = proc.stdout, proc.stderr
+            except subprocess.TimeoutExpired as e:
+                status, timed_out = None, True
+                output, stderr = e.stdout or b"", e.stderr or b""
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
     elapsed = time.monotonic() - start
-    shutil.rmtree(workdir, ignore_errors=True)
 
     text = output.decode("utf-8", errors="replace").replace("\r\n", "\n")
     log_path.write_text(text)

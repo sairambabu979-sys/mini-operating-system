@@ -549,7 +549,9 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --log-suffix noi8042 --expect 'init: all children reaped, 0 unexpected' \
 	  --expect 'init exited with status 0' -- -machine pc,i8042=off
 	$(Q)$(PYTHON) tests/qemu/boot_keypress.py --image $(DEMO_IMG) --log-dir $(BUILD)/logs
-	@# The shell, typed at on the PS/2 keyboard through QMP and on COM1.
+	@# The shell, typed at on the PS/2 keyboard through QMP and on COM1. No session types an
+	@# empty line, so two prompts in a row mean a line ended twice (the runner would then type
+	@# its next step at the stale prompt, and the session could still look right).
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --type-after '^sh> ' --type 'help\n' --type-after '^sh> ' --type 'hellp\x7fo\n' \
 	  --type-after '^sh> ' --type 'xyz\x15nosuch\n' --type-after '^sh> ' --type 'abc\x03' \
@@ -564,7 +566,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --expect 'killed by #PF' --expect '^\[exit 142\]$$' \
 	  --expect '^sh: programs take no arguments$$' --expect '^sh> a{31}$$' \
 	  --expect '^sh: name too long' --expect '^\[exit 0\]$$' --expect 'init exited with status 0' \
-	  --reject 'KERNEL PANIC' --reject 'WARNING: (i8042|input): '
+	  --reject 'KERNEL PANIC' --reject 'WARNING: (i8042|input): ' --reject '^sh> \nsh> '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --input serial --log-suffix serial \
 	  --type-after '^sh> ' --type 'hellp\x7fo\r' \
@@ -574,12 +576,13 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --expect 'WARNING: i8042: no controller \(status 0xff\)' --expect '^input: COM1 receive on IRQ 4' \
 	  --expect 'hellp\x08 \x08o' --expect '^\[exit 42\]$$' --expect '^\[exit 42\]$$' \
 	  --expect '^\[exit 42\]$$' --expect 'init exited with status 0' --reject '\[1;5D' \
+	  --reject '^sh> \nsh> ' \
 	  -- -machine pc,i8042=off
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --log-suffix ps2-8259 --type-after '^sh> ' --type 'hello\n' --type-after '^sh> ' --type '\x04' \
 	  --expect '^irq: using the 8259 PIC \(the CPU has no local APIC\)$$' \
 	  --expect '^input: PS/2 keyboard' --expect '^\[exit 42\]$$' --expect 'init exited with status 0' \
-	  -- -cpu max,-apic
+	  --reject '^sh> \nsh> ' -- -cpu max,-apic
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BADINIT_IMG) --log-dir $(BUILD)/logs --expect-panic \
 	  --expect "cannot start init 'no-such-prog': -2"
 	$(Q)for m in $(A20_METHODS); do \
@@ -591,7 +594,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_SHELL_IMG) --log-dir $(BUILD)/logs \
 	  --no-tap --type-after '^sh> ' --type 'hello\n' --type-after '^sh> ' --type 'exit\n' \
 	  --expect 'loader: UEFI' --expect '-> 0x65$$' --expect '^\[exit 42\]$$' \
-	  --expect 'init exited with status 0'
+	  --expect 'init exited with status 0' --reject '^sh> \nsh> '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
 	  --skips 1 --expect 'calibrated against the HPET' \
 	  --expect '^input: PS/2 keyboard on IRQ 1, 8042 config 0x[0-9a-f]+ -> 0x65$$' \

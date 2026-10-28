@@ -423,16 +423,22 @@ KTEST(read_returns_at_most_256_bytes)
     input_test_set_present(was);
 }
 
-/* True if the newest 4 KiB of console output contain `needle`. */
-static bool log_has(const char *needle)
+/* How often `needle` occurs in the newest 4 KiB of console output. */
+static int log_count(const char *needle)
 {
     static char tail[4096 + 1];
     usize n = console_log_read(tail, sizeof(tail) - 1), len = strlen(needle);
+    int count = 0;
 
     for (usize i = 0; i + len <= n; i++)
         if (memcmp(tail + i, needle, len) == 0)
-            return true;
-    return false;
+            count++;
+    return count;
+}
+
+static bool log_has(const char *needle)
+{
+    return log_count(needle) > 0;
 }
 
 KTEST(read_without_input_device_is_enodev)
@@ -452,7 +458,7 @@ KTEST(read_without_input_device_is_enodev)
  */
 KTEST(shell_runs_programs_and_reports_status)
 {
-    static const char session[] = "help\nhello\nnosuch\nhello world\n"
+    static const char session[] = "help\nhello\n   \n hello \nnosuch\nhello world\n"
                                   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
                                   "faulter\nabc\x03"
                                   "exit\n\x04"; /* exit leaves the Ctrl-D unread */
@@ -478,6 +484,8 @@ KTEST(shell_runs_programs_and_reports_status)
     for (usize i = 0; i < sizeof(want) / sizeof(want[0]); i++)
         if (!log_has(want[i]))
             ktest_fail(__FILE__, __LINE__, "no '%s' in the console log", want[i]);
+    KEXPECT_EQ(log_count("[exit 42]\n"), 2);                      /* " hello " is hello */
+    KEXPECT_EQ(log_count("sh: programs take no arguments\n"), 1); /* and "   " is nothing */
     sched_get_stats(&after);
     KEXPECT_EQ(after.tasks, before.tasks);
     input_test_flush();
