@@ -382,6 +382,9 @@ QEMU_DISPLAY ?= none
 QEMU_FLAGS := -m 128M -cpu max -no-reboot -serial stdio -display $(QEMU_DISPLAY) -monitor none \
               -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
               -drive file=$(DISK_IMG),format=raw,if=ide
+# For the interactive targets: this terminal is COM1 in raw mode, so Ctrl-C
+# reaches the guest (which receives COM1) and Ctrl-A x quits QEMU.
+QEMU_RUN_FLAGS := $(subst -serial stdio,-serial mon:stdio,$(QEMU_FLAGS))
 
 .PHONY: run run-uefi run-shell run-shell-uefi debug bench
 
@@ -390,7 +393,7 @@ OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/O
 run-uefi: $(UEFI_IMG)
 	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
 	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
-	$(QEMU) $(subst $(DISK_IMG),$(UEFI_IMG),$(QEMU_FLAGS)) \
+	$(QEMU) $(subst $(DISK_IMG),$(UEFI_IMG),$(QEMU_RUN_FLAGS)) \
 	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA)
 # Numbers under TCG reflect the emulator too; use QEMU_EXTRA="-enable-kvm -cpu host" for real ones.
@@ -398,18 +401,16 @@ bench: $(BENCH_IMG)
 	$(Q)$(QEMU) $(subst $(DISK_IMG),$(BENCH_IMG),$(QEMU_FLAGS)) $(QEMU_EXTRA) | grep --line-buffered 'bench:' || true
 
 run: $(DISK_IMG)
-	$(QEMU) $(QEMU_FLAGS) $(QEMU_EXTRA)
+	$(QEMU) $(QEMU_RUN_FLAGS) $(QEMU_EXTRA)
 
-# The shell, typed at from this terminal (COM1): Ctrl-C reaches the guest,
-# Ctrl-A x quits QEMU. QEMU_DISPLAY=gtk opens a window to type on the PS/2
+# The shell, typed at from this terminal (COM1, as for run). QEMU_DISPLAY=gtk opens a window to type on the PS/2
 # keyboard instead. Leaving the shell ends the run (status 33 is success).
 run-shell: $(SHELL_IMG)
-	$(QEMU) $(subst -serial stdio,-serial mon:stdio,$(subst $(DISK_IMG),$(SHELL_IMG),$(QEMU_FLAGS))) \
-	  $(QEMU_EXTRA) || test $$? -eq 33
+	$(QEMU) $(subst $(DISK_IMG),$(SHELL_IMG),$(QEMU_RUN_FLAGS)) $(QEMU_EXTRA) || test $$? -eq 33
 run-shell-uefi: $(UEFI_SHELL_IMG)
 	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
 	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
-	$(QEMU) $(subst -serial stdio,-serial mon:stdio,$(subst $(DISK_IMG),$(UEFI_SHELL_IMG),$(QEMU_FLAGS))) \
+	$(QEMU) $(subst $(DISK_IMG),$(UEFI_SHELL_IMG),$(QEMU_RUN_FLAGS)) \
 	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA) || test $$? -eq 33
 
