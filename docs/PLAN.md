@@ -1,8 +1,8 @@
 # Mini Operating System — Engineering Plan
 
 > Status: **v1.0.0** = M0–M8 · **v1.1.0** = everything merged after it (parts 2–4) ·
-> **v1.2.0** = the keyboard, COM1 input and the shell; §11 records the main additions and
-> fixes, several of which fix v1.0.0 code ·
+> **v1.2.0** = the keyboard, COM1 input and the shell · **v1.3.0** = arguments for programs;
+> §11 records the main additions and fixes, several of which fix v1.0.0 code ·
 > Target: x86_64, single core, QEMU first, never yet booted on real hardware
 >
 > This is the plan as written before any code, kept as the record of what was
