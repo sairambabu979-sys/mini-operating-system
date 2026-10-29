@@ -79,17 +79,42 @@ static s64 sys_sleep_ms(u64 ms, u64 a1, u64 a2)
     return 0;
 }
 
-static s64 sys_spawn(u64 user_name, u64 a1, u64 a2)
+/*
+ * spawn(name, args): the name first (-EFAULT, -ENAMETOOLONG), then each
+ * argument pointer and string in turn (-EFAULT, or -E2BIG past either
+ * limit), all before anything is created.
+ */
+static s64 sys_spawn(u64 user_name, u64 user_args, u64 a2)
 {
     char name[NAME_MAX];
+    struct spawn_args args = {0};
     int len;
 
-    (void)a1;
     (void)a2;
     len = strncpy_from_user(name, (const char *)user_name, sizeof(name));
     if (len < 0)
         return len;
-    return process_spawn(name);
+    if (!user_args)
+        return process_spawn(name);
+    for (usize i = 0;; i++) {
+        u64 arg;
+
+        if (copy_from_user(&arg, (const void *)(user_args + i * sizeof(u64)), sizeof(arg)) != 0)
+            return -EFAULT;
+        if (!arg)
+            break;
+        if (args.argc == SPAWN_ARGS_MAX)
+            return -E2BIG;
+        len = strncpy_from_user(args.strings + args.len, (const char *)arg,
+                                sizeof(args.strings) - args.len);
+        if (len == -ENAMETOOLONG)
+            return -E2BIG;
+        if (len < 0)
+            return len;
+        args.len += (usize)len + 1;
+        args.argc++;
+    }
+    return process_spawn_args(name, &args);
 }
 
 static s64 sys_wait(u64 pid, u64 user_status, u64 a2)

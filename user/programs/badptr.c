@@ -21,6 +21,13 @@ static void expect(const char *what, long got, long want)
 static const int read_only = 1; /* nonzero: .rodata, mapped but not writable */
 static char big[4096];          /* mapped for far more than read() would ever fill */
 
+#define KPTR ((const char *)0xFFFF800000001000ull)
+
+static const char *const kernel_arg[] = {KPTR, NULL};
+static const char *const nine_args[] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", NULL};
+static const char *const one_arg[] = {"x", NULL};
+static const char *const big_arg[] = {big, NULL}; /* filled with 256 'a's: one byte too many */
+
 int main(void)
 {
     char buf[8] = "ok\n";
@@ -35,6 +42,17 @@ int main(void)
     expect("spawn(kernel pointer)", sys_spawn((const char *)0xFFFF800000001000ull), -EFAULT);
     expect("spawn(no such image)", sys_spawn("no-such-program"), -ENOENT);
     expect("spawn(name too long)", sys_spawn("aaaaaaaaaaaaaaaaaaaaaaaa"), -ENAMETOOLONG);
+    /* Bad arguments fail before anything is created: wait(no children) below checks it. */
+    for (int i = 0; i < SPAWN_ARGS_SIZE; i++)
+        big[i] = 'a';
+    expect("spawn(args at a kernel pointer)", sys_spawnv("hello", (const char *const *)KPTR),
+           -EFAULT);
+    expect("spawn(an argument at a kernel pointer)", sys_spawnv("hello", kernel_arg), -EFAULT);
+    expect("spawn(9 arguments)", sys_spawnv("hello", nine_args), -E2BIG);
+    expect("spawn(257 bytes of arguments)", sys_spawnv("hello", big_arg), -E2BIG);
+    expect("spawn(bad name, then bad arguments)", sys_spawnv(KPTR, nine_args), -EFAULT);
+    expect("spawn(no such image, with arguments)", sys_spawnv("no-such-program", one_arg), -ENOENT);
+    big[0] = '\0';
     expect("wait(no children)", sys_wait(-1, &status), -ECHILD);
     /* read() rejects all of these before it could block or take a byte. */
     expect("read(bad fd)", sys_read(7, buf, 3), -EBADF);

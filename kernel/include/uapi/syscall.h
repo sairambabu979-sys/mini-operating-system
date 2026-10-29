@@ -14,10 +14,20 @@
 #define SYS_YIELD    2 /* yield() -> 0 */
 #define SYS_GETPID   3 /* getpid() -> pid */
 #define SYS_SLEEP_MS 4 /* sleep_ms(u64 ms) -> 0 */
-#define SYS_SPAWN    5 /* spawn(const char *name) -> child pid */
+#define SYS_SPAWN    5 /* spawn(const char *name, const char *const *args) -> child pid */
 #define SYS_WAIT     6 /* wait(int pid or -1, int *status) -> pid */
 #define SYS_TIME_MS  7 /* time_ms() -> milliseconds since boot */
 #define SYS_READ     8 /* read(int fd, void *buf, size_t len) -> bytes; fd 0 only, blocks for >= 1 */
+
+/*
+ * spawn()'s arguments: `args` is NULL or a NULL-terminated list of at most
+ * SPAWN_ARGS_MAX strings, SPAWN_ARGS_SIZE bytes in all with their NULs;
+ * more is -E2BIG. The program starts as main(argc, argv), argv[0] its name
+ * and argv[argc] NULL: crt0 gets argc in RDI and argv in RSI, and the
+ * strings and the vector sit at the top of its stack.
+ */
+#define SPAWN_ARGS_MAX  8
+#define SPAWN_ARGS_SIZE 256
 
 #define SYS_COUNT 9
 

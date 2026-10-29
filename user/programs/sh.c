@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 /*
  * The shell: reads lines from the console (the PS/2 keyboard or COM1,
- * through read()), runs the program each one names, and reports how it
- * ended. The kernel delivers raw bytes and never echoes: lineedit.c edits
+ * through read()), runs the program each one names with the words after
+ * it as arguments (split at spaces, no quoting), and reports how it ended. The kernel delivers raw bytes and never echoes: lineedit.c edits
  * the line and says what to echo. Not in init's tour: boot it with
  * init=sh (the shell images).
  *
@@ -37,9 +37,9 @@ static void help(void)
         printf("  %s\n", programs[i]);
 }
 
-static void run(const char *name)
+static void run(const char *name, const char *const *args)
 {
-    long pid = sys_spawn(name);
+    long pid = sys_spawnv(name, args);
     int status;
 
     if (pid < 0) {
@@ -49,6 +49,8 @@ static void run(const char *name)
             printf("sh: name too long (15 characters at most)\n");
         else if (pid == -EAGAIN)
             printf("sh: too many tasks\n");
+        else if (pid == -E2BIG)
+            printf("sh: too many arguments (%d at most)\n", SPAWN_ARGS_MAX);
         else
             printf("sh: %s: cannot start (%ld)\n", name, pid);
         return;
@@ -64,23 +66,33 @@ static void run(const char *name)
 /* Runs one finished line; true if it was "exit". */
 static bool run_line(char *line)
 {
-    usize n;
+    const char *words[LE_LINE_MAX / 2 + 2]; /* every other character a word, then NULL */
+    int n = 0;
 
-    while (*line == ' ')
-        line++;
-    n = strlen(line);
-    while (n && line[n - 1] == ' ')
-        line[--n] = '\0';
+    for (char *p = line; *p;) { /* split at runs of spaces, in place */
+        while (*p == ' ')
+            *p++ = '\0';
+        if (*p)
+            words[n++] = p;
+        while (*p && *p != ' ')
+            p++;
+    }
+    words[n] = NULL;
     if (n == 0)
         return false;
-    if (strcmp(line, "exit") == 0)
-        return true;
-    if (strcmp(line, "help") == 0)
-        help();
-    else if (strchr(line, ' '))
-        printf("sh: programs take no arguments\n");
+    if (strcmp(words[0], "exit") == 0 || strcmp(words[0], "help") == 0) {
+        if (n > 1)
+            printf("sh: %s takes no arguments\n", words[0]);
+        else if (words[0][0] == 'e')
+            return true;
+        else
+            help();
+        return false;
+    }
+    if (n - 1 > SPAWN_ARGS_MAX)
+        printf("sh: too many arguments (%d at most)\n", SPAWN_ARGS_MAX);
     else
-        run(line);
+        run(words[0], words + 1);
     return false;
 }
 

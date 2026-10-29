@@ -556,7 +556,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
 	  --type-after '^sh> ' --type 'help\n' --type-after '^sh> ' --type 'hellp\x7fo\n' \
 	  --type-after '^sh> ' --type 'xyz\x15nosuch\n' --type-after '^sh> ' --type 'abc\x03' \
-	  --type-after '^sh> ' --type 'faulter\n' --type-after '^sh> ' --type 'hello world\n' \
+	  --type-after '^sh> ' --type 'faulter\n' --type-after '^sh> ' --type 'echo hello  world\n' \
 	  --type-after '^sh> ' --type 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' \
 	  --type-after '^sh> ' --type 'sh\n' --type-after '^sh> ' --type '\x04' \
 	  --type-after '^sh> ' --type 'exit\n' \
@@ -565,7 +565,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --expect '^hello: hello from ring 3' --expect '^\[exit 42\]$$' \
 	  --expect 'xyz(\x08 \x08){3}nosuch' --expect '^sh: nosuch: not found$$' --expect 'abc\^C$$' \
 	  --expect 'killed by #PF' --expect '^\[exit 142\]$$' \
-	  --expect '^sh: programs take no arguments$$' --expect '^sh> a{31}$$' \
+	  --expect '^hello world$$' --expect '^sh> a{31}$$' \
 	  --expect '^sh: name too long' --expect '^\[exit 0\]$$' --expect 'init exited with status 0' \
 	  --reject 'KERNEL PANIC' --reject 'WARNING: (i8042|input): ' --reject '^sh> \nsh> '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \

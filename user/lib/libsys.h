@@ -26,6 +26,8 @@ long sys_yield(void);
 long sys_getpid(void);
 long sys_sleep_ms(u64 ms);
 long sys_spawn(const char *name);
+/* With arguments: `args` is NULL-terminated; argv[0] is the name (see SPAWN_ARGS_MAX). */
+long sys_spawnv(const char *name, const char *const *args);
 long sys_wait(int pid, int *status);
 long sys_time_ms(void);
 long sys_read(int fd, void *buf, usize len);

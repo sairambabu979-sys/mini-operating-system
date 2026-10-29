@@ -7,9 +7,12 @@ Sources: `kernel/proc/`, `kernel/arch/x86_64/{syscall.asm,isr.asm,usercopy.c,fpu
 
 A process is a task with its own address space and FPU state, started
 from one of the ELF programs embedded in the kernel image
-(`tools/gen_user_images.py`). There is no filesystem; `spawn(name)`
+(`tools/gen_user_images.py`). There is no filesystem; `spawn(name, args)`
 creates a process from an image, as `posix_spawn` would, rather than via
-fork/exec.
+fork/exec. The program starts as `main(argc, argv)`, `argv[0]` its name:
+the kernel copies the strings to the top of the new stack with the
+NULL-terminated vector below them, leaves RSP 16-byte aligned below both,
+and passes argc in RDI and argv in RSI, which `crt0` hands on to `main`.
 
 ```
 0x0000000000010000 -              program segments (NULL page and below: unmapped)
@@ -120,7 +123,7 @@ outcome and documents why.
 | 2 | `yield()` | |
 | 3 | `getpid()` | |
 | 4 | `sleep_ms(ms)` | capped at one hour; sleeps at least `ms` (see [scheduler.md](scheduler.md)) |
-| 5 | `spawn(name)` | name copied byte by byte (it may end just before an unmapped page); `-EAGAIN` at `TASK_MAX` tasks |
+| 5 | `spawn(name, args)` | name copied byte by byte (it may end just before an unmapped page); `args` is NULL or a NULL-terminated list of at most 8 strings, 256 bytes in all with their NULs (`-E2BIG` past either); all of it is copied and checked before anything is created (`-EFAULT`, `-ENAMETOOLONG`, `-E2BIG`, in that order of discovery); `-EAGAIN` at `TASK_MAX` tasks |
 | 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
 | 8 | `read(fd, buf, len)` | fd 0 only: console input as raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EBADF`, `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device |
