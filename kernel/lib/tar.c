@@ -15,6 +15,7 @@
 #define H_CHK_LEN  8
 #define H_TYPE     156
 #define H_MAGIC    257
+#define H_VERSION  263
 #define H_PREFIX   345
 #define H_PFX_LEN  155
 
@@ -51,16 +52,72 @@ static bool parse_octal(const u8 *f, usize len, u64 *out)
     return any;
 }
 
-/* The header checksum: every byte summed, the checksum field counted as spaces. */
+/*
+ * The header checksum: every byte summed, the checksum field counted as
+ * spaces. POSIX sums unsigned bytes; some old tars summed signed ones, and
+ * GNU tar, libarchive and Python accept either, as this does.
+ */
 static bool checksum_ok(const u8 *h)
 {
-    u64 want, sum = 0;
+    u64 want;
+    s64 sum = 0, signed_sum = 0;
 
     if (!parse_octal(h + H_CHKSUM, H_CHK_LEN, &want))
         return false;
-    for (int i = 0; i < TAR_BLOCK; i++)
-        sum += (i >= H_CHKSUM && i < H_CHKSUM + H_CHK_LEN) ? ' ' : h[i];
-    return sum == want;
+    for (int i = 0; i < TAR_BLOCK; i++) {
+        u8 b = (i >= H_CHKSUM && i < H_CHKSUM + H_CHK_LEN) ? ' ' : h[i];
+
+        sum += b;
+        signed_sum += (s8)b;
+    }
+    return (u64)sum == want || (signed_sum >= 0 && (u64)signed_sum == want);
+}
+
+/* POSIX ustar ("ustar\0" "00"); GNU's "ustar  \0" keeps other fields where POSIX has the prefix. */
+static bool posix_ustar(const u8 *h)
+{
+    return memcmp(h + H_MAGIC, "ustar\0", 6) == 0 && memcmp(h + H_VERSION, "00", 2) == 0;
+}
+
+static bool key_is(const u8 *key, usize n, const char *want)
+{
+    return n == strlen(want) && memcmp(key, want, n) == 0;
+}
+
+/*
+ * A pax extended header (type x for the next entry, g for all that follow):
+ * records "LEN KEY=VALUE\n", LEN counting the whole record. The reader does
+ * not apply them, so one that would change a name or a size is refused
+ * rather than misread; times, owners and the like are ignored. A malformed
+ * record is refused too.
+ */
+static int check_pax(const u8 *d, usize size)
+{
+    usize at = 0;
+
+    while (at < size) {
+        usize rec = 0, i = at;
+
+        for (; i < size && d[i] >= '0' && d[i] <= '9'; i++) {
+            if (rec > size)
+                return -EINVAL; /* longer than the header: and no overflow below */
+            rec = rec * 10 + (usize)(d[i] - '0');
+        }
+        if (i == at || i >= size || d[i] != ' ' || rec < i - at + 3 || rec > size - at ||
+            d[at + rec - 1] != '\n')
+            return -EINVAL;
+        const u8 *key = d + i + 1;
+        usize klen = 0, room = at + rec - 1 - (i + 1);
+
+        while (klen < room && key[klen] != '=')
+            klen++;
+        if (klen == 0 || klen == room)
+            return -EINVAL;
+        if (key_is(key, klen, "path") || key_is(key, klen, "linkpath") || key_is(key, klen, "size"))
+            return -EINVAL;
+        at += rec;
+    }
+    return 0;
 }
 
 /* Copies a field that may fill its width without a NUL; returns its length. */
@@ -72,9 +129,10 @@ static usize copy_field(char *dst, const u8 *f, usize len)
     return n;
 }
 
-static int build_name(const u8 *h, char *name)
+/* The entry's name, normalised; returns its length, 0 for "./" or "." (the archive's root). */
+static usize build_name(const u8 *h, char *name)
 {
-    usize n = copy_field(name, h + H_PREFIX, H_PFX_LEN);
+    usize n = posix_ustar(h) ? copy_field(name, h + H_PREFIX, H_PFX_LEN) : 0;
 
     if (n)
         name[n++] = '/';
@@ -88,7 +146,9 @@ static int build_name(const u8 *h, char *name)
     memmove(name, start, n + 1);
     while (n && name[n - 1] == '/') /* "bin/" is "bin" */
         name[--n] = '\0';
-    return n ? 0 : -EINVAL;
+    if (n == 1 && name[0] == '.')
+        name[--n] = '\0';
+    return n;
 }
 
 int tar_next(const u8 *archive, usize len, usize *pos, struct tar_entry *e)
@@ -118,12 +178,20 @@ int tar_next(const u8 *archive, usize len, usize *pos, struct tar_entry *e)
         usize next = *pos + TAR_BLOCK + (usize)(padded <= body ? padded : size);
         u8 type = h[H_TYPE];
 
+        if (type == 'L' || type == 'K')
+            return -EINVAL; /* GNU long names: the next entry's real name is not in its header */
+        if ((type == 'x' || type == 'g') && check_pax(h + TAR_BLOCK, (usize)size) != 0)
+            return -EINVAL;
         if (type != '0' && type != '\0' && type != '5') {
             *pos = next; /* not a file or a directory: skip it */
             continue;
         }
-        if (build_name(h, e->name) != 0)
-            return -EINVAL;
+        if (build_name(h, e->name) == 0) {
+            if (type != '5')
+                return -EINVAL; /* a file must have a name */
+            *pos = next;        /* the archive's root directory, "./": skip it */
+            continue;
+        }
         e->data = h + TAR_BLOCK;
         e->size = (usize)size;
         e->is_dir = type == '5';

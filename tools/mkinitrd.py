@@ -26,12 +26,15 @@ def main() -> int:
     files = {}
     for spec in args.files:
         dest, sep, src = spec.partition("=")
-        if not sep or not dest or dest.startswith("/") or ".." in dest.split("/"):
-            ap.error(f"bad DEST=SRC: {spec!r}")
+        parts = dest.split("/")
+        if not sep or any(p in ("", ".", "..") for p in parts):
+            ap.error(f"bad DEST=SRC: {spec!r} (DEST is a relative path of plain names)")
         if dest in files:
             ap.error(f"{dest} given twice")
         files[dest] = Path(src)
     dirs = {"/".join(d.split("/")[:i]) for d in files for i in range(1, d.count("/") + 1)}
+    for clash in sorted(dirs & files.keys()):
+        ap.error(f"{clash} is both a file and the directory of another")
 
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w", format=tarfile.USTAR_FORMAT) as tar:
