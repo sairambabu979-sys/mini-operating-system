@@ -7,7 +7,8 @@
  *   101  argv[0] is not "argcheck";
  *   102  a string is not in the stack's top page, below USER_STACK_TOP;
  *   103  a string cannot be written;
- *   104  main's frame is not 16-byte aligned.
+ *   104  main's frame is not 16-byte aligned;
+ *   105  argv itself is not 8-byte aligned.
  */
 #include "libsys.h"
 
@@ -19,6 +20,8 @@ int main(int argc, char **argv)
 {
     if (((unsigned long)__builtin_frame_address(0) & 15) != 0)
         return 104;
+    if (((unsigned long)argv & 7) != 0)
+        return 105;
     if (argv[argc] != NULL)
         return 100;
     if (strcmp(argv[0], "argcheck") != 0)

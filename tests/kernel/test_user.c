@@ -290,7 +290,12 @@ KTEST(task_creation_stops_at_the_limit)
     sched_get_stats(&st);
     KEXPECT_EQ(st.allocated, TASK_MAX);
     KEXPECT(kthread_create(hold, NULL, "hold", 0) == NULL);
+    struct kmalloc_stats k0, k1;
+
+    kmalloc_get_stats(&k0);
     KEXPECT_EQ(process_spawn("hello"), -EAGAIN);
+    kmalloc_get_stats(&k1);
+    KEXPECT_EQ(k1.small_live, k0.small_live); /* a refused spawn frees what it allocated */
 
     hold_released = true;
     wake_up_all(&hold_queue);
@@ -459,7 +464,8 @@ KTEST(read_without_input_device_is_enodev)
 KTEST(shell_runs_programs_and_reports_status)
 {
     static const char session[] = "help\nhello\n   \n hello \nnosuch\nhello world\n"
-                                  "echo a  b\nhelp me\necho 1 2 3 4 5 6 7 8 9\n"
+                                  "echo a  b\nhelp me\necho 1 2 3 4 5 6 7 8\n"
+                                  "echo 1 2 3 4 5 6 7 8 9\n"
                                   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
                                   "faulter\nabc\x03"
                                   "exit\n\x04"; /* exit leaves the Ctrl-D unread */
@@ -468,6 +474,8 @@ KTEST(shell_runs_programs_and_reports_status)
         "[exit 42]\n",
         "sh: nosuch: not found\n",
         "a b\n",
+        /* 8 arguments, the most there may be: the echoed line, then echo's own */
+        "echo 1 2 3 4 5 6 7 8\n1 2 3 4 5 6 7 8\n[exit 0]\n",
         "sh: help takes no arguments\n",
         "sh: too many arguments (8 at most)\n",
         "sh: name too long",
