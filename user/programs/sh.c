@@ -2,7 +2,8 @@
 /*
  * The shell: reads lines from the console (the PS/2 keyboard or COM1,
  * through read()), runs the program each one names with the words after
- * it as arguments (split at spaces, no quoting), and reports how it ended. The kernel delivers raw bytes and never echoes: lineedit.c edits
+ * it as arguments (split at spaces, no quoting), and reports how it
+ * ended. The kernel delivers raw bytes and never echoes: lineedit.c edits
  * the line and says what to echo. Not in init's tour: boot it with
  * init=sh (the shell images).
  *
