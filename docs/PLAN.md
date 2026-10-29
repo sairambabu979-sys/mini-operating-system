@@ -1,7 +1,8 @@
 # Mini Operating System — Engineering Plan
 
-> Status: **v1.0.0** = M0–M8 · **v1.1.0** = everything merged after it (parts 2–4); §11
-> records the main additions and fixes, several of which fix v1.0.0 code ·
+> Status: **v1.0.0** = M0–M8 · **v1.1.0** = everything merged after it (parts 2–4) ·
+> **v1.2.0** = the keyboard, COM1 input and the shell; §11 records the main additions and
+> fixes, several of which fix v1.0.0 code ·
 > Target: x86_64, single core, QEMU first, never yet booted on real hardware
 >
 > This is the plan as written before any code, kept as the record of what was
@@ -546,7 +547,7 @@ or something the implementation taught us.
 | LAPIC timer + I/O APIC via the MADT (stretch goal 1) | Calibrated against the HPET rather than the PIT when there is one, with PIT channel 2 as the fallback reference and the whole 8259 + PIT path kept behind `noapic`. ACPI table parsing is pure and fuzzed on the host. `boot_info` version 3 carries the RSDP from UEFI. Since hardened for real hardware, though never run on it: an x2APIC hand-off is kept, every calibration wait is bounded and a dead HPET falls back to the PIT (no test reaches these three), and no working clock is a clear panic (the `pit=off,hpet=off` run boots into it; `pit=off` shows the APIC path needs no PIT). The `x2apic` option switches to x2APIC mode, and `make test-x2apic` runs the whole in-kernel suite that way (debug build) under QEMU 9 (CI builds 9.2.0; Ubuntu 24.04's 8.2 cannot emulate x2APIC under TCG). See [design/interrupts.md](design/interrupts.md). |
 | Runner self-tests | `check_runner.py` boots kernels that hang and triple-fault, and requires `run_tests.py` to reject them. |
 
-**Built after v1.1** (beyond the original scope)
+**Built after v1.1** (beyond the original scope; released as v1.2.0)
 
 | Item | Notes |
 |------|-------|

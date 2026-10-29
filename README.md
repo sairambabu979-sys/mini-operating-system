@@ -29,7 +29,7 @@ irq: using the local APIC and 24 I/O APIC pin(s)
 hpet: 100.000000 MHz, 64-bit counter, 3 comparators, at 0xfed00000
 time: tick: local APIC timer at 1000 Hz (1000004 ns/tick); TSC 2100.897 MHz; calibrated against the HPET
 sched: round robin, 10 ms slices, 16 KiB kernel stacks
-minios 1.1.0 (x86_64, debug build)
+minios 1.2.0 (x86_64, debug build)
 ...
 init: pid 3, starting 11 programs
 hello: hello from ring 3, pid 4
@@ -69,7 +69,7 @@ apt install clang lld llvm nasm gcc make python3 qemu-system-x86 ovmf mtools gdb
 
 ```sh
 make            # bootloader, kernel, user programs, disk images  -> build/debug/
-make run        # boot in QEMU, console on stdio (Ctrl-C to quit)
+make run        # boot in QEMU; this terminal is COM1 (Ctrl-A x quits)
 make run-uefi   # the same kernel through OVMF and the UEFI loader
 make run-shell  # the shell (init=sh), typed at from this terminal; Ctrl-A x quits
 make test       # every test suite below but the x2APIC run, for one CONFIG
@@ -89,7 +89,7 @@ QEMU=<a QEMU 9.x qemu-system-x86_64>`. CI lints with the debug flags only.
 | `V=1` | show full commands |
 | `CMDLINE="..."` | kernel options for `make run` and `make run-uefi` (see below) |
 | `QEMU_DISPLAY=gtk` | also open a window showing the screen console (`none` by default); with `make run-shell`, typing in it reaches the PS/2 keyboard |
-| `make run-shell` / `make run-shell-uefi` | boot the shell image; this terminal is COM1 (Ctrl-C goes to the guest, Ctrl-A x quits QEMU) |
+| `make run-shell` / `make run-shell-uefi` | boot the shell image; as with `make run`, this terminal is COM1 (Ctrl-C goes to the guest, Ctrl-A x quits QEMU) |
 | `make bench` | microbenchmarks |
 | `make test-x2apic QEMU=...` | the in-kernel suite in x2APIC mode; needs QEMU 9.0 or later (see [Testing](#testing)) |
 | `make debug` | QEMU waits for gdb on `:1234` (`gdb -x tools/gdb/gdbinit build/debug/kernel.elf`); adds `minios-tasks` and `minios-ptwalk ADDR` |
