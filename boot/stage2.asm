@@ -286,11 +286,19 @@ a20_check:
 ; Classic 8042 method: read the output port, replace bit 1 (the A20 gate)
 ; with AH (0x02 on, 0 off), write it back. Nothing below writes AH: the
 ; waits use AL and CX.
+;
+; A key pressed during boot may be waiting in the output buffer. A real
+; 8042 answers 0xD0 only once that byte is read, so without the flush the
+; key would be read as the output port and written back: a key whose code
+; has bit 0 clear (A is 0x1E) would then assert the reset line. QEMU drops
+; the waiting byte instead, so no test here can show it. Bit 0 is also
+; forced on in what is written, so this code can never reset the machine.
 a20_keyboard_controller:
     cli
     call    kbc_wait_input
     mov     al, 0xAD                ; disable keyboard
     out     0x64, al
+    call    kbc_flush
     call    kbc_wait_input
     mov     al, 0xD0                ; read output port
     out     0x64, al
@@ -304,6 +312,7 @@ a20_keyboard_controller:
     mov     al, bl
     and     al, 0xFD
     or      al, ah                  ; A20 gate
+    or      al, 0x01                ; reset line deasserted, whatever was read
     out     0x60, al
     call    kbc_wait_input
     mov     al, 0xAE                ; re-enable keyboard
@@ -331,6 +340,19 @@ kbc_wait_output:
     jnz     .ok
     loop    .loop
 .ok:
+    ret
+
+; Drops what waits in the output buffer: at most 16 bytes, so a missing
+; controller (0xFF: "full" forever) cannot hang us.
+kbc_flush:
+    mov     cx, 16
+.loop:
+    in      al, 0x64
+    test    al, 0x01
+    jz      .done
+    in      al, 0x60
+    loop    .loop
+.done:
     ret
 
 ; --------------------------------------------------------------------------
