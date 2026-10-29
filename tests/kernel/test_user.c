@@ -290,7 +290,12 @@ KTEST(task_creation_stops_at_the_limit)
     sched_get_stats(&st);
     KEXPECT_EQ(st.allocated, TASK_MAX);
     KEXPECT(kthread_create(hold, NULL, "hold", 0) == NULL);
+    struct kmalloc_stats k0, k1;
+
+    kmalloc_get_stats(&k0);
     KEXPECT_EQ(process_spawn("hello"), -EAGAIN);
+    kmalloc_get_stats(&k1);
+    KEXPECT_EQ(k1.small_live, k0.small_live); /* a refused spawn frees what it allocated */
 
     hold_released = true;
     wake_up_all(&hold_queue);
@@ -459,6 +464,8 @@ KTEST(read_without_input_device_is_enodev)
 KTEST(shell_runs_programs_and_reports_status)
 {
     static const char session[] = "help\nhello\n   \n hello \nnosuch\nhello world\n"
+                                  "echo a  b\nhelp me\necho 1 2 3 4 5 6 7 8\n"
+                                  "echo 1 2 3 4 5 6 7 8 9\n"
                                   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
                                   "faulter\nabc\x03"
                                   "exit\n\x04"; /* exit leaves the Ctrl-D unread */
@@ -466,7 +473,11 @@ KTEST(shell_runs_programs_and_reports_status)
         "  hello\n",
         "[exit 42]\n",
         "sh: nosuch: not found\n",
-        "sh: programs take no arguments\n",
+        "a b\n",
+        /* 8 arguments, the most there may be: the echoed line, then echo's own */
+        "echo 1 2 3 4 5 6 7 8\n1 2 3 4 5 6 7 8\n[exit 0]\n",
+        "sh: help takes no arguments\n",
+        "sh: too many arguments (8 at most)\n",
         "sh: name too long",
         "[exit 142]\n",
         "abc^C\n",
@@ -484,8 +495,8 @@ KTEST(shell_runs_programs_and_reports_status)
     for (usize i = 0; i < sizeof(want) / sizeof(want[0]); i++)
         if (!log_has(want[i]))
             ktest_fail(__FILE__, __LINE__, "no '%s' in the console log", want[i]);
-    KEXPECT_EQ(log_count("[exit 42]\n"), 2);                      /* " hello " is hello */
-    KEXPECT_EQ(log_count("sh: programs take no arguments\n"), 1); /* and "   " is nothing */
+    KEXPECT_EQ(log_count("[exit 42]\n"), 3); /* " hello " and "hello world" are hello too */
+    KEXPECT_EQ(log_count("not found\n"), 1); /* and "   " is nothing: only nosuch is unknown */
     sched_get_stats(&after);
     KEXPECT_EQ(after.tasks, before.tasks);
     input_test_flush();
@@ -540,4 +551,56 @@ KTEST(shell_eof_exits_cleanly)
     KEXPECT_EQ(console_log_read(&last, 1), 1);
     KEXPECT_EQ(last, '\n'); /* so the next TAP line starts a line of its own */
     input_test_set_present(was);
+}
+
+/* Runs `name` with `args` and returns its exit status, or a negative error. */
+static int run_args(const char *name, const struct spawn_args *args)
+{
+    int pid = process_spawn_args(name, args);
+    int status = -1000;
+
+    if (pid < 0)
+        return pid;
+    if (task_wait(pid, &status) != pid)
+        return -20000;
+    return status;
+}
+
+KTEST(spawn_passes_arguments_on_the_stack)
+{
+    struct spawn_args args = {0};
+
+    KEXPECT_EQ(spawn_args_add(&args, "one"), 0);
+    KEXPECT_EQ(spawn_args_add(&args, "two two"), 0);
+    KEXPECT_EQ(run_args("argcheck", &args), 3); /* argc, after argcheck's own checks */
+    KEXPECT(log_has("argcheck: [argcheck] [one] [two two]\n"));
+    KEXPECT_EQ(run("argcheck"), 1);
+    KEXPECT(log_has("argcheck: [argcheck]\n"));
+}
+
+/* Exactly the limits run; one argument or one byte more does not fit. */
+KTEST(spawn_arguments_fill_their_limits_exactly)
+{
+    static struct spawn_args args;
+    char arg[SPAWN_ARGS_SIZE / SPAWN_ARGS_MAX]; /* 31 characters and the NUL: 8 of them fill it */
+
+    args = (struct spawn_args){0};
+    memset(arg, 'a', sizeof(arg) - 1);
+    arg[sizeof(arg) - 1] = '\0';
+    for (int i = 0; i < SPAWN_ARGS_MAX; i++)
+        KEXPECT_EQ(spawn_args_add(&args, arg), 0);
+    KEXPECT_EQ(args.len, SPAWN_ARGS_SIZE);
+    KEXPECT_EQ(spawn_args_add(&args, ""), -E2BIG); /* a ninth */
+    KEXPECT_EQ(run_args("argcheck", &args), 1 + SPAWN_ARGS_MAX);
+
+    args = (struct spawn_args){0};
+    for (int i = 0; i < SPAWN_ARGS_MAX - 1; i++)
+        KEXPECT_EQ(spawn_args_add(&args, arg), 0);
+    arg[sizeof(arg) - 1] = 'a'; /* now 32 characters: one byte past the size */
+    char longer[sizeof(arg) + 1];
+
+    memcpy(longer, arg, sizeof(arg));
+    longer[sizeof(arg)] = '\0';
+    KEXPECT_EQ(spawn_args_add(&args, longer), -E2BIG);
+    KEXPECT_EQ(args.argc, SPAWN_ARGS_MAX - 1); /* a failed add changes nothing */
 }

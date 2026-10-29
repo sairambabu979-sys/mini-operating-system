@@ -16,6 +16,7 @@
 #include <compiler.h>
 #include <sched/sched.h>
 #include <types.h>
+#include <uapi/syscall.h>
 
 #define USER_MIN        0x10000ull
 #define USER_STACK_TOP  0x00007FFFFFFF0000ull
@@ -30,11 +31,26 @@ struct user_image {
 /* Looks up an image embedded at build time (build/<config>/gen/user_images.asm). */
 bool user_image_find(const char *name, struct user_image *out);
 
+/* Arguments for a program, after its name (see SPAWN_ARGS_MAX in <uapi/syscall.h>). */
+struct spawn_args {
+    int argc;                      /* how many */
+    usize len;                     /* bytes of strings used, NULs included */
+    char strings[SPAWN_ARGS_SIZE]; /* NUL-terminated, back to back */
+};
+
+/* Appends one argument: 0, or -E2BIG if it would pass either limit. */
+int spawn_args_add(struct spawn_args *a, const char *arg);
+
 /*
- * Starts the named program as a child of the current task. Returns its
- * pid, or -ENOENT (no such image), -ENOEXEC/-EINVAL (bad ELF), -ENOMEM,
- * or -EAGAIN (TASK_MAX tasks exist).
+ * Starts the named program as a child of the current task, as main(argc,
+ * argv) with argv[0] the name and `args` (NULL for none) after it.
+ * Returns its pid, or -ENAMETOOLONG (a name of TASK_NAME_MAX characters
+ * or more), -ENOENT (no such image), -ENOEXEC/-EINVAL (bad ELF),
+ * -ENOMEM, or -EAGAIN (TASK_MAX tasks exist).
  */
+int process_spawn_args(const char *name, const struct spawn_args *args);
+
+/* The same, without arguments. */
 int process_spawn(const char *name);
 
 /* A user-mode exception: report it and terminate the process. */

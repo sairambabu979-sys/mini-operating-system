@@ -1,5 +1,7 @@
 ; SPDX-License-Identifier: MIT
-; User program entry: RSP is 16-byte aligned (set up by the kernel).
+; User program entry: RSP is 16-byte aligned, RDI holds argc and RSI argv
+; (set up by the kernel, see SPAWN_ARGS_MAX in uapi/syscall.h), so main
+; gets them as main(argc, argv).
 
 bits 64
 section .text.start

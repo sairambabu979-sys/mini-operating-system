@@ -12,6 +12,7 @@
 #include <core/panic.h>
 #include <lib/errno.h>
 #include <lib/string.h>
+#include <mm/kmalloc.h>
 #include <mm/pmm.h>
 #include <mm/vmm.h>
 #include <proc/elf.h>
@@ -101,43 +102,110 @@ static int map_user_stack(struct address_space *as)
     return 0;
 }
 
-/* Kernel-side start of every process: drop to ring 3 at the ELF entry. */
-static int process_start(void *unused)
+int spawn_args_add(struct spawn_args *a, const char *arg)
+{
+    usize n = strlen(arg) + 1;
+
+    if (a->argc == SPAWN_ARGS_MAX || n > sizeof(a->strings) - a->len)
+        return -E2BIG;
+    memcpy(a->strings + a->len, arg, n);
+    a->len += n;
+    a->argc++;
+    return 0;
+}
+
+/* argv as the new process will see it: its name, then the arguments. */
+struct start_args {
+    int argc;
+    usize len;
+    char strings[TASK_NAME_MAX + SPAWN_ARGS_SIZE];
+};
+
+/*
+ * Puts argv at the top of the user stack, which is this task's own by
+ * now: the strings, then the vector below them, NULL-terminated. RSP
+ * ends 16-byte aligned below both, as the SysV ABI wants at _start.
+ */
+static void push_args(struct trap_frame *frame, const struct start_args *sa)
+{
+    u64 argv[1 + SPAWN_ARGS_MAX + 1];
+    uptr strings = USER_STACK_TOP - sa->len;
+    uptr vec = (strings & ~(uptr)7) - (uptr)(sa->argc + 1) * sizeof(u64);
+    usize off = 0;
+
+    for (int i = 0; i < sa->argc; i++) {
+        argv[i] = strings + off;
+        off += strlen(sa->strings + off) + 1;
+    }
+    argv[sa->argc] = 0;
+    if (copy_to_user((void *)strings, sa->strings, sa->len) != 0 ||
+        copy_to_user((void *)vec, argv, (usize)(sa->argc + 1) * sizeof(u64)) != 0)
+        panic("cannot write argv to a new process's own stack");
+    frame->rdi = (u64)sa->argc;
+    frame->rsi = vec;
+    frame->rsp = vec & ~(uptr)15;
+}
+
+/* Kernel-side start of every process: argv onto the stack, then ring 3 at the ELF entry. */
+static int process_start(void *arg)
 {
     struct task *self = task_current();
+    struct start_args *sa = arg;
     struct trap_frame frame;
 
-    (void)unused;
     memset(&frame, 0, sizeof(frame));
+    push_args(&frame, sa);
+    kfree(sa);
     frame.rip = self->user_entry;
     frame.cs = GDT_USER_CODE | RPL_USER;
     frame.ss = GDT_USER_DATA | RPL_USER;
-    frame.rsp = USER_STACK_TOP; /* 16-byte aligned, as the SysV ABI wants at _start */
     frame.rflags = RFLAGS_IF | RFLAGS_RESERVED;
     enter_user(&frame);
 }
 
 int process_spawn(const char *name)
 {
+    return process_spawn_args(name, NULL);
+}
+
+int process_spawn_args(const char *name, const struct spawn_args *args)
+{
     struct user_image image;
     const struct user_image *img = &image;
     struct elf_image elf;
     int err;
 
+    if (strlen(name) >= TASK_NAME_MAX)
+        return -ENAMETOOLONG;
     if (!user_image_find(name, &image))
         return -ENOENT;
     err = elf_parse(img->data, img->size, USER_MIN, USER_TOP, &elf);
     if (err)
         return err;
 
-    struct task *t = sched_task_alloc(process_start, NULL, name, &err);
+    struct start_args *sa = kmalloc(sizeof(*sa));
 
-    if (!t)
+    if (!sa)
+        return -ENOMEM;
+    sa->argc = 1 + (args ? args->argc : 0);
+    sa->len = strlen(name) + 1;
+    memcpy(sa->strings, name, sa->len);
+    if (args) {
+        memcpy(sa->strings + sa->len, args->strings, args->len);
+        sa->len += args->len;
+    }
+
+    struct task *t = sched_task_alloc(process_start, sa, name, &err);
+
+    if (!t) {
+        kfree(sa);
         return err;
+    }
     t->as = vmm_create_user_space();
     t->fpu_state = fpu_state_alloc();
     if (!t->as || !t->fpu_state) {
         sched_task_discard(t);
+        kfree(sa);
         return -ENOMEM;
     }
     err = load_segments(t->as, &elf, img->data);
@@ -145,6 +213,7 @@ int process_spawn(const char *name)
         err = map_user_stack(t->as);
     if (err) {
         sched_task_discard(t); /* frees the partially built address space too */
+        kfree(sa);
         return err;
     }
     t->user_entry = elf.entry;

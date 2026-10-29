@@ -192,15 +192,18 @@ to the line editor, writing each echo with one `write()`. The editor
 handles Backspace and DEL, Ctrl-U, Ctrl-C (`^C`, the line dropped), Ctrl-D
 (end of input on an empty line), and swallows escape sequences. Lines hold
 31 characters, so after the 4-column prompt the echo never wraps on an
-80-column screen. On a finished line:
+80-column screen. A finished line is split into words at runs of spaces
+(no quoting); the first names the program, and the rest are its
+arguments (`echo` prints them back). On a finished line:
 
 | Line | Output |
 |------|--------|
 | empty | nothing |
 | `help` | `builtins: help exit`, `programs:`, then each embedded program |
 | `exit` | the shell exits 0 |
-| containing a space | `sh: programs take no arguments` |
-| a program name | its output, then `[exit N]` |
+| `help` or `exit` with words after it | `sh: help takes no arguments` (or `exit`) |
+| a program name, then up to 8 words | the program, run with the words as its arguments: its output, then `[exit N]` |
+| more than 8 words after the name | `sh: too many arguments (8 at most)` |
 | unknown | `sh: NAME: not found` |
 | 16 characters or more | `sh: name too long (15 characters at most)` |
 | at `TASK_MAX` | `sh: too many tasks` |
@@ -225,7 +228,7 @@ keyboard.
 | 8042: the configuration byte, `Hi\n` through IRQ 1, every printable character, the masked edge, control and extended keys | command `0xD2`, which delivers a set 1 byte as if typed | `tests/kernel/test_input.c` |
 | COM1: bytes through IRQ 4, a full FIFO in order, a woken reader, the drain's cap, an error seen by transmit polling | the UART's own loopback, interrupts off | `tests/kernel/test_input.c` |
 | `read()` from ring 3: bad buffers and the check order, blocking, at most 256 bytes, never more than asked, no device, a reader woken by IRQ 1 | `readkeys`, `readmax`, `badptr` | `tests/kernel/test_user.c` |
-| the shell: `[exit N]`, not found, name too long, no arguments, `^C`, blank and padded lines, `exit` (not the Ctrl-D behind it), task count restored, Ctrl-D alone, `-ENODEV` | `input_inject()` | `tests/kernel/test_user.c` |
+| the shell: `[exit N]`, not found, name too long, arguments (`echo a  b`, too many, a builtin with one), `^C`, blank and padded lines, `exit` (not the Ctrl-D behind it), task count restored, Ctrl-D alone, `-ENODEV` | `input_inject()` | `tests/kernel/test_user.c` |
 | boot | a key pressed during boot (`boot_keypress.py`); bytes 0-239 on stdin during boot must arrive rising (the typeahead run) | `make qemu-test` |
 | typed sessions | the shell typed at through QMP `send-key` (APIC, 8259, UEFI) and over COM1 with no 8042; a bad `init=` | `make qemu-test` |
 

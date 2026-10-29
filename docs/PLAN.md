@@ -368,7 +368,7 @@ struct task {
 | 2 | `yield()` | |
 | 3 | `getpid()` | |
 | 4 | `sleep_ms(ms)` | |
-| 5 | `spawn(name)` | spawns an embedded image, returns its pid |
+| 5 | `spawn(name, args)` | spawns an embedded image, returns its pid; arguments added after v1.2 (see [design/usermode.md](design/usermode.md)) |
 | 6 | `wait(pid, *status)` | reaps a zombie child |
 | 7 | `time_ms()` | added during M7 (see §11) |
 | 8 | `read(fd, buf, len)` | fd 0 only: console input, blocks for at least one byte; added after v1.1 (see §11 and [design/input.md](design/input.md)) |

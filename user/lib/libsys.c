@@ -29,9 +29,14 @@ long sys_sleep_ms(u64 ms)
     return syscall3(SYS_SLEEP_MS, (long)ms, 0, 0);
 }
 
+long sys_spawnv(const char *name, const char *const *args)
+{
+    return syscall3(SYS_SPAWN, (long)name, (long)args, 0);
+}
+
 long sys_spawn(const char *name)
 {
-    return syscall3(SYS_SPAWN, (long)name, 0, 0);
+    return sys_spawnv(name, NULL);
 }
 
 long sys_wait(int pid, int *status)
