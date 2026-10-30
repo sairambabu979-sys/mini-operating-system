@@ -26,7 +26,7 @@
 
 bool user_image_find(const char *name, struct user_image *out)
 {
-    char path[sizeof("bin/") - 1 + TASK_NAME_MAX];
+    char path[sizeof("bin/") + TASK_NAME_MAX] = "bin/";
     struct tar_entry e;
     usize len;
     const u8 *rd = initrd_get(&len);
@@ -39,7 +39,6 @@ bool user_image_find(const char *name, struct user_image *out)
      */
     if (!rd || n >= TASK_NAME_MAX) /* the path must fit */
         return false;
-    memcpy(path, "bin/", 4);
     memcpy(path + 4, name, n + 1);
     if (!tar_find(rd, len, path, &e))
         return false;
