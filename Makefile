@@ -558,7 +558,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(TEST_QUIET_IMG) --log-dir $(BUILD)/logs --skips 4 \
 	  --expect 'WARNING: traps: 1 NMI\(s\) received' \
 	  --expect 'screen_shows_printed_text # SKIP no screen console' \
-	  --reject '^(cpu|vmm|pmm|screen|acpi|ioapic|lapic|irq|hpet|time|sched|traps|proc|syscall|input|i8042): '
+	  --reject '^(cpu|vmm|pmm|initrd|screen|acpi|ioapic|lapic|irq|hpet|time|sched|traps|proc|syscall|input|i8042): '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(PANIC_IMG) --log-dir $(BUILD)/logs \
 	  --expect-panic \
 	  --expect 'KERNEL PANIC' \

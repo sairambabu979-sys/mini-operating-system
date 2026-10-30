@@ -17,7 +17,8 @@
 ; ('2' '3' ... '7'); errors print '!' and a letter, then halt:
 ;
 ;   !A  A20 could not be enabled       !C  CPU lacks long mode
-;   !M  E820 failed or map is empty    !S  staging area not usable RAM
+;   !M  E820 failed or map is empty    !S  staging area not usable RAM,
+;                                         or would reach 4 GiB
 ;   !K  bad stage-2 header             !D  disk read failed
 ;   !F  kernel is not a valid ELF64    !P  bad program header
 ;   !a  (A20 test builds) A20 could not be turned off
@@ -571,7 +572,7 @@ fill_boot_info_real:
     mov     eax, [stage2_header.kernel_sectors]
     shl     eax, 9
     add     eax, KERNEL_STAGING     ; below 4 GiB: check_staging_area
-    mov     [BOOT_INFO_PHYS + BI_INITRD_PHYS], eax
+    mov     [BOOT_INFO_PHYS + BI_INITRD_PHYS], eax  ; the high dword is 0: boot_info was cleared
 .done:
     ret
 

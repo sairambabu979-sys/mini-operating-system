@@ -85,7 +85,7 @@ static_assert(sizeof(struct e820_entry) == 24, "E820 entries are 24 bytes (ACPI 
 static_assert(sizeof(struct boot_framebuffer) == 24, "no padding: the BIOS loader zeroes it");
 static_assert(__builtin_offsetof(struct boot_info, mmap) % 8 == 0, "mmap must be 8-aligned");
 static_assert(__builtin_offsetof(struct boot_info, initrd_phys) % 8 == 0,
-              "stage 2 stores it as a qword");
+              "initrd_phys must be 8-aligned");
 static_assert(sizeof(struct boot_info) <= 4096, "boot_info must fit in its page");
 static_assert(__builtin_offsetof(struct boot_info, cmdline) == 40, "layout fixed since version 1");
 

@@ -109,7 +109,8 @@ usable RAM in the map the kernel gets. So the kernel does:
   RAM that array is 30 MiB and would otherwise start below the BIOS
   staging area and run over the initrd;
 - `initrd_init` (`kernel/fs/initrd.c`), right after `mm_init`, requires it
-  to be all usable RAM and a valid archive (`tar_validate`), and logs
+  to be all usable RAM and a valid archive (`tar_validate`) with at least
+  one entry, and logs
   `initrd: N entries, K KiB at ADDR`. One that fails is logged as an error
   and not used; none at all logs `initrd: none`.
 

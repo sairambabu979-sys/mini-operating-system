@@ -62,14 +62,15 @@ the merge address is caught by the verifier or by ASan.
 ## PMM
 
 `pmm_init()` sizes the page array for the highest usable frame below
-512 GiB and places it in the first usable RAM above the kernel image. It
-then gives the allocator every usable frame below 512 GiB except three
-reserved ranges:
+512 GiB and places it in the first usable RAM above the kernel image that
+is clear of the initrd. It then gives the allocator every usable frame
+below 512 GiB except these reserved ranges:
 
 | Range | Why |
 |-------|-----|
 | `0x0 – 0x100000` | IVT, BIOS data, EBDA, the BIOS loader's `boot_info`, boot page tables, loader, ROM shadows |
 | kernel image | `[kernel_phys_start, kernel_phys_end)` from `boot_info` |
+| initrd | `[initrd_phys, initrd_phys + initrd_size)` page-rounded, valid archive or not: the loaders leave it in pages the map calls usable (see [boot.md](boot.md#the-initrd)) |
 | page array | the allocator's own metadata |
 
 The kernel works from its own copy of `boot_info`, made at entry, so the
@@ -77,7 +78,8 @@ UEFI loader's `boot_info` page (anywhere below 1 GiB) needs no
 reservation: it is ordinary RAM.
 
 The raw ELF staging area at 16 MiB is *not* reserved: by then the kernel
-has been copied out of it, so it is ordinary free memory.
+has been copied out of it, so it is ordinary free memory, except for the
+initrd stage 2 leaves right after the ELF, which is reserved as above.
 
 Physical address 0 can never be allocated, so `0` doubles as the failure
 value (`PMM_ALLOC_FAILED`). An invalid free (double free, wrong order,
@@ -253,7 +255,7 @@ is in [traps.md](traps.md).
 |------|--------|
 | `tests/host/test_memmap.c` | sorting, merging, overlap resolution, page shrinking, unknown types, top-of-address-space wrap, randomized brute-force check |
 | `tests/host/test_buddy.c` | carving, split/merge round trip, alignment and disjointness, exhaustion, bad frees, reserved islands, 20k-step fuzz |
-| `tests/kernel/test_pmm.c` | consistency after init; managed = usable RAM below the 512 GiB direct map minus known reservations; allocations avoid reserved memory; drain-and-restore through every frame; double free panics |
+| `tests/kernel/test_pmm.c` | consistency after init; managed = usable RAM below the 512 GiB direct map minus known reservations; allocations avoid reserved memory, the initrd included; drain-and-restore through every frame, none of them in the initrd; double free panics |
 | `tests/kernel/test_vmm.c` | each forbidden access attempted and its `#PF` decoded; translate permissions; map/unmap round trip; guard pages, and a freed area that faults; **a real kernel stack overflow** caught as `#DF` on IST1 with CR2 in the guard |
 | `tests/kernel/test_kmalloc.c` | alignment, disjointness, reuse, large allocations, `kcalloc` overflow, stats; sizes above `KMALLOC_MAX` and near `SIZE_MAX` refused; foreign-pointer frees, including a live PMM block kmalloc did not allocate, which stays allocated (via `panic_expect()`); in debug builds only, double free, use after free and heap overflow |
 | `tests/kernel/test_sched.c`, `test_user.c` | after a warm-up, 200 threads and 40 processes created and reaped give back every frame, with no slack (before VA reuse, the tests allowed 8 and 4 frames for vmalloc's page tables); reaping 8 zombies frees at most 5 frames each, a kernel stack and a task struct |

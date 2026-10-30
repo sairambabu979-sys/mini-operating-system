@@ -13,6 +13,8 @@
 #include <lib/tar.h>
 #include <proc/process.h>
 
+extern const u64 user_images_count; /* generated: build/<config>/gen/user_images.asm */
+
 KTEST(initrd_is_handed_over_and_valid)
 {
     const struct boot_info *bi = boot_info_get();
@@ -48,6 +50,6 @@ KTEST(initrd_holds_every_program_byte_for_byte)
             KEXPECT(img.size == e.size && memcmp(img.data, e.data, e.size) == 0);
         programs++;
     }
-    KEXPECT(programs > 10);
+    KEXPECT_EQ(programs, user_images_count); /* all of them, and nothing else */
     KEXPECT(tar_find(rd, len, "bin/sh", &e) && user_image_find("sh", &img));
 }

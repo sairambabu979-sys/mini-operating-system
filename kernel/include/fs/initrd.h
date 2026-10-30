@@ -12,7 +12,8 @@
 
 /*
  * Checks the initrd boot_info describes, after mm_init: it must lie in
- * usable RAM and be a valid archive (tar_validate). Logs what it found;
+ * usable RAM and be a valid archive (tar_validate) with at least one
+ * entry. Logs what it found;
  * one that fails either check is reported and not used.
  */
 void initrd_init(const struct boot_info *bi);

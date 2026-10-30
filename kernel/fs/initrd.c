@@ -41,9 +41,10 @@ void initrd_init(const struct boot_info *bi)
     const u8 *p = phys_to_virt(phys);
     int entries = tar_validate(p, (usize)size);
 
-    if (entries < 0) {
-        pr_err("[%#llx-%#llx) is not a valid ustar archive: not used\n", (unsigned long long)phys,
-               (unsigned long long)(phys + size));
+    if (entries <= 0) { /* an empty one is most likely pages a loader never filled */
+        pr_err("[%#llx-%#llx) is %s: not used\n", (unsigned long long)phys,
+               (unsigned long long)(phys + size),
+               entries < 0 ? "not a valid ustar archive" : "an archive with no entries");
         return;
     }
     archive = p;

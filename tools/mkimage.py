@@ -101,6 +101,8 @@ def main() -> None:
     args = ap.parse_args()
 
     initrd = args.initrd.read_bytes() if args.initrd else b""
+    if args.initrd and not initrd:
+        die(f"{args.initrd} is empty (leave out --initrd for no initrd)")
     image = build(args.stage1.read_bytes(), args.stage2.read_bytes(), args.kernel.read_bytes(),
                   args.cmdline, initrd)
     args.output.write_bytes(image)
