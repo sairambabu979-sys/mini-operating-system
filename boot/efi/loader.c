@@ -15,7 +15,8 @@
  *   2. claim the kernel's physical range from the firmware
  *      (AllocateAddress), so firmware-owned memory is never
  *      overwritten: if it is taken, fail with a clear message;
- *   3. copy and zero the kernel's segments while boot services still work;
+ *   3. copy and zero the kernel's segments while boot services still work,
+ *      then read the optional \minios\initrd into pages of its own;
  *   4. build page tables (0-4 GiB identity, 0-1 GiB at -2 GiB, plus this
  *      loader's own image and stack identity-mapped wherever the firmware
  *      put them: it keeps running across the CR3 switch);
@@ -174,12 +175,11 @@ static struct efi_file *open_boot_volume(const struct efi_loaded_image *li)
     return root;
 }
 
-/* Reads a whole file into pool memory. NULL (or fatal, if required) when missing. */
-static u8 *read_file(struct efi_file *root, const char16 *path, const char *name, u64 *size,
-                     bool required)
+/* Opens a file and sizes it. NULL (or fatal, if required) when missing. */
+static struct efi_file *open_file(struct efi_file *root, const char16 *path, const char *name,
+                                  u64 *size, bool required)
 {
     struct efi_file *f;
-    u8 *buf;
 
     if (root->open(root, &f, path, EFI_FILE_MODE_READ, 0) != EFI_SUCCESS) {
         if (required)
@@ -189,21 +189,62 @@ static u8 *read_file(struct efi_file *root, const char16 *path, const char *name
     if (f->set_position(f, ~0ull) != EFI_SUCCESS || f->get_position(f, size) != EFI_SUCCESS ||
         f->set_position(f, 0) != EFI_SUCCESS)
         fail("cannot size %s\n", name);
-    if (bs->allocate_pool(EFI_LOADER_DATA, *size + 1, (void **)&buf) != EFI_SUCCESS)
-        fail("out of memory reading %s\n", name);
+    return f;
+}
 
+/* Reads all `size` bytes of an open file into buf, and closes it. */
+static void read_all(struct efi_file *f, u8 *buf, u64 size, const char *name)
+{
     u64 done = 0;
 
-    while (done < *size) {
-        u64 chunk = *size - done;
+    while (done < size) {
+        u64 chunk = size - done;
 
         if (f->read(f, &chunk, buf + done) != EFI_SUCCESS || chunk == 0)
             fail("read error in %s\n", name);
         done += chunk;
     }
-    buf[*size] = 0;
     f->close(f);
+}
+
+/* Reads a whole file into pool memory, NUL-terminated. NULL (or fatal, if required) when missing. */
+static u8 *read_file(struct efi_file *root, const char16 *path, const char *name, u64 *size,
+                     bool required)
+{
+    struct efi_file *f = open_file(root, path, name, size, required);
+    u8 *buf;
+
+    if (!f)
+        return NULL;
+    if (bs->allocate_pool(EFI_LOADER_DATA, *size + 1, (void **)&buf) != EFI_SUCCESS)
+        fail("out of memory reading %s\n", name);
+    read_all(f, buf, *size, name);
+    buf[*size] = 0;
     return buf;
+}
+
+/*
+ * Reads the optional \minios\initrd into whole pages below 1 GiB, where
+ * the kernel finds it through boot_info. Called after load_kernel has
+ * claimed the kernel's fixed range, so the pages cannot land on it. The
+ * map will call these pages usable: the kernel reserves them itself.
+ */
+static void load_initrd(struct efi_file *root, struct boot_info *bi)
+{
+    u64 size;
+    struct efi_file *f = open_file(root, u"\\minios\\initrd", "initrd", &size, false);
+
+    if (!f)
+        return;
+    if (size == 0) {
+        f->close(f);
+        return;
+    }
+    u8 *buf = alloc_pages_below((size + PAGE - 1) / PAGE, BOOT_WINDOW);
+
+    read_all(f, buf, size, "initrd");
+    bi->initrd_phys = (uptr)buf;
+    bi->initrd_size = size;
 }
 
 /* --- kernel ELF --------------------------------------------------------------- */
@@ -541,6 +582,8 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
     }
 
     u64 entry = load_kernel(kernel, kernel_size, bi);
+
+    load_initrd(root, bi);
     u64 pml4 = build_page_tables();
     u64 image_base = (uptr)li->image_base;
 
@@ -559,6 +602,8 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
     efi_log("kernel %#llx-%#llx, entry %#llx, boot_info at %#llx, cmdline \"%s\"\n",
             (unsigned long long)bi->kernel_phys_start, (unsigned long long)bi->kernel_phys_end,
             (unsigned long long)entry, (unsigned long long)(uptr)bi, bi->cmdline);
+    efi_log("initrd %#llx, %llu bytes\n", (unsigned long long)bi->initrd_phys,
+            (unsigned long long)bi->initrd_size);
 
     /* The final memory map. Nothing may allocate (or print) between getting it and
      * ExitBootServices, and the map may still change once: retry on a stale key. */

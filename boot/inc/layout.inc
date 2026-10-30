@@ -11,7 +11,8 @@
 ;   0x07E00 - 0x0FBFF   stage 2 (63 sectors)
 ;   0x10000 - 0x17FFF   disk bounce buffer (64 KiB aligned: never crosses a DMA boundary)
 ;   0x100000 -          kernel PT_LOAD segments (KERNEL_PHYS_MIN)
-;   0x1000000 -         raw kernel ELF staging area (KERNEL_STAGING)
+;   0x1000000 -         raw kernel ELF staging area (KERNEL_STAGING), then the
+;                       initrd, which stays there for the kernel
 
 %ifndef BOOT_LAYOUT_INC
 %define BOOT_LAYOUT_INC
