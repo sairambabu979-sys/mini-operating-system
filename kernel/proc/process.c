@@ -10,8 +10,10 @@
 #include <arch/segments.h>
 #include <core/klog.h>
 #include <core/panic.h>
+#include <fs/initrd.h>
 #include <lib/errno.h>
 #include <lib/string.h>
+#include <lib/tar.h>
 #include <mm/kmalloc.h>
 #include <mm/pmm.h>
 #include <mm/vmm.h>
@@ -22,25 +24,26 @@
 
 #include "../sched/sched_internal.h"
 
-struct raw_image {
-    const char *name;
-    const u8 *start;
-    u64 size;
-};
-
-extern const struct raw_image user_images[];
-extern const u64 user_images_count;
-
 bool user_image_find(const char *name, struct user_image *out)
 {
-    for (u64 i = 0; i < user_images_count; i++) {
-        if (strcmp(user_images[i].name, name) == 0) {
-            *out =
-                (struct user_image){user_images[i].name, user_images[i].start, user_images[i].size};
-            return true;
-        }
-    }
-    return false;
+    char path[sizeof("bin/") + TASK_NAME_MAX] = "bin/";
+    struct tar_entry e;
+    usize len;
+    const u8 *rd = initrd_get(&len);
+    usize n = strlen(name);
+
+    /*
+     * Names in the archive are normalised and mkinitrd refuses "..", so
+     * whatever the name, only a file under bin/ can match ("" is bin/, a
+     * directory, which tar_find never returns).
+     */
+    if (!rd || n >= TASK_NAME_MAX) /* the path must fit */
+        return false;
+    memcpy(path + 4, name, n + 1);
+    if (!tar_find(rd, len, path, &e))
+        return false;
+    *out = (struct user_image){name, e.data, e.size};
+    return true;
 }
 
 /* Maps one zeroed page at va, filled from [src, src + len) at offset `skip`. */

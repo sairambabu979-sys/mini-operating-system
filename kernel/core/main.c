@@ -184,7 +184,8 @@ static void run_selftest(const char *cmdline)
 /*
  * Starts user space and becomes its reaper: init's orphans are adopted by
  * this task, so it waits for anything, forever. The first program is
- * "init" unless "init=NAME" names another (the shell images). With
+ * bin/init in the initrd unless "init=NAME" names another (the shell
+ * images); with no usable initrd there is nothing to run. With
  * "exit-after-init" on the command line (the demo and shell tests), its
  * exit status ends the QEMU run.
  */
@@ -196,6 +197,11 @@ static __noreturn void run_init(const char *cmdline)
     if (cmdline_get(cmdline, "init", name, sizeof(name)) &&
         (name[0] == '\0' || strlen(name) >= TASK_NAME_MAX))
         panic("init=: a program name has 1 to %d characters", TASK_NAME_MAX - 1);
+
+    usize initrd_len;
+
+    if (!initrd_get(&initrd_len)) /* initrd_init said why */
+        panic("cannot start init '%s': no initrd to load it from", name);
     int init_pid = process_spawn(name);
 
     if (init_pid < 0)

@@ -49,6 +49,27 @@ class MkinitrdTest(unittest.TestCase):
             self.assertTrue(all(m.mtime == 0 and m.uid == 0 for m in members.values()))
             self.assertEqual(tar.extractfile("etc/motd").read(), b"data")
 
+    def test_manifest_lists_every_other_file_with_its_hash(self) -> None:
+        a = self.tmp / "a"
+        a.write_bytes(b"a")
+        r = self.run_tool(f"bin/x={a}", f"etc/motd={self.src}", "--manifest", "etc/manifest")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with tarfile.open(self.tmp / "out.tar") as tar:
+            manifest = tar.extractfile("etc/manifest").read().decode()
+        # FNV-1a 64 of "a" is af63dc4c8601ec8c, the published test vector: pins the hash itself.
+        self.assertEqual(self.fnv(b"a"), "af63dc4c8601ec8c")
+        self.assertEqual(manifest, f"af63dc4c8601ec8c 1 bin/x\n{self.fnv(b'data')} 4 etc/motd\n")
+        r = self.run_tool(f"x={a}", "--manifest", "x")
+        self.assertIn("given twice", r.stderr)
+        self.assertIn("bad --manifest", self.run_tool(f"x={a}", "--manifest", "../m").stderr)
+
+    @staticmethod
+    def fnv(data: bytes) -> str:
+        h = 0xCBF29CE484222325
+        for b in data:
+            h = ((h ^ b) * 0x100000001B3) % (1 << 64)
+        return f"{h:016x}"
+
     def test_refuses_bad_paths(self) -> None:
         for dest in ["", "/bin/x", "bin//x", "bin/", "./x", "bin/./x", "../x", "bin/../x"]:
             with self.subTest(dest=dest):

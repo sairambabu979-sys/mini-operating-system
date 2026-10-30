@@ -114,11 +114,16 @@ usable RAM in the map the kernel gets. So the kernel does:
   `initrd: N entries, K KiB at ADDR`. One that fails is logged as an error
   and not used; none at all logs `initrd: none`.
 
-The kernel tests check that the initrd holds every user program byte for
-byte as the build packed it, under both loaders and with 4 GiB, and that
-draining the PMM never hands out one of its frames. `disk-noinitrd.img`
-and `disk-badinitrd.img` (the kernel ELF given as the initrd) boot without
-one.
+Every user program runs from it (`bin/NAME`; see
+[usermode.md](usermode.md)). The kernel tests check that it holds every
+program the build made as a loadable ELF, and every byte of every file as
+the build packed it (mkinitrd writes each file's size and 64-bit FNV-1a
+hash to `etc/manifest`; tar checksums cover only headers), under both
+loaders and with 4 GiB, and that draining the PMM never hands out one of
+its frames; every
+test that runs a program reads it from there. `disk-noinitrd.img` and
+`disk-badinitrd.img` (the kernel ELF given as the initrd) must panic,
+saying there is no initrd to start `init` from.
 
 ## Single source of truth
 
@@ -164,7 +169,7 @@ ESP (FAT32, built by tools/mkesp.py with mtools)
   /EFI/BOOT/BOOTX64.EFI   the loader
   /minios/kernel.elf      the same stripped kernel the BIOS image carries
   /minios/cmdline         the command line (one line)
-  /minios/initrd          the initrd (optional)
+  /minios/initrd          the initrd (the loader boots without it; init needs it)
 ```
 
 | Step | Detail |

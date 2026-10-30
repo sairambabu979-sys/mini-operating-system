@@ -158,7 +158,7 @@ $(BUILD)/kernel/%.asm.o: kernel/%.asm | $(ASM_OFFSETS)
 	$(Q)$(NASM) $(KERNEL_ASFLAGS) $< -o $@
 
 # --------------------------------------------------------------------------
-# User programs, embedded in the kernel image (kernel/proc/process.c)
+# User programs, packed into the initrd as bin/NAME (kernel/proc/process.c loads them)
 # --------------------------------------------------------------------------
 
 USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/user/lib/lineedit.o \
@@ -166,9 +166,9 @@ USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/user/lib/lineedit
 	$(BUILD)/user/user/lib/crt0.asm.o
 USER_PROGRAMS := $(sort $(basename $(notdir $(wildcard user/programs/*.c user/programs/*.asm))))
 USER_ELFS     := $(USER_PROGRAMS:%=$(BUILD)/user/bin/%.elf)
-USER_IMAGES   := $(BUILD)/gen/user_images.o
 
-# The shell's `help` lists the embedded programs. Generated as the Makefile
+# The shell's `help` lists the programs, and a kernel test checks the initrd
+# holds them all. Generated as the Makefile
 # is read, and rewritten only when the list changes (as cmdline.stamp is).
 comma := ,
 USER_PROGRAMS_H    := $(BUILD)/gen/user_programs.h
@@ -177,6 +177,7 @@ $(shell mkdir -p $(BUILD)/gen && { printf '%s\n' '$(USER_PROGRAMS_LINE)' | \
 	cmp -s - $(USER_PROGRAMS_H) || printf '%s\n' '$(USER_PROGRAMS_LINE)' > $(USER_PROGRAMS_H); })
 $(BUILD)/user/user/programs/sh.o: $(USER_PROGRAMS_H)
 $(BUILD)/user/user/programs/sh.o: USER_CFLAGS += -I$(BUILD)/gen
+$(BUILD)/tests/kernel/test_initrd.o: $(USER_PROGRAMS_H)
 
 $(BUILD)/user/%.o: %.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
@@ -200,21 +201,14 @@ $(BUILD)/user/bin/%.elf: $(BUILD)/user/user/programs/%.asm.o user/programs/%.ld
 	$(call msg,LD,$@)
 	$(Q)$(LD) $(USER_LDFLAGS) -T user/programs/$*.ld $< -o $@
 
-$(BUILD)/gen/user_images.asm: $(USER_ELFS) tools/gen_user_images.py
-	@mkdir -p $(@D)
-	$(call msg,GEN,$@)
-	$(Q)$(PYTHON) tools/gen_user_images.py -o $@ \
-	  $(foreach p,$(USER_PROGRAMS),$(p)=$(BUILD)/user/bin/$(p).elf)
-
-# The initrd: every user program as bin/NAME, in a ustar archive. Every image carries it.
+# The initrd: every user program as bin/NAME, in a ustar archive, with etc/manifest holding
+# each file's hash for the kernel tests. Every image carries it, and the kernel runs its
+# programs from there.
 INITRD := $(BUILD)/initrd.tar
 $(INITRD): $(USER_ELFS) tools/mkinitrd.py
 	$(call msg,INITRD,$@)
-	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
-
-$(USER_IMAGES): $(BUILD)/gen/user_images.asm $(USER_ELFS)
-	$(call msg,NASM,$<)
-	$(Q)$(NASM) -f elf64 $< -o $@
+	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ --manifest etc/manifest \
+	  $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
 
 # Code that UBSan reports through must not itself be instrumented.
 $(BUILD)/kernel/core/ubsan.o: KERNEL_CFLAGS += -fno-sanitize=all
@@ -238,13 +232,13 @@ $(BUILD)/gen/%.o: $(BUILD)/gen/%.c $(FLAGS_STAMP)
 	$(call msg,CC,$<)
 	$(Q)$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_PASS1): $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms_empty.o kernel/linker.ld
+$(KERNEL_PASS1): $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o kernel/linker.ld
 	$(call msg,LD,$@)
-	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms_empty.o -o $@
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o -o $@
 
-$(KERNEL_ELF): $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms.o kernel/linker.ld
+$(KERNEL_ELF): $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o kernel/linker.ld
 	$(call msg,LD,$@)
-	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms.o -o $@
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o -o $@
 	$(Q)$(PYTHON) tools/gen_ksyms.py --check $@ $(KSYMS)
 
 $(KERNEL_STRIPPED): $(KERNEL_ELF)
@@ -315,7 +309,8 @@ $(eval $(call bios_image,$(BENCH_IMG),bench))
 $(eval $(call bios_image,$(HANG_IMG),selftest=hang))
 $(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
 
-# Without an initrd, and with one that is not an archive (the kernel ELF): both boot without it.
+# Without an initrd, and with one that is not an archive (the kernel ELF): both must panic
+# saying so, since init lives in the initrd.
 $(NOINITRD_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
 	$(call msg,IMAGE,$@)
 	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
@@ -612,11 +607,11 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --reject '^sh> \nsh> ' -- -cpu max,-apic
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BADINIT_IMG) --log-dir $(BUILD)/logs --expect-panic \
 	  --expect "cannot start init 'no-such-prog': -2"
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(NOINITRD_IMG) --log-dir $(BUILD)/logs --no-tap \
-	  --expect '^initrd: none$$' --expect 'init exited with status 0'
-	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BADINITRD_IMG) --log-dir $(BUILD)/logs --no-tap \
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(NOINITRD_IMG) --log-dir $(BUILD)/logs --expect-panic \
+	  --expect '^initrd: none$$' --expect "cannot start init 'init': no initrd to load it from"
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BADINITRD_IMG) --log-dir $(BUILD)/logs --expect-panic \
 	  --expect '^ERROR: initrd: \[0x[0-9a-f]+000-0x[0-9a-f]+\) is not a valid ustar archive: not used$$' \
-	  --expect 'init exited with status 0'
+	  --expect "cannot start init 'init': no initrd to load it from"
 	$(Q)for m in $(A20_METHODS); do \
 	  $(PYTHON) tests/qemu/run_tests.py --image $(BUILD)/disk-a20-$$m.img --log-dir $(BUILD)/logs \
 	    --no-tap --expect "A20 test: off, then on by $$m" \

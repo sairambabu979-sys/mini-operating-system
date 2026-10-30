@@ -125,7 +125,7 @@ the three `disk-a20-*.img` (`exit-after-init`), `disk-shell.img` and
 `disk-uefi-shell.img` (`init=sh exit-after-init`), `disk-badinit.img`
 (`init=no-such-prog exit-after-init`), `disk-noinitrd.img` and
 `disk-badinitrd.img` (`exit-after-init`, without an initrd and with one that
-is not an archive), `disk-bench.img` (`bench`), and the two
+is not an archive: both must panic, as init lives in the initrd), `disk-bench.img` (`bench`), and the two
 `disk-selftest-*.img`. Every other image carries the initrd.
 
 ## What is in it
@@ -264,8 +264,9 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
   there is no AP bring-up, no per-CPU run queues and no TLB shootdown.
 - **ISA interrupts only.** No PCI interrupt routing, no MSI, and no ACPI AML
   interpreter (so no ACPI power-off or sleep states).
-- **No filesystem.** User programs are embedded in the kernel image and
-  started by name; there is `spawn`, but no `fork`/`exec`.
+- **No filesystem for programs to use.** The kernel runs programs from the
+  initrd, a read-only archive the loader hands over, started by name; there
+  is `spawn`, but no `fork`/`exec`, and programs cannot open files.
 - **No signals, pipes or IPC.** Processes talk only through exit statuses.
 - **Input from a PS/2 keyboard or COM1 only.** There is no USB stack: a USB
   keyboard can only reach it through the firmware's PS/2 emulation, and
@@ -353,7 +354,7 @@ kernel/lib/      printf, strings, cmdline, scan code decoder, text grid, framebu
 kernel/include/  headers (uapi/ is shared with user space)
 user/            crt0, libsys, line editor, programs/ (init, sh, and what they run)
 tests/           host/ (Linux), kernel/ (KTEST), qemu/ (runner, its self-test, typing), gdb/
-tools/           mkimage, mkesp, gen_ksyms, gen_user_images, check_kernel, gdb/
+tools/           mkimage, mkesp, mkinitrd, gen_ksyms, check_kernel, gdb/
 ```
 
 ## License
