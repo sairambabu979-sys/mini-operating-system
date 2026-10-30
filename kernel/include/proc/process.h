@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * User processes: a task with its own address space, loaded from one of
- * the program images embedded in the kernel.
+ * User processes: a task with its own address space, loaded from a
+ * program in the initrd (bin/NAME).
  *
  * User address-space layout:
  *
@@ -28,7 +28,11 @@ struct user_image {
     u64 size;
 };
 
-/* Looks up an image embedded at build time (build/<config>/gen/user_images.asm). */
+/*
+ * Looks up the program bin/NAME in the initrd. False for no initrd, a name
+ * of TASK_NAME_MAX characters or more, or no such file. The image is read
+ * in place: the initrd is never freed.
+ */
 bool user_image_find(const char *name, struct user_image *out);
 
 /* Arguments for a program, after its name (see SPAWN_ARGS_MAX in <uapi/syscall.h>). */

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 /*
  * The initrd both loaders hand over: there, valid, in place, and holding
- * every user program byte for byte as the build packed it. The kernel
- * also embeds those programs, so the copies can be compared exactly:
- * any frame of the initrd handed out and written since boot shows here.
+ * every user program the build made, which is where the kernel now runs
+ * them from. That its frames are never handed out is test_pmm.c's drain.
  */
 #include <arch/paging.h>
 #include <core/boot.h>
@@ -11,9 +10,10 @@
 #include <fs/initrd.h>
 #include <lib/string.h>
 #include <lib/tar.h>
+#include <proc/elf.h>
 #include <proc/process.h>
-
-extern const u64 user_images_count; /* generated: build/<config>/gen/user_images.asm */
+#include <proc/uaccess.h>
+#include <user_programs.h> /* generated: USER_PROGRAM_NAMES */
 
 KTEST(initrd_is_handed_over_and_valid)
 {
@@ -30,26 +30,45 @@ KTEST(initrd_is_handed_over_and_valid)
     KEXPECT(rd && tar_validate(rd, len) > 0);
 }
 
-KTEST(initrd_holds_every_program_byte_for_byte)
+/* Every program the build made is bin/NAME, a loadable ELF, and bin/ holds nothing else. */
+KTEST(initrd_holds_every_program)
 {
-    usize len, pos = 0, programs = 0;
+    static const char *const names[] = {USER_PROGRAM_NAMES};
+    usize len, pos = 0, in_bin = 0;
     const u8 *rd = initrd_get(&len);
     struct tar_entry e;
     struct user_image img;
+    struct elf_image elf;
 
-    KEXPECT(rd != NULL);
-    if (!rd)
-        return;
-    while (tar_next(rd, len, &pos, &e) > 0) {
-        if (e.is_dir || strncmp(e.name, "bin/", 4) != 0)
-            continue;
-        bool found = user_image_find(e.name + 4, &img);
+    for (usize i = 0; i < ARRAY_SIZE(names); i++) {
+        bool found = user_image_find(names[i], &img);
 
         KEXPECT(found);
         if (found)
-            KEXPECT(img.size == e.size && memcmp(img.data, e.data, e.size) == 0);
-        programs++;
+            KEXPECT_EQ(elf_parse(img.data, img.size, USER_MIN, USER_TOP, &elf), 0);
     }
-    KEXPECT_EQ(programs, user_images_count); /* all of them, and nothing else */
-    KEXPECT(tar_find(rd, len, "bin/sh", &e) && user_image_find("sh", &img));
+    while (rd && tar_next(rd, len, &pos, &e) > 0)
+        if (!e.is_dir && strncmp(e.name, "bin/", 4) == 0)
+            in_bin++;
+    KEXPECT_EQ(in_bin, ARRAY_SIZE(names));
+}
+
+/* A name is looked up under bin/ only; a name too long for a task is refused, not truncated. */
+KTEST(initrd_program_names_stay_in_bin)
+{
+    static const char *const refused[] = {
+        "",
+        "bin",
+        "bin/hello",
+        "../bin/hello",
+        "./hello",
+        "hello/",
+        "no-such-program",
+        "hello0123456789a", /* 16 characters: one too many */
+    };
+    struct user_image img;
+
+    KEXPECT(user_image_find("hello", &img) && strcmp(img.name, "hello") == 0);
+    for (usize i = 0; i < ARRAY_SIZE(refused); i++)
+        KEXPECT(!user_image_find(refused[i], &img));
 }

@@ -6,10 +6,12 @@ Sources: `kernel/proc/`, `kernel/arch/x86_64/{syscall.asm,isr.asm,usercopy.c,fpu
 ## Processes
 
 A process is a task with its own address space and FPU state, started
-from one of the ELF programs embedded in the kernel image
-(`tools/gen_user_images.py`). There is no filesystem; `spawn(name, args)`
-creates a process from an image, as `posix_spawn` would, rather than via
-fork/exec. The program starts as `main(argc, argv)`, `argv[0]` its name:
+from an ELF program in the initrd, `bin/NAME` (`user_image_find()`;
+[boot.md](boot.md#the-initrd) has how the initrd arrives). The kernel
+reads the program in place, as the initrd is never freed. Programs cannot
+open files themselves; `spawn(name, args)` creates a process from a
+program, as `posix_spawn` would, rather than via fork/exec. With no usable
+initrd there is no `init`, and the kernel panics saying so. The program starts as `main(argc, argv)`, `argv[0]` its name:
 the kernel copies the strings to the top of the new stack with the
 NULL-terminated vector below them, leaves RSP 16-byte aligned below both,
 and passes argc in RDI and argv in RSI, which `crt0` hands on to `main`.
