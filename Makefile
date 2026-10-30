@@ -206,6 +206,12 @@ $(BUILD)/gen/user_images.asm: $(USER_ELFS) tools/gen_user_images.py
 	$(Q)$(PYTHON) tools/gen_user_images.py -o $@ \
 	  $(foreach p,$(USER_PROGRAMS),$(p)=$(BUILD)/user/bin/$(p).elf)
 
+# The initrd: every user program as bin/NAME, in a ustar archive (not loaded yet).
+INITRD := $(BUILD)/initrd.tar
+$(INITRD): $(USER_ELFS) tools/mkinitrd.py
+	$(call msg,INITRD,$@)
+	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
+
 $(USER_IMAGES): $(BUILD)/gen/user_images.asm $(USER_ELFS)
 	$(call msg,NASM,$<)
 	$(Q)$(NASM) -f elf64 $< -o $@
@@ -369,7 +375,7 @@ $(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_S
 .PHONY: all
 all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
 	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) \
-	$(SHELL_IMG) $(BADINIT_IMG) $(UEFI_SHELL_IMG) $(KERNEL_ELF)
+	$(SHELL_IMG) $(BADINIT_IMG) $(UEFI_SHELL_IMG) $(KERNEL_ELF) $(INITRD)
 
 # --------------------------------------------------------------------------
 # Running
@@ -425,7 +431,8 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
 	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c \
-	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c kernel/lib/kbdmap.c
+	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c kernel/lib/kbdmap.c \
+	kernel/lib/tar.c
 HOST_TEST_USER_SRCS   := user/lib/lineedit.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
@@ -463,8 +470,12 @@ test: host-test check-binary qemu-test gdb-test
 gdb-test: $(DISK_IMG) $(KERNEL_ELF)
 	$(Q)$(PYTHON) tests/gdb/test_gdb_helpers.py --image $(DISK_IMG) --kernel $(KERNEL_ELF)
 
-host-test: $(HOST_TEST_BIN)
+# The tar reader's tests also read the initrd the build makes.
+$(BUILD)/host/tests/host/test_tar.o: HOST_CFLAGS += -DINITRD_PATH='"$(INITRD)"'
+
+host-test: $(HOST_TEST_BIN) $(INITRD)
 	$(Q)$(HOST_TEST_BIN)
+	$(Q)$(PYTHON) tests/host/test_mkinitrd.py -q
 
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
