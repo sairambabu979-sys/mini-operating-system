@@ -23,7 +23,7 @@
 #define USER_STACK_SIZE (64ull * 1024)
 
 struct user_image {
-    const char *name;
+    const char *name; /* the caller's string, not a copy */
     const u8 *data;
     u64 size;
 };

@@ -178,7 +178,6 @@ $(shell mkdir -p $(BUILD)/gen && { printf '%s\n' '$(USER_PROGRAMS_LINE)' | \
 $(BUILD)/user/user/programs/sh.o: $(USER_PROGRAMS_H)
 $(BUILD)/user/user/programs/sh.o: USER_CFLAGS += -I$(BUILD)/gen
 $(BUILD)/tests/kernel/test_initrd.o: $(USER_PROGRAMS_H)
-$(BUILD)/tests/kernel/test_initrd.o: KERNEL_CFLAGS += -I$(BUILD)/gen
 
 $(BUILD)/user/%.o: %.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
@@ -202,12 +201,14 @@ $(BUILD)/user/bin/%.elf: $(BUILD)/user/user/programs/%.asm.o user/programs/%.ld
 	$(call msg,LD,$@)
 	$(Q)$(LD) $(USER_LDFLAGS) -T user/programs/$*.ld $< -o $@
 
-# The initrd: every user program as bin/NAME, in a ustar archive. Every image carries it,
-# and the kernel runs its programs from there.
+# The initrd: every user program as bin/NAME, in a ustar archive, with etc/manifest holding
+# each file's hash for the kernel tests. Every image carries it, and the kernel runs its
+# programs from there.
 INITRD := $(BUILD)/initrd.tar
 $(INITRD): $(USER_ELFS) tools/mkinitrd.py
 	$(call msg,INITRD,$@)
-	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
+	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ --manifest etc/manifest \
+	  $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
 
 # Code that UBSan reports through must not itself be instrumented.
 $(BUILD)/kernel/core/ubsan.o: KERNEL_CFLAGS += -fno-sanitize=all
