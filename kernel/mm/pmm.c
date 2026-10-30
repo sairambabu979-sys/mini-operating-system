@@ -4,9 +4,13 @@
  *
  * Init (runs after vmm_init, so all RAM is reachable through the direct map):
  *   1. size the struct page array for the highest usable frame and place
- *      it in usable RAM above the kernel image,
+ *      it in usable RAM above the kernel image, clear of the initrd,
  *   2. hand every usable frame to the buddy allocator except the reserved
- *      ranges: low 1 MiB, kernel image, and the page array itself.
+ *      ranges: low 1 MiB, kernel image, initrd, and the page array itself.
+ *
+ * The initrd is reserved wherever the loader says it is, valid or not:
+ * the map calls its pages usable, and they must not be handed out under
+ * it. A range that is not usable RAM reserves nothing.
  *
  * Locking: one IRQ-safe spinlock around every buddy operation.
  */
@@ -33,23 +37,47 @@ static u64 pfn_of(u64 phys)
     return phys >> PAGE_SHIFT;
 }
 
-/* Lowest page-aligned spot of `bytes` in usable RAM within [lo, hi). */
-static u64 find_free_area(u64 bytes, u64 lo, u64 hi)
+/*
+ * Sorts ranges by start, dropping empty ones; returns the count. They may
+ * still overlap (a loader could put the initrd on the kernel): both users
+ * below only ever move forward past a range's end, which handles that.
+ */
+static usize sort_ranges(struct phys_range *r, usize n)
+{
+    usize out = 0;
+
+    for (usize i = 0; i < n; i++)
+        if (r[i].start < r[i].end)
+            r[out++] = r[i];
+    for (usize i = 1; i < out; i++)
+        for (usize j = i; j > 0 && r[j].start < r[j - 1].start; j--) {
+            struct phys_range t = r[j];
+
+            r[j] = r[j - 1];
+            r[j - 1] = t;
+        }
+    return out;
+}
+
+/* Lowest page-aligned spot of `bytes` in usable RAM within [lo, hi), clear of the (sorted) reserved ranges. */
+static u64 find_free_area(u64 bytes, u64 lo, u64 hi, const struct phys_range *rsv, usize nrsv)
 {
     for (usize i = 0; i < nregions; i++) {
         if (regions[i].type != E820_USABLE)
             continue;
-        u64 start = MAX(regions[i].base, lo);
+        u64 start = ALIGN_UP(MAX(regions[i].base, lo), PAGE_SIZE);
         u64 end = MIN(regions[i].end, hi);
 
-        start = ALIGN_UP(start, PAGE_SIZE);
+        for (usize j = 0; j < nrsv; j++) /* sorted by start: step past each one in the way */
+            if (rsv[j].start < start + bytes && rsv[j].end > start)
+                start = ALIGN_UP(rsv[j].end, PAGE_SIZE);
         if (start < end && end - start >= bytes)
             return start;
     }
     return 0;
 }
 
-/* Adds [start, end) to the allocator minus the (sorted, disjoint) reserved ranges. */
+/* Adds [start, end) to the allocator minus the reserved ranges (sorted by start). */
 static void add_usable(u64 start, u64 end, const struct phys_range *rsv, usize nrsv)
 {
     for (usize i = 0; i < nrsv && start < end; i++) {
@@ -90,25 +118,30 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
 
     metadata_bytes = ALIGN_UP(nframes * sizeof(struct page), PAGE_SIZE);
 
-    u64 meta = find_free_area(metadata_bytes, kernel_end, HHDM_SIZE);
+    struct phys_range reserved[4] = {
+        {0, PMM_LOW_RESERVED_END},
+        {ALIGN_DOWN(bi->kernel_phys_start, PAGE_SIZE), kernel_end},
+        {0, 0}, /* the initrd, if any */
+        {0, 0}, /* the page array, once placed */
+    };
+
+    if (bi->initrd_size) /* validate_boot_info: no overflow, inside the direct map */
+        reserved[2] = (struct phys_range){ALIGN_DOWN(bi->initrd_phys, PAGE_SIZE),
+                                          ALIGN_UP(bi->initrd_phys + bi->initrd_size, PAGE_SIZE)};
+    usize nreserved = sort_ranges(reserved, 3);
+    u64 meta = find_free_area(metadata_bytes, kernel_end, HHDM_SIZE, reserved, nreserved);
 
     if (meta == 0)
         panic("pmm: no room for %llu KiB of page metadata",
               (unsigned long long)(metadata_bytes / 1024));
 
     buddy_init(&buddy, phys_to_virt(meta), nframes);
-
-    /* Sorted and disjoint: low memory < kernel image < metadata. */
-    const struct phys_range reserved[] = {
-        {0, PMM_LOW_RESERVED_END},
-        {ALIGN_DOWN(bi->kernel_phys_start, PAGE_SIZE), kernel_end},
-        {meta, meta + metadata_bytes},
-    };
+    reserved[nreserved++] = (struct phys_range){meta, meta + metadata_bytes};
+    nreserved = sort_ranges(reserved, nreserved);
 
     for (usize i = 0; i < nregions; i++) {
         if (regions[i].type == E820_USABLE && regions[i].base < HHDM_SIZE)
-            add_usable(regions[i].base, MIN(regions[i].end, HHDM_SIZE), reserved,
-                       ARRAY_SIZE(reserved));
+            add_usable(regions[i].base, MIN(regions[i].end, HHDM_SIZE), reserved, nreserved);
     }
 
     pr_info("%llu MiB managed, %llu KiB metadata at %#llx, highest frame %#llx\n",

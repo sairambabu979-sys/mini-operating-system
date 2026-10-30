@@ -24,6 +24,7 @@
 #include <drivers/qemu.h>
 #include <drivers/screen.h>
 #include <drivers/serial.h>
+#include <fs/initrd.h>
 #include <lib/cmdline.h>
 #include <lib/string.h>
 #include <mm/mm.h>
@@ -111,6 +112,18 @@ static const struct boot_info *validate_boot_info(u64 phys)
     memcpy(&boot_info_copy, bi, sizeof(boot_info_copy));
     boot_info_copy.mmap_count = MIN(boot_info_copy.mmap_count, BOOT_MMAP_MAX);
     boot_info_copy.cmdline[BOOT_CMDLINE_MAX - 1] = '\0';
+
+    /* An initrd the kernel could not reach is no initrd: nothing reserves or reads it. */
+    u64 rd = boot_info_copy.initrd_phys, rd_size = boot_info_copy.initrd_size;
+
+    if (rd_size &&
+        (!IS_ALIGNED(rd, PAGE_SIZE_4K) || rd_size > HHDM_SIZE || rd > HHDM_SIZE - rd_size)) {
+        pr_warn("initrd at %#llx (%llu bytes) is unaligned or outside the direct map: ignored\n",
+                (unsigned long long)rd, (unsigned long long)rd_size);
+        rd_size = 0;
+    }
+    boot_info_copy.initrd_phys = rd_size ? rd : 0;
+    boot_info_copy.initrd_size = rd_size;
     return &boot_info_copy;
 }
 
@@ -214,6 +227,7 @@ __noreturn void kmain(u64 boot_info_phys)
 
     cpu_detect_features();
     mm_init(boot_info);
+    initrd_init(boot_info);
 
     screen_init(boot_info); /* replays everything logged so far */
     acpi_init(boot_info);

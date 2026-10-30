@@ -6,7 +6,8 @@
 ;   2. enable A20 (BIOS, then keyboard controller, then fast A20)
 ;   3. collect the E820 memory map into boot_info
 ;   4. verify the CPU supports long mode
-;   5. load the raw kernel ELF to KERNEL_STAGING through unreal mode
+;   5. load the raw kernel ELF to KERNEL_STAGING through unreal mode, and
+;      the initrd (if any) right after it
 ;   6. build identity + higher-half page tables for the first 1 GiB
 ;   7. switch straight from real mode to long mode
 ;   8. copy PT_LOAD segments into place, zero their .bss tails
@@ -61,6 +62,8 @@ stage2_header:
 .kernel_lba:        dd 0
 .kernel_sectors:    dd 0
 .cmdline:           times BOOT_CMDLINE_MAX db 0
+.initrd_sectors:    dd 0                ; on disk right after the kernel; 0 for none
+.initrd_size:       dd 0                ; bytes
 
 stage2_main:
     cli
@@ -81,6 +84,7 @@ stage2_main:
     jne     err_header
     cmp     dword [stage2_header.kernel_sectors], 0
     je      err_header
+    call    check_initrd_header
 
     ; Clear boot_info so every field has a defined value.
     mov     di, BOOT_INFO_PHYS
@@ -400,13 +404,41 @@ detect_memory:
     mov     [BOOT_INFO_PHYS + BI_MMAP_COUNT], bp
     ret
 
-; The ELF is staged at KERNEL_STAGING; make sure that range is usable RAM
-; before writing to it, rather than corrupting whatever lives there.
+; An initrd has a size that fills its last sector, and starts on a page:
+; 0 < size, size + 511 within initrd_sectors, kernel_sectors a multiple of 8.
+; No initrd is both fields 0.
+check_initrd_header:
+    mov     eax, [stage2_header.initrd_size]
+    mov     ecx, [stage2_header.initrd_sectors]
+    test    ecx, ecx
+    jnz     .present
+    test    eax, eax
+    jnz     err_header
+    ret
+.present:
+    test    eax, eax
+    jz      err_header
+    test    dword [stage2_header.kernel_sectors], 7
+    jnz     err_header              ; the initrd would not start on a page
+    add     eax, 511
+    jc      err_header
+    shr     eax, 9                  ; sectors the size needs
+    cmp     eax, ecx
+    jne     err_header
+    ret
+
+; The ELF and the initrd are staged at KERNEL_STAGING; make sure that range
+; is usable RAM before writing to it, rather than corrupting whatever lives
+; there. It must also end below 4 GiB, where unreal mode can reach.
 check_staging_area:
     mov     edx, [stage2_header.kernel_sectors]
-    shl     edx, 9                  ; bytes
-    add     edx, KERNEL_STAGING     ; EDX = staging end (exclusive)
+    add     edx, [stage2_header.initrd_sectors]
     jc      err_stage
+    cmp     edx, (0x100000000 - KERNEL_STAGING) >> 9
+    jae     err_stage               ; would end at or above 4 GiB
+    mov     [staged_sectors], edx
+    shl     edx, 9                  ; bytes: no carry, by the check above
+    add     edx, KERNEL_STAGING     ; EDX = staging end (exclusive)
     mov     si, BOOT_INFO_PHYS + BI_MMAP
     mov     cx, [BOOT_INFO_PHYS + BI_MMAP_COUNT]
 .entry:
@@ -487,7 +519,7 @@ enter_unreal:
 load_kernel:
     mov     eax, [stage2_header.kernel_lba]
     mov     [kernel_dap.lba], eax
-    mov     eax, [stage2_header.kernel_sectors]
+    mov     eax, [staged_sectors]   ; the kernel, then the initrd
     mov     [sectors_left], eax
     mov     dword [dest_ptr], KERNEL_STAGING
 .chunk:
@@ -532,6 +564,15 @@ fill_boot_info_real:
     movzx   eax, byte [boot_drive]
     mov     [BOOT_INFO_PHYS + BI_BOOT_DRIVE], eax
     mov     dword [BOOT_INFO_PHYS + BI_LOADER], BOOT_LOADER_BIOS
+    mov     eax, [stage2_header.initrd_size]
+    test    eax, eax
+    jz      .done                   ; no initrd: both fields stay 0
+    mov     [BOOT_INFO_PHYS + BI_INITRD_SIZE], eax
+    mov     eax, [stage2_header.kernel_sectors]
+    shl     eax, 9
+    add     eax, KERNEL_STAGING     ; below 4 GiB: check_staging_area
+    mov     [BOOT_INFO_PHYS + BI_INITRD_PHYS], eax
+.done:
     ret
 
 ; --------------------------------------------------------------------------
@@ -774,6 +815,7 @@ kernel_dap:
 .lba:
     dq      0
 
+staged_sectors: dd 0                ; kernel_sectors + initrd_sectors
 sectors_left:   dd 0
 dest_ptr:       dd 0
 boot_drive:     db 0

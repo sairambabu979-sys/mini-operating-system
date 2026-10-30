@@ -123,14 +123,16 @@ console=serial loglevel=warn`), `disk-ktest-x2apic.img` (`ktest x2apic`),
 `disk-panic.img` (`selftest=panic`), `disk-demo.img`, `disk-uefi-demo.img` and
 the three `disk-a20-*.img` (`exit-after-init`), `disk-shell.img` and
 `disk-uefi-shell.img` (`init=sh exit-after-init`), `disk-badinit.img`
-(`init=no-such-prog exit-after-init`), `disk-bench.img` (`bench`), and the two
-`disk-selftest-*.img`.
+(`init=no-such-prog exit-after-init`), `disk-noinitrd.img` and
+`disk-badinitrd.img` (`exit-after-init`, without an initrd and with one that
+is not an archive), `disk-bench.img` (`bench`), and the two
+`disk-selftest-*.img`. Every other image carries the initrd.
 
 ## What is in it
 
 | Area | Highlights |
 |------|------------|
-| **Boot** | Own UEFI loader (PE32+, no SDK) and own BIOS loader, with the same hand-off: one kernel binary, one test suite, both firmwares. BIOS path: own MBR + stage 2. A20 by three methods (BIOS call, 8042 keyboard controller, port `0x92`), each followed by a wraparound check; since SeaBIOS starts with A20 on, three test builds of stage 2 turn it off and let only one method turn it back on. E820 map. Unreal-mode kernel load. Real mode straight to long mode. ELF64 loading with full bounds checks. A versioned `boot_info` ABI defined once in C, with NASM offsets generated from it, passed by address: the BIOS loader uses page `0x1000`, the UEFI loader any page below 1 GiB the firmware has free, and the kernel copies it at entry. The UEFI loader runs wherever the firmware loads it, above 4 GiB included. |
+| **Boot** | Own UEFI loader (PE32+, no SDK) and own BIOS loader, with the same hand-off: one kernel binary, one test suite, both firmwares. BIOS path: own MBR + stage 2. A20 by three methods (BIOS call, 8042 keyboard controller, port `0x92`), each followed by a wraparound check; since SeaBIOS starts with A20 on, three test builds of stage 2 turn it off and let only one method turn it back on. E820 map. Unreal-mode kernel load. Real mode straight to long mode. ELF64 loading with full bounds checks. A versioned `boot_info` ABI defined once in C, with NASM offsets generated from it, passed by address: the BIOS loader uses page `0x1000`, the UEFI loader any page below 1 GiB the firmware has free, and the kernel copies it at entry. The UEFI loader runs wherever the firmware loads it, above 4 GiB included. Both loaders hand over an initrd (a ustar archive of the user programs), which the kernel reserves, validates and keeps. |
 | **Traps** | GDT/TSS with IST stacks for `#DF`, NMI and `#MC`. 256 generated entry stubs, one trap-frame layout. Decoded panics with symbolized backtraces (two-pass symbol-table link). Exception-table fixups. |
 | **Memory** | E820 sanitizer. Buddy allocator (pure, fuzzed on the host). Own page tables bootstrapped without an allocator. Direct map of RAM only: non-executable, with the kernel image read-only through it. NX, WP, SMEP, SMAP. Guard-paged `vmalloc` that reuses a freed range, for the same size, only after 16 newer frees. Slab `kmalloc`, with use-after-free, double-free and overflow detection in debug builds. |
 | **Console** | COM1, plus a screen: UEFI GOP framebuffer (write-combining) or BIOS VGA text, so a machine without a serial port can still show the boot and later panics, if its firmware leaves VGA text mode or a linear 32-bit GOP framebuffer. A log ring replays the boot onto the screen. Outside a panic, drawing never runs with interrupts off once they are on, because a slow scroll would cost the clock ticks. |

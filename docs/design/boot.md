@@ -8,11 +8,16 @@ How a powered-on PC gets from the BIOS to `kmain()`. Sources: `boot/stage1.asm`,
 ```
 LBA 0        stage 1: MBR (446 B code, 1 active partition entry, 0x55AA)
 LBA 1..63    stage 2: exactly 63 sectors; header at byte 4
-LBA 64..     kernel ELF (stripped), padded to a whole sector
+LBA 64..     kernel ELF (stripped), padded to a whole sector, or to a whole
+             page (8 sectors) when an initrd follows
+then         the initrd (a ustar archive), padded to a whole sector
 ```
 
 `mkimage.py` patches the stage-2 header with the kernel's start LBA, its
-sector count and the kernel command line. The loader has no hard-coded sizes.
+sector count, the kernel command line, and the initrd's sector count and
+size in bytes (both 0 for none). The loader has no hard-coded sizes.
+Stage 2 refuses (`!K`) an initrd header whose size does not need exactly
+its sector count, or one that follows a kernel of a part page.
 The run image and the test image contain the same kernel binary; only the
 command line differs (`""` vs `"ktest"`).
 
@@ -28,7 +33,7 @@ command line differs (`""` vs `"ktest"`).
 | `0x07E00-0x0FBFF` | stage 2 |
 | `0x10000-0x17FFF` | disk bounce buffer (64 KiB-aligned, never crosses a DMA boundary) |
 | `0x100000-` | kernel segments, at their ELF `p_paddr` |
-| `0x1000000-` | raw kernel ELF staging area (checked against E820 before use) |
+| `0x1000000-` | staging area: the raw kernel ELF, then the initrd, page-aligned right after it (all checked against E820 before use, and to end below 4 GiB) |
 
 ## Sequence
 
@@ -38,7 +43,7 @@ command line differs (`""` vs `"ktest"`).
 | `2` | Stage 2 running; COM1 initialized; `boot_info` page cleared. |
 | `3` | A20 enabled: BIOS `2401h` → 8042 output port → port `0x92`, each verified by a wraparound test. A first test skips all three when A20 is already on. |
 | `4` | E820 map collected (20- and 24-byte replies, the ACPI 3.0 "enabled" attribute ignored, zero-length entries dropped); staging area verified as usable RAM. |
-| `5` | CPU checked for long mode; kernel read in 32 KiB chunks and copied above 1 MiB through **unreal mode** (re-entered after every BIOS call, since a BIOS may reload segment registers). |
+| `5` | CPU checked for long mode; kernel and initrd read in 32 KiB chunks and copied above 1 MiB through **unreal mode** (re-entered after every BIOS call, since a BIOS may reload segment registers). The initrd stays where it was staged, and `boot_info.initrd_phys` and `initrd_size` say where. |
 | `6` | Page tables built; PICs masked, NMI disabled, null IDT loaded; **real mode → long mode in one step** (`CR4.PAE`, `EFER.LME`, then `CR0.PE`+`CR0.PG` together). |
 | `7` | ELF validated (class, endianness, type, machine, header sizes, entry in the higher half). Each `PT_LOAD` is bounds-checked against the file and the staging area, copied, and its `.bss` tail zeroed. `boot_info` is published with **magic written last**, then the loader jumps to `e_entry`. |
 
@@ -91,6 +96,29 @@ first version read RFLAGS in `kmain`, after `_start` had cleared both flags,
 so the check could not fail: a loader that jumped in with interrupts on
 still passed.
 
+## The initrd
+
+Both loaders leave the initrd in RAM where they put it, page-aligned, and
+neither reserves it: the BIOS staging area and the UEFI loader's pages are
+usable RAM in the map the kernel gets. So the kernel does:
+
+- `validate_boot_info` drops an initrd that is unaligned or does not fit in
+  the direct map, with a warning;
+- the PMM reserves the rest, page-rounded, whether or not it turns out to
+  be a valid archive, and places its page array clear of it. With 4 GiB of
+  RAM that array is 30 MiB and would otherwise start below the BIOS
+  staging area and run over the initrd;
+- `initrd_init` (`kernel/fs/initrd.c`), right after `mm_init`, requires it
+  to be all usable RAM and a valid archive (`tar_validate`), and logs
+  `initrd: N entries, K KiB at ADDR`. One that fails is logged as an error
+  and not used; none at all logs `initrd: none`.
+
+The kernel tests check that the initrd holds every user program byte for
+byte as the build packed it, under both loaders and with 4 GiB, and that
+draining the PMM never hands out one of its frames. `disk-noinitrd.img`
+and `disk-badinitrd.img` (the kernel ELF given as the initrd) boot without
+one.
+
 ## Single source of truth
 
 `struct boot_info` is defined only in C. `kernel/asm-offsets.c` is compiled
@@ -126,20 +154,22 @@ loader at 5 GiB: that run requires `loader image at` an address above
 `boot_info.loader` records which loader ran (`boot_info` version 2), and
 `boot_info.acpi_rsdp` carries the ACPI RSDP from the EFI configuration
 table (version 3; the BIOS loader leaves it 0 and the kernel scans for it),
-and `boot_info.framebuffer` the GOP framebuffer (version 4; see
-[console.md](console.md)).
+`boot_info.framebuffer` the GOP framebuffer (version 4; see
+[console.md](console.md)), and `boot_info.initrd_phys` and `initrd_size`
+the initrd (version 5).
 
 ```
 ESP (FAT32, built by tools/mkesp.py with mtools)
   /EFI/BOOT/BOOTX64.EFI   the loader
   /minios/kernel.elf      the same stripped kernel the BIOS image carries
   /minios/cmdline         the command line (one line)
+  /minios/initrd          the initrd (optional)
 ```
 
 | Step | Detail |
 |------|--------|
 | Claim memory | `AllocatePages(AllocateAddress)` for the kernel's physical range: if the firmware owns it, the loader stops with a message instead of overwriting firmware memory. `boot_info` gets any free page below 1 GiB (`AllocateMaxAddress`), logged with the kernel's range. |
-| Load | Files are read through the volume the loader itself came from (LoadedImage → SimpleFileSystem). The kernel ELF gets the same checks as in stage 2, then is copied and its `.bss` zeroed **while boot services still run**. |
+| Load | Files are read through the volume the loader itself came from (LoadedImage → SimpleFileSystem). The kernel ELF gets the same checks as in stage 2, then is copied and its `.bss` zeroed **while boot services still run**. Then the initrd, if there is one, is read into pages of its own below 1 GiB (`AllocateMaxAddress`, after the kernel's range is claimed, so it cannot land there) and logged. |
 | ACPI | The RSDP from the configuration table: the ACPI 2.0 GUID first, 1.0 accepted. |
 | Framebuffer | The Graphics Output Protocol's current mode, unchanged: base, size, pitch, and the channel layout (RGB, BGR, or byte-aligned bit masks). A Blt-only GOP, or none, leaves the console on serial. |
 | Page tables | 0–4 GiB identity and 0–1 GiB at `-2 GiB`, with 2 MiB pages. The loader keeps running after the CR3 switch, so it also identity-maps its own image and the stack around its current `RSP`, wherever the firmware put them, and logs `loader image at ..., stack near ...`. The 8 GiB run tests the image mapping; OVMF keeps the stack below 4 GiB, so mapping a stack above it (nothing on the stack is used after the switch) has not run. |

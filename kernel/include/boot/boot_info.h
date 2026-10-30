@@ -19,7 +19,7 @@
 #include <types.h>
 
 #define BOOT_INFO_MAGIC   0x4F464E49544F4F42ull /* "BOOTINFO" in little-endian */
-#define BOOT_INFO_VERSION 4u                    /* 4: `framebuffer` added */
+#define BOOT_INFO_VERSION 5u                    /* 5: `initrd_phys`, `initrd_size` added */
 #define BOOT_INFO_PHYS    0x1000u               /* where the BIOS loader puts it */
 #define BOOT_MMAP_MAX     128u
 #define BOOT_CMDLINE_MAX  128u
@@ -72,11 +72,20 @@ struct boot_info {
     struct e820_entry mmap[BOOT_MMAP_MAX];
     u64 acpi_rsdp; /* physical address of the RSDP, or 0: the kernel scans for it */
     struct boot_framebuffer framebuffer;
+    /*
+     * The initrd (a ustar archive), page-aligned in usable RAM below 4 GiB,
+     * or both 0 for none. The loader leaves it where it put it: the kernel
+     * reserves the range itself, since the map calls it usable.
+     */
+    u64 initrd_phys;
+    u64 initrd_size; /* bytes */
 };
 
 static_assert(sizeof(struct e820_entry) == 24, "E820 entries are 24 bytes (ACPI 3.0)");
 static_assert(sizeof(struct boot_framebuffer) == 24, "no padding: the BIOS loader zeroes it");
 static_assert(__builtin_offsetof(struct boot_info, mmap) % 8 == 0, "mmap must be 8-aligned");
+static_assert(__builtin_offsetof(struct boot_info, initrd_phys) % 8 == 0,
+              "stage 2 stores it as a qword");
 static_assert(sizeof(struct boot_info) <= 4096, "boot_info must fit in its page");
 static_assert(__builtin_offsetof(struct boot_info, cmdline) == 40, "layout fixed since version 1");
 

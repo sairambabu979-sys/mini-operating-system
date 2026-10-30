@@ -206,7 +206,7 @@ $(BUILD)/gen/user_images.asm: $(USER_ELFS) tools/gen_user_images.py
 	$(Q)$(PYTHON) tools/gen_user_images.py -o $@ \
 	  $(foreach p,$(USER_PROGRAMS),$(p)=$(BUILD)/user/bin/$(p).elf)
 
-# The initrd: every user program as bin/NAME, in a ustar archive (not loaded yet).
+# The initrd: every user program as bin/NAME, in a ustar archive. Every image carries it.
 INITRD := $(BUILD)/initrd.tar
 $(INITRD): $(USER_ELFS) tools/mkinitrd.py
 	$(call msg,INITRD,$@)
@@ -288,16 +288,18 @@ PANIC_IMG       := $(BUILD)/disk-panic.img
 DEMO_IMG        := $(BUILD)/disk-demo.img
 SHELL_IMG       := $(BUILD)/disk-shell.img
 BADINIT_IMG     := $(BUILD)/disk-badinit.img
+NOINITRD_IMG    := $(BUILD)/disk-noinitrd.img
+BADINITRD_IMG   := $(BUILD)/disk-badinitrd.img
 BENCH_IMG       := $(BUILD)/disk-bench.img
 HANG_IMG        := $(BUILD)/disk-selftest-hang.img
 TRIPLEFAULT_IMG := $(BUILD)/disk-selftest-triplefault.img
 
 # $(call bios_image,<image>,<command line>): a BIOS disk image of the same kernel.
 define bios_image
-$(1): $$(STAGE1) $$(STAGE2) $$(KERNEL_STRIPPED) tools/mkimage.py
+$(1): $$(STAGE1) $$(STAGE2) $$(KERNEL_STRIPPED) $$(INITRD) tools/mkimage.py
 	$$(call msg,IMAGE,$$@)
 	$$(Q)$$(PYTHON) tools/mkimage.py --stage1 $$(STAGE1) --stage2 $$(STAGE2) \
-	  --kernel $$(KERNEL_STRIPPED) --cmdline "$(2)" -o $$@
+	  --kernel $$(KERNEL_STRIPPED) --initrd $$(INITRD) --cmdline "$(2)" -o $$@
 endef
 
 $(eval $(call bios_image,$(TEST_IMG),ktest))
@@ -313,12 +315,23 @@ $(eval $(call bios_image,$(BENCH_IMG),bench))
 $(eval $(call bios_image,$(HANG_IMG),selftest=hang))
 $(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
 
+# Without an initrd, and with one that is not an archive (the kernel ELF): both boot without it.
+$(NOINITRD_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
+	$(call msg,IMAGE,$@)
+	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
+	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
+$(BADINITRD_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py
+	$(call msg,IMAGE,$@)
+	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
+	  --kernel $(KERNEL_STRIPPED) --initrd $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
+
 A20_IMGS := $(A20_METHODS:%=$(BUILD)/disk-a20-%.img)
 
-$(BUILD)/disk-a20-%.img: $(STAGE1) $(BUILD)/boot/stage2-a20-%.bin $(KERNEL_STRIPPED) tools/mkimage.py
+$(BUILD)/disk-a20-%.img: $(STAGE1) $(BUILD)/boot/stage2-a20-%.bin $(KERNEL_STRIPPED) $(INITRD) \
+	  tools/mkimage.py
 	$(call msg,IMAGE,$@)
 	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(BUILD)/boot/stage2-a20-$*.bin \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
+	  --kernel $(KERNEL_STRIPPED) --initrd $(INITRD) --cmdline "exit-after-init" -o $@
 
 # --------------------------------------------------------------------------
 # UEFI loader (boot/efi) and UEFI boot images
@@ -350,10 +363,10 @@ UEFI_SHELL_IMG := $(BUILD)/disk-uefi-shell.img
 
 # $(call uefi_image,<image>,<command line>): the same kernel behind the UEFI loader.
 define uefi_image
-$(1): $$(EFI_LOADER) $$(KERNEL_STRIPPED) tools/mkesp.py $(3)
+$(1): $$(EFI_LOADER) $$(KERNEL_STRIPPED) $$(INITRD) tools/mkesp.py $(3)
 	$$(call msg,ESP,$$@)
 	$$(Q)$$(PYTHON) tools/mkesp.py --loader $$(EFI_LOADER) --kernel $$(KERNEL_STRIPPED) \
-	  --cmdline "$(2)" -o $$@
+	  --initrd $$(INITRD) --cmdline "$(2)" -o $$@
 endef
 
 $(eval $(call uefi_image,$(UEFI_TEST_IMG),ktest))
@@ -367,15 +380,16 @@ $(shell mkdir -p $(BUILD) && { printf '%s' '$(CMDLINE)' | cmp -s - $(CMDLINE_STA
 
 $(eval $(call uefi_image,$(UEFI_IMG),$(CMDLINE),$(CMDLINE_STAMP)))
 
-$(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_STAMP)
+$(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) $(INITRD) tools/mkimage.py $(CMDLINE_STAMP)
 	$(call msg,IMAGE,$@)
 	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "$(CMDLINE)" -o $@
+	  --kernel $(KERNEL_STRIPPED) --initrd $(INITRD) --cmdline "$(CMDLINE)" -o $@
 
 .PHONY: all
 all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
 	$(HANG_IMG) $(TRIPLEFAULT_IMG) $(UEFI_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) \
-	$(SHELL_IMG) $(BADINIT_IMG) $(UEFI_SHELL_IMG) $(KERNEL_ELF) $(INITRD)
+	$(SHELL_IMG) $(BADINIT_IMG) $(UEFI_SHELL_IMG) $(NOINITRD_IMG) $(BADINITRD_IMG) $(KERNEL_ELF) \
+	$(INITRD)
 
 # --------------------------------------------------------------------------
 # Running
@@ -488,6 +502,7 @@ X10  := xxxxxxxxxx
 X100 := $(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)$(X10)
 qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) $(HANG_IMG) \
 	  $(TRIPLEFAULT_IMG) $(UEFI_TEST_IMG) $(UEFI_DEMO_IMG) $(A20_IMGS) $(SHELL_IMG) $(BADINIT_IMG) \
+	  $(NOINITRD_IMG) $(BADINITRD_IMG) \
 	  $(UEFI_SHELL_IMG)
 	$(Q)$(PYTHON) tests/qemu/check_runner.py --hang-image $(HANG_IMG) \
 	  --triplefault-image $(TRIPLEFAULT_IMG) --clean-image $(DEMO_IMG) --log-dir $(BUILD)/logs
@@ -597,6 +612,11 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --reject '^sh> \nsh> ' -- -cpu max,-apic
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BADINIT_IMG) --log-dir $(BUILD)/logs --expect-panic \
 	  --expect "cannot start init 'no-such-prog': -2"
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(NOINITRD_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --expect '^initrd: none$$' --expect 'init exited with status 0'
+	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(BADINITRD_IMG) --log-dir $(BUILD)/logs --no-tap \
+	  --expect '^ERROR: initrd: \[0x[0-9a-f]+000-0x[0-9a-f]+\) is not a valid ustar archive: not used$$' \
+	  --expect 'init exited with status 0'
 	$(Q)for m in $(A20_METHODS); do \
 	  $(PYTHON) tests/qemu/run_tests.py --image $(BUILD)/disk-a20-$$m.img --log-dir $(BUILD)/logs \
 	    --no-tap --expect "A20 test: off, then on by $$m" \

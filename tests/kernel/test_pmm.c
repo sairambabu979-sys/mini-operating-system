@@ -22,6 +22,14 @@ static bool in_usable_ram(u64 phys, u64 len)
     return false;
 }
 
+/* True if [p, p + len) overlaps the initrd the loader left (reserved even if unused). */
+static bool overlaps_initrd(u64 p, u64 len)
+{
+    const struct boot_info *bi = boot_info_get();
+
+    return bi->initrd_size && p < bi->initrd_phys + bi->initrd_size && p + len > bi->initrd_phys;
+}
+
 KTEST(pmm_is_consistent_after_init)
 {
     const char *why = NULL;
@@ -44,8 +52,8 @@ KTEST(pmm_manages_nearly_all_usable_ram)
     pmm_get_stats(&st);
     u64 managed = st.managed_frames * PAGE_SIZE;
     const struct boot_info *bi = boot_info_get();
-    u64 overhead =
-        PMM_LOW_RESERVED_END + (bi->kernel_phys_end - bi->kernel_phys_start) + st.metadata_bytes;
+    u64 overhead = PMM_LOW_RESERVED_END + (bi->kernel_phys_end - bi->kernel_phys_start) +
+                   st.metadata_bytes + ALIGN_UP(bi->initrd_size, PAGE_SIZE);
 
     KEXPECT(managed <= usable);
     KEXPECT(managed + overhead + 2 * PAGE_SIZE >= usable); /* only the known reservations */
@@ -64,6 +72,7 @@ KTEST(pmm_allocations_avoid_reserved_memory)
         KEXPECT(IS_ALIGNED(p, len));
         KEXPECT(p >= PMM_LOW_RESERVED_END);
         KEXPECT(p + len <= bi->kernel_phys_start || p >= bi->kernel_phys_end);
+        KEXPECT(!overlaps_initrd(p, len));
         KEXPECT(in_usable_ram(p, len));
         pmm_free_pages(p, order);
     }
@@ -72,12 +81,13 @@ KTEST(pmm_allocations_avoid_reserved_memory)
 /*
  * Drain the allocator page by page, threading a list through the pages
  * themselves (which also proves each one is real, writable RAM), then give
- * everything back and require the exact starting state.
+ * everything back and require the exact starting state. No page handed
+ * out may lie in the initrd.
  */
 KTEST(pmm_exhaust_and_restore)
 {
     struct pmm_stats before, drained, after;
-    u64 head = 0, count = 0;
+    u64 head = 0, count = 0, overlapping = 0;
     const char *why = NULL;
 
     pmm_get_stats(&before);
@@ -86,6 +96,8 @@ KTEST(pmm_exhaust_and_restore)
 
         if (p == PMM_ALLOC_FAILED)
             break;
+        if (overlaps_initrd(p, PAGE_SIZE))
+            overlapping++;
         *(volatile u64 *)phys_to_virt(p) = head;
         head = p;
         count++;
@@ -93,6 +105,7 @@ KTEST(pmm_exhaust_and_restore)
     pmm_get_stats(&drained);
     KEXPECT_EQ(count, before.free_frames);
     KEXPECT_EQ(drained.free_frames, 0);
+    KEXPECT_EQ(overlapping, 0); /* not one free frame lies in the initrd */
 
     while (head != 0) {
         u64 next = *(volatile u64 *)phys_to_virt(head);

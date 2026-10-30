@@ -5,6 +5,7 @@
     /EFI/BOOT/BOOTX64.EFI   the loader (the default removable-media boot path)
     /minios/kernel.elf      the same stripped kernel the BIOS images carry
     /minios/cmdline         the kernel command line
+    /minios/initrd          the initrd, if given
 
 Uses mtools, so no root and no loop devices. The image is a "superfloppy"
 (no partition table), which OVMF and most firmware boot from USB media.
@@ -30,6 +31,7 @@ def main() -> int:
     ap.add_argument("--loader", type=Path, required=True)
     ap.add_argument("--kernel", type=Path, required=True)
     ap.add_argument("--cmdline", default="")
+    ap.add_argument("--initrd", type=Path)
     ap.add_argument("-o", "--output", type=Path, required=True)
     args = ap.parse_args()
 
@@ -41,6 +43,8 @@ def main() -> int:
     run("mmd", "-i", img, "::/EFI", "::/EFI/BOOT", "::/minios")
     run("mcopy", "-i", img, str(args.loader), "::/EFI/BOOT/BOOTX64.EFI")
     run("mcopy", "-i", img, str(args.kernel), "::/minios/kernel.elf")
+    if args.initrd:
+        run("mcopy", "-i", img, str(args.initrd), "::/minios/initrd")
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as c:
         c.write(args.cmdline + "\n")
     try:
