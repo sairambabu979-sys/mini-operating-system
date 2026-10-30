@@ -34,6 +34,18 @@ static void seal(uint8_t *h)
     h[155] = ' ';
 }
 
+/* The same, summing the bytes as signed chars, as some old tars did. */
+static void seal_signed(uint8_t *h)
+{
+    int sum = 0;
+
+    memset(h + 148, ' ', 8);
+    for (int i = 0; i < 512; i++)
+        sum += (int8_t)h[i];
+    snprintf((char *)h + 148, 8, "%06o", (unsigned)sum);
+    h[155] = ' ';
+}
+
 /* Appends one entry; returns its header, which a test may then corrupt (and reseal). */
 static uint8_t *add(struct archive *a, const char *prefix, const char *name, char type,
                     const void *data, size_t size)
@@ -70,6 +82,16 @@ static void sample(struct archive *a)
     add(a, "", "etc/motd", '0', "welcome\n", 8);
     add(a, "", "empty", '0', NULL, 0);
     finish(a);
+}
+
+/* Appends a pax record "LEN KEY=VALUE\n" to out (LEN counts its own digits); returns its length. */
+static size_t pax_record(char *out, const char *kv)
+{
+    size_t body = strlen(kv) + 2, len = body + 1; /* " " and "\n", then at least one digit */
+
+    while (len != body + (size_t)snprintf(NULL, 0, "%zu", len))
+        len = body + (size_t)snprintf(NULL, 0, "%zu", len);
+    return (size_t)sprintf(out, "%zu %s\n", len, kv);
 }
 
 TEST(tar_reads_files_and_directories_in_order)
@@ -162,6 +184,133 @@ TEST(tar_skips_links_and_other_types)
     EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
     EXPECT_STREQ(e.name, "file");
     EXPECT_EQ(tar_validate(a.buf, a.len), 1);
+
+    /* a skipped entry's size is checked too: it would move the walk past the buffer */
+    snprintf((char *)a.buf + 124, 12, "%011o", 1u << 20);
+    seal(a.buf);
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    pos = a.len + 1; /* and a position past the end is refused, not read */
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), -EINVAL);
+}
+
+TEST(tar_reads_other_writers_headers)
+{
+    static struct archive a;
+    struct tar_entry e;
+    size_t pos = 0;
+    uint8_t *h;
+    char prefix[156], name[101], full[257];
+
+    a.len = 0;
+    add(&a, "", "./", '5', NULL, 0);  /* the archive's root, as "tar -C dir ." writes it */
+    add(&a, "", "old", '\0', "o", 1); /* pre-POSIX type for a file */
+    h = add(&a, "", "spaced", '0', "abc", 3);
+    memcpy(h + 124, "    0000003\0", 12); /* leading spaces in a number */
+    seal(h);
+    h = add(&a, "junk", "gnu", '0', "g", 1);
+    memcpy(h + 257, "ustar  \0", 8); /* GNU magic: offset 345 is not a prefix */
+    seal(h);
+    h = add(&a, "", "caf\xe9", '0', "c", 1);
+    seal_signed(h); /* a signed sum differs from the unsigned one only above 0x7f */
+    add(&a, "", "na\xefve", '0', "n", 1); /* and the POSIX unsigned sum of the same */
+    memset(prefix, 'p', 155);
+    prefix[155] = '\0';
+    memset(name, 'n', 100);
+    name[100] = '\0';
+    add(&a, prefix, name, '0', NULL, 0); /* the longest name a ustar header holds */
+    finish(&a);
+
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
+    EXPECT_STREQ(e.name, "old");
+    EXPECT_TRUE(!e.is_dir && e.size == 1);
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
+    EXPECT_STREQ(e.name, "spaced");
+    EXPECT_TRUE(e.size == 3 && memcmp(e.data, "abc", 3) == 0);
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
+    EXPECT_STREQ(e.name, "gnu");
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
+    EXPECT_STREQ(e.name, "caf\xe9");
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
+    EXPECT_STREQ(e.name, "na\xefve");
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
+    snprintf(full, sizeof(full), "%s/%s", prefix, name);
+    EXPECT_EQ(strlen(e.name), 256);
+    EXPECT_STREQ(e.name, full);
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 0);
+}
+
+TEST(tar_skips_harmless_pax_headers_and_refuses_the_rest)
+{
+    static struct archive a;
+    static const char *const refused[] = {"path=bin/real", "linkpath=x", "size=99"};
+    char rec[64];
+    size_t n;
+
+    a.len = 0;
+    n = pax_record(rec, "mtime=1700000000.5");
+    add(&a, "", "PaxHeaders/f", 'x', rec, n);
+    add(&a, "", "f", '0', "z", 1);
+    n = pax_record(rec, "comment=all of them");
+    add(&a, "", "GlobalHead", 'g', rec, n);
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), 1);
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        a.len = 0;
+        n = pax_record(rec, refused[i]);
+        add(&a, "", "PaxHeaders/f", i == 2 ? 'g' : 'x', rec, n);
+        add(&a, "", "f", '0', "z", 1);
+        finish(&a);
+        EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    }
+
+    static const char *const malformed[] = {
+        "99 mtime=1\n",   /* longer than the header */
+        "12 mtime=1\n",   /* LEN one long: past the header's end */
+        "10 mtime=1\n",   /* LEN one short: the record does not end in "\n" */
+        "6 a=bX6 c=d\n",  /* the first record does not end in "\n", the second does */
+        " mtime=1\n",     /* no length */
+        "6 a=b\n0 c=d\n", /* a LEN of 0 would never move the walk on */
+        "18446744073709551646 a=bbbbbb\n", /* 2^64 + 30: wraps to this record's length */
+        "10mtime=1\n",                     /* no space */
+        "8 mtime\n",                       /* no "=" */
+        "5 =1\n",                          /* no key */
+    };
+    for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); i++) {
+        a.len = 0;
+        add(&a, "", "PaxHeaders/f", 'x', malformed[i], strlen(malformed[i]));
+        add(&a, "", "f", '0', "z", 1);
+        finish(&a);
+        EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    }
+
+    /* a LEN past the header's end, where the padding happens to hold the "\n" */
+    a.len = 0;
+    add(&a, "", "PaxHeaders/f", 'x', "12 mtime=1\n", 11);
+    a.buf[512 + 11] = '\n';
+    add(&a, "", "f", '0', "z", 1);
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+}
+
+TEST(tar_refuses_names_it_cannot_read)
+{
+    static struct archive a;
+
+    a.len = 0;
+    add(&a, "", "././@LongLink", 'L', "a-very-long-name", 17); /* GNU: the next header's name */
+    add(&a, "", "a-very-lo", '0', "z", 1);
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    a.len = 0;
+    add(&a, "", "././@LongLink", 'K', "target", 7); /* and a link's target */
+    add(&a, "", "l", '2', NULL, 0);
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    a.len = 0;
+    add(&a, "", ".", '0', "z", 1); /* a file named for the root */
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
 }
 
 TEST(tar_rejects_bad_headers)
@@ -237,11 +386,14 @@ TEST(tar_reads_the_built_initrd)
     fclose(f);
     EXPECT_TRUE(len > 0 && len < sizeof(buf));
     EXPECT_TRUE(tar_validate(buf, len) > 10);
-    EXPECT_TRUE(tar_find(buf, len, "bin/hello", &e));
-    EXPECT_TRUE(e.size > 4 && memcmp(e.data,
-                                     "\x7f"
-                                     "ELF",
-                                     4) == 0);
+    bool found = tar_find(buf, len, "bin/hello", &e);
+
+    EXPECT_TRUE(found);
+    if (found)
+        EXPECT_TRUE(e.size > 4 && memcmp(e.data,
+                                         "\x7f"
+                                         "ELF",
+                                         4) == 0);
     EXPECT_TRUE(tar_find(buf, len, "bin/sh", &e));
 }
 #endif
@@ -255,9 +407,17 @@ TEST(tar_fuzz_never_leaves_the_buffer)
 {
     static struct archive base, a;
     unsigned results[3] = {0}; /* walks ending cleanly, with -EINVAL, entries seen */
+    char rec[64];
 
     srand(1234);
-    sample(&base);
+    base.len = 0; /* one of every kind of header the reader handles */
+    add(&base, "", "bin/", '5', NULL, 0);
+    add(&base, "", "bin/hello", '0', "HELLO", 5);
+    add(&base, "", "link", '2', NULL, 0);
+    add(&base, "", "PaxHeaders/x", 'x', rec, pax_record(rec, "mtime=1"));
+    add(&base, "usr/share", "doc/a", '0', "a", 1);
+    add(&base, "", "old", '\0', "welcome\n", 8);
+    finish(&base);
     for (int iter = 0; iter < 20000; iter++) {
         memcpy(a.buf, base.buf, base.len);
         a.len = base.len;

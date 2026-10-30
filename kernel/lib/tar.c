@@ -103,7 +103,7 @@ static int check_pax(const u8 *d, usize size)
                 return -EINVAL; /* longer than the header: and no overflow below */
             rec = rec * 10 + (usize)(d[i] - '0');
         }
-        if (i == at || i >= size || d[i] != ' ' || rec < i - at + 3 || rec > size - at ||
+        if (i >= size || d[i] != ' ' || rec < i - at + 3 || rec > size - at ||
             d[at + rec - 1] != '\n')
             return -EINVAL;
         const u8 *key = d + i + 1;

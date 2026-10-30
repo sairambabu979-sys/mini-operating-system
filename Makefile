@@ -475,6 +475,7 @@ $(BUILD)/host/tests/host/test_tar.o: HOST_CFLAGS += -DINITRD_PATH='"$(INITRD)"'
 
 host-test: $(HOST_TEST_BIN) $(INITRD)
 	$(Q)$(HOST_TEST_BIN)
+	$(Q)$(PYTHON) tests/host/test_mkinitrd.py -q
 
 # The panic run checks the whole crash path: decode, CR2, registers and a
 # backtrace symbolized through the faulting function back to kmain.
