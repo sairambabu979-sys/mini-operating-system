@@ -1,8 +1,8 @@
 # Mini Operating System — Engineering Plan
 
 > Status: **v1.0.0** = M0–M8 · **v1.1.0** = everything merged after it (parts 2–4) ·
-> **v1.2.0** = the keyboard, COM1 input and the shell · **v1.3.0** = arguments for programs;
-> §11 records the main additions and fixes, several of which fix v1.0.0 code ·
+> **v1.2.0** = the keyboard, COM1 input and the shell · **v1.3.0** = arguments for programs ·
+> **v1.4.0** = the initrd, with files programs can read; §11 records the main additions and fixes, several of which fix v1.0.0 code ·
 > Target: x86_64, single core, QEMU first, never yet booted on real hardware
 >
 > This is the plan as written before any code, kept as the record of what was
@@ -460,7 +460,7 @@ M6 carry most of the schedule risk.
 2. Priority scheduling / MLFQ, with latency benchmarks against RR
 3. SMP bring-up (INIT-SIPI-SIPI, per-CPU run queues, real spinlocks)
 4. Copy-on-write `fork()`
-5. initrd + a minimal VFS, so programs no longer need embedding
+5. initrd + a minimal VFS, so programs no longer need embedding (done, read-only; see §11)
 6. UEFI loader producing the same `boot_info` (done; see §11)
 7. KASLR for the kernel image
 
@@ -552,6 +552,12 @@ or something the implementation taught us.
 | Item | Notes |
 |------|-------|
 | Keyboard, COM1 receive and a shell | A PS/2 keyboard through the 8042 on IRQ 1 and COM1 receive on IRQ 4 feed one queue that `read()` (syscall 8) drains. The kernel decodes scan codes, because only it sees the keyboard; the reading program edits the line and echoes, because only it knows what a line is. `init=NAME` picks the first process, and `sh` runs programs by name. Tests type without host input through the 8042's command `0xD2` and the UART's loopback; `run_tests.py` types real sessions through QMP `send-key` and over COM1. See [design/input.md](design/input.md). |
+
+**Built after v1.3** (released as v1.4.0)
+
+| Item | Notes |
+|------|-------|
+| initrd and read-only files (stretch goal 5) | A ustar archive the build makes (every program in `/bin`, `rootfs/` at `/`, and a hash manifest), carried by both loaders (`boot_info` version 5) and reserved by the PMM, which also places its page array clear of it. Programs load from it instead of being embedded in the kernel, which shrinks from about 690 to 430 KiB (debug build). `open`, `read`, `close` and `readdir` (syscalls 9-11) read it by absolute path; `cat` and `ls` use them. No VFS layer: one read-only file system needs none yet. The tar reader is fuzzed on the host, and the path layer host-tested; building part 2 turned up an allocator layout that would have overwritten the initrd with 4 GiB of RAM, and the adversarial reviews of the four parts found, among others, a test that let a corrupted program pass and reads that ended at the wrong place on a partly writable buffer. Each is now caught by a test. See [design/boot.md](design/boot.md#the-initrd) and [design/usermode.md](design/usermode.md). |
 
 **Learned the hard way** (each one is now covered by a test or a check)
 
