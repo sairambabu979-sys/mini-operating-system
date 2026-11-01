@@ -140,6 +140,7 @@ is not an archive: both must panic, as init lives in the initrd), `disk-bench.im
 | **Scheduling** | Preemptive round robin. Preemption on interrupt exit, only when no lock is held. Wait queues that cannot lose wakeups, even when preempted mid-wait. Sleeping mutexes, sleep, exit codes, orphan adoption. |
 | **Processes** | Per-process address spaces, ELF loader, syscall/sysret. SYSRET avoided for non-canonical returns (CVE-2012-0217), with recovery when `iretq` itself faults. Validated user copies. Eager FPU switching, from a zeroed initial state. Faults kill only the faulting process (a machine check panics). RFLAGS.NT and AC set in ring 3 can neither crash another task nor switch SMAP off. |
 | **Input** | PS/2 keyboard through the 8042 (translation to scan code set 1, US layout, every controller wait bounded, the A20 and reset lines never touched) on IRQ 1, and COM1 receive on IRQ 4, into one queue that `read()` drains: raw bytes, no echo. `read()` blocks without losing a wakeup and rejects a bad buffer before taking a byte. The shell edits the line itself (Backspace, Ctrl-U, Ctrl-C, Ctrl-D; escape sequences swallowed) and runs programs by name, with up to 8 arguments split at spaces. |
+| **Files** | An initrd (a ustar archive the build makes with every program in `/bin` and `rootfs/` at `/`) that both loaders hand over and the kernel reserves, checks and runs programs from. Read-only `open`, `read`, `close` and `readdir` by absolute path, with a per-process table of 8 open files; `cat` and `ls`, and a shell whose `help` lists `/bin`. The tar reader and the path layer are pure code, host-tested and fuzzed; the kernel tests check every file against a hash manifest written into the initrd. |
 | **Hardening** | W^X in kernel and user space, kernel UBSan, stack protector, guard pages, poisoned heap (debug builds), and build-time checks for the flags whose absence corrupts silently. |
 
 ## Architecture
@@ -264,9 +265,10 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
   there is no AP bring-up, no per-CPU run queues and no TLB shootdown.
 - **ISA interrupts only.** No PCI interrupt routing, no MSI, and no ACPI AML
   interpreter (so no ACPI power-off or sleep states).
-- **No filesystem for programs to use.** The kernel runs programs from the
-  initrd, a read-only archive the loader hands over, started by name; there
-  is `spawn`, but no `fork`/`exec`, and programs cannot open files.
+- **A read-only file system only.** Files are the initrd's: no writing,
+  creating or deleting, no current directory (paths are absolute), and no
+  disk driver to load anything else. Programs start by name from `/bin`;
+  there is `spawn`, but no `fork`/`exec`.
 - **No signals, pipes or IPC.** Processes talk only through exit statuses.
 - **Input from a PS/2 keyboard or COM1 only.** There is no USB stack: a USB
   keyboard can only reach it through the firmware's PS/2 emulation, and
@@ -330,13 +332,13 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 
 - [`docs/PLAN.md`](docs/PLAN.md): architecture, decisions, milestones, risks, and how the build differed from the plan
 - [`docs/releases/`](docs/releases/): release notes, which are also the annotated tag messages
-- [`docs/design/boot.md`](docs/design/boot.md): BIOS and UEFI boot paths, memory layout, debugging
+- [`docs/design/boot.md`](docs/design/boot.md): BIOS and UEFI boot paths, memory layout, the initrd, debugging
 - [`docs/design/traps.md`](docs/design/traps.md): GDT/TSS/IDT, exception policy, panic, sanitizers, legacy IRQs, locks
 - [`docs/design/interrupts.md`](docs/design/interrupts.md): ACPI discovery, local APIC, I/O APIC, HPET, calibration
 - [`docs/design/console.md`](docs/design/console.md): log ring, screen consoles, drawing without losing ticks
 - [`docs/design/memory.md`](docs/design/memory.md): memory map, buddy allocator, page tables, heaps
 - [`docs/design/scheduler.md`](docs/design/scheduler.md): context switch, preemption, lost-wakeup safety
-- [`docs/design/usermode.md`](docs/design/usermode.md): processes, syscall entry/exit, SYSRET hazard, user memory access
+- [`docs/design/usermode.md`](docs/design/usermode.md): processes, syscall entry/exit, SYSRET hazard, user memory access, files
 - [`docs/design/input.md`](docs/design/input.md): the 8042 and COM1 receive, the input queue, `read()`, the shell
 
 ## Repository layout
@@ -349,10 +351,12 @@ kernel/core/     kmain, panic, klog, irq, time, input, ksyms, UBSan, ktest, benc
 kernel/mm/       memmap, buddy, pmm, vmm, vmalloc, kmalloc
 kernel/sched/    scheduler, mutex
 kernel/proc/     processes, ELF validation, syscalls
+kernel/fs/       the initrd, and paths over it (tarfs)
 kernel/drivers/  serial, 8042, screen (framebuffer, VGA text), I/O APIC, HPET, PIT, PIC, QEMU exit
 kernel/lib/      printf, strings, cmdline, scan code decoder, text grid, framebuffer drawing, font
 kernel/include/  headers (uapi/ is shared with user space)
-user/            crt0, libsys, line editor, programs/ (init, sh, and what they run)
+user/            crt0, libsys, line editor, programs/ (init, sh, cat, ls, and what they run)
+rootfs/          files the build puts in the initrd as they are (etc/motd)
 tests/           host/ (Linux), kernel/ (KTEST), qemu/ (runner, its self-test, typing), gdb/
 tools/           mkimage, mkesp, mkinitrd, gen_ksyms, check_kernel, gdb/
 ```

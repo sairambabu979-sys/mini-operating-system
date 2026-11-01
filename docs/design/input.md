@@ -199,7 +199,7 @@ arguments (`echo` prints them back). On a finished line:
 | Line | Output |
 |------|--------|
 | empty | nothing |
-| `help` | `builtins: help exit`, `programs:`, then each program the build put in the initrd |
+| `help` | `builtins: help exit`, `programs (in /bin):`, then each file `readdir("/bin")` lists |
 | `exit` | the shell exits 0 |
 | `help` or `exit` with words after it | `sh: help takes no arguments` (or `exit`) |
 | a program name, then up to 8 words | the program, run with the words as its arguments: its output, then `[exit N]` |

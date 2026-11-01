@@ -31,7 +31,13 @@ long sys_spawnv(const char *name, const char *const *args);
 long sys_wait(int pid, int *status);
 long sys_time_ms(void);
 long sys_read(int fd, void *buf, usize len);
+long sys_open(const char *path);
+long sys_close(int fd);
+long sys_readdir(const char *path, u64 index, struct dirent *out);
 
 int printf(const char *fmt, ...) __printf(1, 2);
+
+/* A short description of a negative errno, for messages ("not found"). */
+const char *sys_strerror(long err);
 
 #endif /* MINIOS_USER_LIBSYS_H */

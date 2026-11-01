@@ -14,6 +14,8 @@
 #include <core/input.h>
 #include <core/printk.h>
 #include <core/time.h>
+#include <fs/initrd.h>
+#include <fs/tarfs.h>
 #include <lib/errno.h>
 #include <proc/process.h>
 #include <proc/uaccess.h>
@@ -21,6 +23,7 @@
 #include <uapi/syscall.h>
 
 #define WRITE_CHUNK 256
+#define READ_CHUNK  4096 /* file reads copy out this much at a time */
 #define NAME_MAX    TASK_NAME_MAX
 
 typedef s64 (*syscall_fn)(u64 a0, u64 a1, u64 a2);
@@ -138,6 +141,61 @@ static s64 sys_wait(u64 pid, u64 user_status, u64 a2)
     return r;
 }
 
+/* The open file behind fd, or NULL: fds below FD_FIRST are the console's. */
+static struct task_file *file_of(u64 fd)
+{
+    struct task *self = task_current();
+    struct task_file *f;
+
+    /* No test can see an off-by-one here (one past the table is the task's next field). */
+    if (fd < FD_FIRST || fd - FD_FIRST >= ARRAY_SIZE(self->files))
+        return NULL;
+    f = &self->files[fd - FD_FIRST];
+    return f->open ? f : NULL;
+}
+
+/* Copies a path in: -EFAULT, or -ENAMETOOLONG at PATH_MAX bytes with no NUL. */
+static int path_from_user(char path[PATH_MAX], u64 user_path)
+{
+    int len = strncpy_from_user(path, (const char *)user_path, PATH_MAX);
+
+    return len < 0 ? len : 0;
+}
+
+/* Looks a path up in the initrd (none: nothing exists). */
+static int lookup(const char *path, struct tarfs_node *node)
+{
+    usize len;
+    const u8 *rd = initrd_get(&len);
+
+    return rd ? tarfs_lookup(rd, len, path, node) : -ENOENT;
+}
+
+/*
+ * read(fd >= FD_FIRST, ...): from the file's position, as much as fits,
+ * 0 at its end. -EFAULT for the range, then 0 for len 0; an unwritable
+ * page part-way through ends the read there (-EFAULT if nothing was
+ * copied), and the position moves by exactly what was copied, so no byte
+ * is lost.
+ */
+static s64 read_file(struct task_file *f, u64 user_buf, u64 len)
+{
+    u64 want, done = 0;
+
+    if (!user_range_ok(user_buf, len))
+        return -EFAULT;
+    want = MIN(len, f->size - f->pos);
+    while (done < want) {
+        usize n = (usize)MIN(want - done, (u64)READ_CHUNK);
+
+        if (copy_to_user((void *)(user_buf + done), f->data + f->pos + done, n) != 0)
+            break;
+        done += n;
+    }
+    f->pos += done;
+    return done || want == 0 ? (s64)done : -EFAULT;
+}
+
 /*
  * read(0, buf, len): console input, raw bytes, at least one. The order of
  * the checks is part of the ABI: -EBADF, then -EFAULT for the range, then
@@ -147,12 +205,16 @@ static s64 sys_wait(u64 pid, u64 user_status, u64 a2)
  * kept, rather than merely range-checked (the sys_wait precedent): a bad
  * buffer must not swallow a keystroke. The process is single-threaded, so
  * nothing can unmap the buffer between the probe and the copy out.
+ * A file's fd reads the file (read_file).
  */
 static s64 sys_read(u64 fd, u64 user_buf, u64 len)
 {
     u8 buf[INPUT_READ_MAX];
     usize n;
+    struct task_file *f = file_of(fd);
 
+    if (f)
+        return read_file(f, user_buf, len);
     if (fd != 0)
         return -EBADF;
     if (!user_range_ok(user_buf, len))
@@ -171,6 +233,71 @@ static s64 sys_read(u64 fd, u64 user_buf, u64 len)
     return (s64)n;
 }
 
+/*
+ * open(path): the path first (-EFAULT, -ENAMETOOLONG), then the lookup
+ * (-EINVAL, -ENOENT), -EISDIR for a directory, -EMFILE with FILES_MAX
+ * open. The lowest free fd wins.
+ */
+static s64 sys_open(u64 user_path, u64 a1, u64 a2)
+{
+    char path[PATH_MAX];
+    struct tarfs_node node;
+    struct task *self = task_current();
+    int err;
+
+    (void)a1;
+    (void)a2;
+    err = path_from_user(path, user_path);
+    if (!err)
+        err = lookup(path, &node);
+    if (err)
+        return err;
+    if (node.is_dir)
+        return -EISDIR;
+    for (int i = 0; i < FILES_MAX; i++) {
+        if (!self->files[i].open) {
+            self->files[i] = (struct task_file){node.data, node.size, 0, true};
+            return FD_FIRST + i;
+        }
+    }
+    return -EMFILE;
+}
+
+static s64 sys_close(u64 fd, u64 a1, u64 a2)
+{
+    struct task_file *f = file_of(fd);
+
+    (void)a1;
+    (void)a2;
+    if (!f)
+        return -EBADF; /* the console's fds included: they stay open */
+    f->open = false;
+    return 0;
+}
+
+/*
+ * readdir(path, index, out): the path (-EFAULT, -ENAMETOOLONG), then
+ * -EFAULT unless `out` is in the user range, then the listing's errors
+ * (-EINVAL, -ENOENT, -ENOTDIR). 1 with *out written, or 0 past the end.
+ */
+static s64 sys_readdir(u64 user_path, u64 index, u64 user_out)
+{
+    char path[PATH_MAX];
+    struct dirent d;
+    usize len;
+    const u8 *rd = initrd_get(&len);
+    int r = path_from_user(path, user_path);
+
+    if (r)
+        return r;
+    if (!user_range_ok(user_out, sizeof(d)))
+        return -EFAULT;
+    r = rd ? tarfs_readdir(rd, len, path, index, &d) : -ENOENT;
+    if (r == 1 && copy_to_user((void *)user_out, &d, sizeof(d)) != 0)
+        return -EFAULT;
+    return r;
+}
+
 static s64 sys_time_ms(u64 a0, u64 a1, u64 a2)
 {
     (void)a0;
@@ -183,6 +310,7 @@ static const syscall_fn syscall_table[SYS_COUNT] = {
     [SYS_EXIT] = sys_exit,     [SYS_WRITE] = sys_write,       [SYS_YIELD] = sys_yield,
     [SYS_GETPID] = sys_getpid, [SYS_SLEEP_MS] = sys_sleep_ms, [SYS_SPAWN] = sys_spawn,
     [SYS_WAIT] = sys_wait,     [SYS_TIME_MS] = sys_time_ms,   [SYS_READ] = sys_read,
+    [SYS_OPEN] = sys_open,     [SYS_CLOSE] = sys_close,       [SYS_READDIR] = sys_readdir,
 };
 
 /* Called from syscall.asm with interrupts enabled. Result goes in RAX. */

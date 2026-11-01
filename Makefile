@@ -167,16 +167,13 @@ USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/user/lib/lineedit
 USER_PROGRAMS := $(sort $(basename $(notdir $(wildcard user/programs/*.c user/programs/*.asm))))
 USER_ELFS     := $(USER_PROGRAMS:%=$(BUILD)/user/bin/%.elf)
 
-# The shell's `help` lists the programs, and a kernel test checks the initrd
-# holds them all. Generated as the Makefile
+# A kernel test checks the initrd holds every program. Generated as the Makefile
 # is read, and rewritten only when the list changes (as cmdline.stamp is).
 comma := ,
 USER_PROGRAMS_H    := $(BUILD)/gen/user_programs.h
 USER_PROGRAMS_LINE := \#define USER_PROGRAM_NAMES $(patsubst %,"%"$(comma),$(USER_PROGRAMS))
 $(shell mkdir -p $(BUILD)/gen && { printf '%s\n' '$(USER_PROGRAMS_LINE)' | \
 	cmp -s - $(USER_PROGRAMS_H) || printf '%s\n' '$(USER_PROGRAMS_LINE)' > $(USER_PROGRAMS_H); })
-$(BUILD)/user/user/programs/sh.o: $(USER_PROGRAMS_H)
-$(BUILD)/user/user/programs/sh.o: USER_CFLAGS += -I$(BUILD)/gen
 $(BUILD)/tests/kernel/test_initrd.o: $(USER_PROGRAMS_H)
 
 $(BUILD)/user/%.o: %.c $(FLAGS_STAMP)
@@ -201,14 +198,17 @@ $(BUILD)/user/bin/%.elf: $(BUILD)/user/user/programs/%.asm.o user/programs/%.ld
 	$(call msg,LD,$@)
 	$(Q)$(LD) $(USER_LDFLAGS) -T user/programs/$*.ld $< -o $@
 
-# The initrd: every user program as bin/NAME, in a ustar archive, with etc/manifest holding
+# The initrd: every user program as bin/NAME and every file under rootfs/ at its path there,
+# in a ustar archive, with etc/manifest holding
 # each file's hash for the kernel tests. Every image carries it, and the kernel runs its
 # programs from there.
-INITRD := $(BUILD)/initrd.tar
-$(INITRD): $(USER_ELFS) tools/mkinitrd.py
+INITRD       := $(BUILD)/initrd.tar
+ROOTFS_FILES := $(sort $(shell find rootfs -type f))
+$(INITRD): $(USER_ELFS) $(ROOTFS_FILES) tools/mkinitrd.py
 	$(call msg,INITRD,$@)
 	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ --manifest etc/manifest \
-	  $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
+	  $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf) \
+	  $(foreach f,$(ROOTFS_FILES),$(f:rootfs/%=%)=$(f))
 
 # Code that UBSan reports through must not itself be instrumented.
 $(BUILD)/kernel/core/ubsan.o: KERNEL_CFLAGS += -fno-sanitize=all
@@ -441,7 +441,7 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
 	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c \
 	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c kernel/lib/kbdmap.c \
-	kernel/lib/tar.c
+	kernel/lib/tar.c kernel/fs/tarfs.c
 HOST_TEST_USER_SRCS   := user/lib/lineedit.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
@@ -578,6 +578,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --type-after '^sh> ' --type 'help\n' --type-after '^sh> ' --type 'hellp\x7fo\n' \
 	  --type-after '^sh> ' --type 'xyz\x15nosuch\n' --type-after '^sh> ' --type 'abc\x03' \
 	  --type-after '^sh> ' --type 'faulter\n' --type-after '^sh> ' --type 'echo hello  world\n' \
+	  --type-after '^sh> ' --type 'ls /bin\n' --type-after '^sh> ' --type 'cat /etc/motd /nope\n' \
 	  --type-after '^sh> ' --type 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' \
 	  --type-after '^sh> ' --type 'sh\n' --type-after '^sh> ' --type '\x04' \
 	  --type-after '^sh> ' --type 'exit\n' \
@@ -586,7 +587,9 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --expect '^hello: hello from ring 3' --expect '^\[exit 42\]$$' \
 	  --expect 'xyz(\x08 \x08){3}nosuch' --expect '^sh: nosuch: not found$$' --expect 'abc\^C$$' \
 	  --expect 'killed by #PF' --expect '^\[exit 142\]$$' \
-	  --expect '^hello world$$' --expect '^sh> a{31}$$' \
+	  --expect '^hello world$$' --expect '^cat +[1-9][0-9]*$$' --expect '^\[exit 0\]$$' \
+	  --expect '^Welcome to minios\.$$' --expect '^cat: /nope: not found$$' --expect '^\[exit 1\]$$' \
+	  --expect '^sh> a{31}$$' \
 	  --expect '^sh: name too long' --expect '^\[exit 0\]$$' --expect 'init exited with status 0' \
 	  --reject 'KERNEL PANIC' --reject 'WARNING: (i8042|input): ' --reject '^sh> \nsh> '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \
@@ -619,8 +622,10 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	    --expect 'init exited with status 0' || exit 1; \
 	done
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_SHELL_IMG) --log-dir $(BUILD)/logs \
-	  --no-tap --type-after '^sh> ' --type 'hello\n' --type-after '^sh> ' --type 'exit\n' \
+	  --no-tap --type-after '^sh> ' --type 'hello\n' --type-after '^sh> ' --type 'cat /etc/motd\n' \
+	  --type-after '^sh> ' --type 'exit\n' \
 	  --expect 'loader: UEFI' --expect '-> 0x65$$' --expect '^\[exit 42\]$$' \
+	  --expect '^Welcome to minios\.$$' \
 	  --expect 'init exited with status 0' --reject '^sh> \nsh> '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --uefi --image $(UEFI_TEST_IMG) --log-dir $(BUILD)/logs \
 	  --skips 1 --expect 'calibrated against the HPET' \

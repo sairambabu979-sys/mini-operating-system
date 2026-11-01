@@ -69,6 +69,12 @@ KTEST(syscalls_reject_hostile_arguments)
     KEXPECT_EQ(run("badptr"), 0); /* exit status = number of wrong answers */
 }
 
+/* open, read, close and readdir on the initrd, every error in its order, nothing inherited. */
+KTEST(file_calls_work_and_reject_hostile_arguments)
+{
+    KEXPECT_EQ(run("fstest"), 0); /* exit status = number of wrong answers, each printed */
+}
+
 /*
  * The CVE-2012-0217 scenario: the user's RIP after syscall is
  * non-canonical. The kernel must avoid SYSRET, and the iretq it uses
