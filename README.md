@@ -16,7 +16,8 @@ $ make run
 1234567
 cpu: AuthenticAMD, 40-bit physical / 57-bit virtual; nx=1 pge=1 1g=1 smep=1 smap=1 apic=1 x2apic=0
 vmm: direct map: 127 MiB at 0xffff800000000000
-pmm: 125 MiB managed, 768 KiB metadata at 0x1ac000, highest frame 0x7fdf000
+pmm: 125 MiB managed, 768 KiB metadata at 0x1aa000, highest frame 0x7fdf000
+initrd: 27 entries, 380 KiB at 0x106c000
 screen: VGA text mode 3, 80x25 at 0xb8000
 acpi: RSDP at 0xf5290: revision 0, OEM "BOCHS ", RSDT at 0x7fe1c52
 acpi: 4 tables: FACP APIC HPET WAET
@@ -29,7 +30,7 @@ irq: using the local APIC and 24 I/O APIC pin(s)
 hpet: 100.000000 MHz, 64-bit counter, 3 comparators, at 0xfed00000
 time: tick: local APIC timer at 1000 Hz (1000004 ns/tick); TSC 2100.897 MHz; calibrated against the HPET
 sched: round robin, 10 ms slices, 16 KiB kernel stacks
-minios 1.3.0 (x86_64, debug build)
+minios 1.4.0 (x86_64, debug build)
 ...
 init: pid 3, starting 11 programs
 hello: hello from ring 3, pid 4

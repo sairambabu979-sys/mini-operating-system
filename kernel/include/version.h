@@ -3,7 +3,7 @@
 #define MINIOS_VERSION_H
 
 #define MINIOS_NAME    "minios"
-#define MINIOS_VERSION "1.3.0"
+#define MINIOS_VERSION "1.4.0"
 
 #ifdef CONFIG_DEBUG
 #define MINIOS_BUILD "debug"
