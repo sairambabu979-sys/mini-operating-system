@@ -11,7 +11,8 @@
  * Only regular files and directories are reported; links, devices and
  * the like are skipped, as is the root directory "./". A name is the
  * header's prefix (POSIX ustar only) and name joined with "/", without a
- * leading "./" or a directory's trailing "/". Long names are not
+ * leading "./" or a directory's trailing "/"; one with an empty, "." or
+ * ".." component left after that is -EINVAL. Long names are not
  * supported: GNU long-name headers, and pax headers that set a path or a
  * size, make the archive -EINVAL rather than be misread; other pax
  * records are ignored.

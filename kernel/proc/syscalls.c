@@ -9,6 +9,7 @@
 
 #include <arch/cpu.h>
 #include <arch/msr.h>
+#include <arch/paging.h>
 #include <arch/segments.h>
 #include <arch/trap.h>
 #include <core/input.h>
@@ -23,7 +24,6 @@
 #include <uapi/syscall.h>
 
 #define WRITE_CHUNK 256
-#define READ_CHUNK  4096 /* file reads copy out this much at a time */
 #define NAME_MAX    TASK_NAME_MAX
 
 typedef s64 (*syscall_fn)(u64 a0, u64 a1, u64 a2);
@@ -173,10 +173,11 @@ static int lookup(const char *path, struct tarfs_node *node)
 
 /*
  * read(fd >= FD_FIRST, ...): from the file's position, as much as fits,
- * 0 at its end. -EFAULT for the range, then 0 for len 0; an unwritable
- * page part-way through ends the read there (-EFAULT if nothing was
- * copied), and the position moves by exactly what was copied, so no byte
- * is lost.
+ * 0 at its end. -EFAULT for the range, then 0 for len 0. It copies out
+ * one user page at a time: copy_to_user is all or nothing, so a fault
+ * inside a page fails that page's whole piece. The first page that is not
+ * writable ends the read there (-EFAULT if it was the first), and the
+ * position moves by exactly the bytes before it, so no byte is lost.
  */
 static s64 read_file(struct task_file *f, u64 user_buf, u64 len)
 {
@@ -186,7 +187,8 @@ static s64 read_file(struct task_file *f, u64 user_buf, u64 len)
         return -EFAULT;
     want = MIN(len, f->size - f->pos);
     while (done < want) {
-        usize n = (usize)MIN(want - done, (u64)READ_CHUNK);
+        u64 to_page_end = PAGE_SIZE_4K - ((user_buf + done) & (PAGE_SIZE_4K - 1));
+        usize n = (usize)MIN(want - done, to_page_end);
 
         if (copy_to_user((void *)(user_buf + done), f->data + f->pos + done, n) != 0)
             break;

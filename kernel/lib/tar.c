@@ -151,6 +151,24 @@ static usize build_name(const u8 *h, char *name)
     return n;
 }
 
+/* True if no component of a (normalised, non-empty) name is "", "." or "..". */
+static bool plain_components(const char *name)
+{
+    for (const char *c = name;;) {
+        const char *end = c;
+
+        while (*end && *end != '/')
+            end++;
+        usize n = (usize)(end - c);
+
+        if (n == 0 || (n == 1 && c[0] == '.') || (n == 2 && c[0] == '.' && c[1] == '.'))
+            return false;
+        if (!*end)
+            return true;
+        c = end + 1;
+    }
+}
+
 int tar_next(const u8 *archive, usize len, usize *pos, struct tar_entry *e)
 {
     for (;;) {
@@ -192,6 +210,8 @@ int tar_next(const u8 *archive, usize len, usize *pos, struct tar_entry *e)
             *pos = next;        /* the archive's root directory, "./": skip it */
             continue;
         }
+        if (!plain_components(e->name))
+            return -EINVAL; /* "a//b", "a/./b", "../x": no path a reader could mean */
         e->data = h + TAR_BLOCK;
         e->size = (usize)size;
         e->is_dir = type == '5';

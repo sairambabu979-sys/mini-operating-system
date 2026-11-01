@@ -37,13 +37,14 @@ TEST(tarfs_looks_up_files_and_directories)
     EXPECT_TRUE(n.is_dir && n.size == 0 && n.data == NULL);
     EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/bin/", &n), 0); /* one trailing "/" */
     EXPECT_TRUE(n.is_dir);
+    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/etc/motd/", &n), -ENOTDIR); /* names a directory */
     EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/", &n), 0);
     EXPECT_TRUE(n.is_dir);
     EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/README", &n), 0);
     EXPECT_EQ(n.size, 1);
     EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/etc/nope", &n), -ENOENT);
-    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/etc/link", &n), -ENOENT); /* links are not reported */
-    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/bin/sh/x", &n), -ENOENT);
+    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/etc/link", &n), -ENOENT);  /* links are not reported */
+    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/bin/sh/x", &n), -ENOTDIR); /* through a file */
 }
 
 TEST(tarfs_refuses_paths_that_are_not_plain_and_absolute)
@@ -97,7 +98,10 @@ TEST(tarfs_lists_a_directory_in_archive_order)
     EXPECT_EQ(tarfs_readdir(a.buf, a.len, "var", 0, &d), -EINVAL);
 }
 
-/* "binary" starts with "bin" but is not under it, and a name with a prefix lists under it. */
+/*
+ * "binary" starts with "bin" but is not under it; a name with a prefix
+ * lists under it; and below a parent with no entry nothing resolves.
+ */
 TEST(tarfs_matches_whole_components)
 {
     static struct archive a;
@@ -108,15 +112,53 @@ TEST(tarfs_matches_whole_components)
     add(&a, "", "bin/", '5', NULL, 0);
     add(&a, "", "binary", '0', "b", 1);
     add(&a, "", "bin/x", '0', "x", 1);
+    add(&a, "", "usr/", '5', NULL, 0);
+    add(&a, "", "usr/share/", '5', NULL, 0);
     add(&a, "usr/share", "doc", '5', NULL, 0);
     add(&a, "usr/share", "doc/a", '0', "a", 1);
+    add(&a, "", "opt/x", '0', "x", 1); /* no entry for opt/ */
     finish(&a);
     EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/bin", 0, &d), 1);
     EXPECT_STREQ(d.name, "x");
     EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/bin", 1, &d), 0);
     EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/usr/share/doc", 0, &d), 1);
     EXPECT_STREQ(d.name, "a");
-    /* no entry for usr/ or usr/share/: not directories here, though their files resolve */
-    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/usr", 0, &d), -ENOENT);
     EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/usr/share/doc/a", &n), 0);
+    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/opt", 0, &d), -ENOENT);
+    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/opt/x", &n), -ENOENT);
+}
+
+/*
+ * Archives mkinitrd never writes but a tar can: a name twice (tar -r), and
+ * a file then a directory of the same name. The first entry of a name
+ * wins, so a lookup and a listing agree.
+ */
+TEST(tarfs_lookup_and_listing_agree_on_odd_archives)
+{
+    static struct archive a;
+    struct dirent d;
+    struct tarfs_node n;
+
+    a.len = 0;
+    add(&a, "", "etc/", '5', NULL, 0);
+    add(&a, "", "etc/motd", '0', "one", 3);
+    add(&a, "", "etc/motd", '0', "second", 6);
+    add(&a, "", "etc/x", '0', "x", 1);
+    add(&a, "", "bin", '0', "file", 4);
+    add(&a, "", "bin/", '5', NULL, 0);
+    add(&a, "", "bin/sh", '0', "SH", 2);
+    finish(&a);
+    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/etc/motd", &n), 0);
+    EXPECT_EQ(n.size, 3);
+    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/etc", 0, &d), 1);
+    EXPECT_TRUE(strcmp(d.name, "motd") == 0 && d.size == 3);
+    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/etc", 1, &d), 1); /* not motd again */
+    EXPECT_STREQ(d.name, "x");
+    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/etc", 2, &d), 0);
+
+    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/", 1, &d), 1);
+    EXPECT_TRUE(strcmp(d.name, "bin") == 0 && d.type == DIRENT_FILE);
+    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/", 2, &d), 0); /* bin once */
+    EXPECT_EQ(tarfs_readdir(a.buf, a.len, "/bin", 0, &d), -ENOTDIR);
+    EXPECT_EQ(tarfs_lookup(a.buf, a.len, "/bin/sh", &n), -ENOTDIR); /* not reachable: not found */
 }

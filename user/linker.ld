@@ -19,5 +19,6 @@ SECTIONS
     . = ALIGN(4K);
     .data : { *(.data .data.*) } :data
     .bss : { *(.bss .bss.*) *(COMMON) } :data
+    _end = .; /* the image's end: the page after it is unmapped (fstest reads across it) */
     /DISCARD/ : { *(.comment) *(.note .note.*) *(.eh_frame*) }
 }

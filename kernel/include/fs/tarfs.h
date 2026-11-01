@@ -4,11 +4,14 @@
  * provides. Pure code over <lib/tar.h>, host-tested.
  *
  * A path is absolute: "/" is the root, "/bin/sh" the archive entry
- * "bin/sh", and one trailing "/" is allowed ("/bin/"). An empty, "." or
- * ".." component is -EINVAL, as is a path that does not start with "/";
- * one too long for an archive name is -ENAMETOOLONG. A directory is one
- * the archive has an entry for (mkinitrd and tar write one for every
- * parent), or the root; the first entry of a name wins.
+ * "bin/sh", and a trailing "/" names a directory ("/bin/"; on a file it
+ * is -ENOTDIR). An empty, "." or ".." component is -EINVAL, as is a path
+ * that does not start with "/"; one too long for an archive name is
+ * -ENAMETOOLONG. A directory is one the archive has an entry for
+ * (mkinitrd and tar write one for every parent), or the root, and every
+ * parent on a path must be one: -ENOENT if missing, -ENOTDIR if a file.
+ * The first entry of a name wins, for a lookup and in a listing alike, so
+ * what a lookup finds is what a listing from the root reaches.
  */
 #ifndef MINIOS_FS_TARFS_H
 #define MINIOS_FS_TARFS_H

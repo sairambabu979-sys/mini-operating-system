@@ -204,7 +204,12 @@ $(BUILD)/user/bin/%.elf: $(BUILD)/user/user/programs/%.asm.o user/programs/%.ld
 # programs from there.
 INITRD       := $(BUILD)/initrd.tar
 ROOTFS_FILES := $(sort $(shell find rootfs -type f))
-$(INITRD): $(USER_ELFS) $(ROOTFS_FILES) tools/mkinitrd.py
+# A file removed or renamed changes no prerequisite's time: this stamp, rewritten only
+# when the list changes (as cmdline.stamp is), and user_programs.h make the initrd follow.
+ROOTFS_STAMP := $(BUILD)/rootfs.stamp
+$(shell mkdir -p $(BUILD) && { printf '%s\n' $(ROOTFS_FILES) | cmp -s - $(ROOTFS_STAMP) || \
+	printf '%s\n' $(ROOTFS_FILES) > $(ROOTFS_STAMP); })
+$(INITRD): $(USER_ELFS) $(ROOTFS_FILES) $(ROOTFS_STAMP) $(USER_PROGRAMS_H) tools/mkinitrd.py
 	$(call msg,INITRD,$@)
 	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ --manifest etc/manifest \
 	  $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf) \

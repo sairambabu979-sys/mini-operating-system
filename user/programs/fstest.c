@@ -24,9 +24,11 @@ static void expect(const char *what, long got, long want)
 #define UNMAPPED ((void *)0x1000)
 #define MOTD     "Welcome to minios.\n"
 
-static const char read_only[16] = "rodata"; /* mapped, not writable */
-static char too_long[PATH_MAX + 1];         /* "/aaa...", PATH_MAX bytes before its NUL */
-static char big[64 * 1024];                 /* a whole program, across several read chunks */
+static const char read_only[16] = "rodata";                /* mapped, not writable */
+static const struct dirent read_only_dirent = {.size = 1}; /* nonzero: .rodata, not .bss */
+static char too_long[PATH_MAX + 1]; /* "/aaa...", PATH_MAX bytes before its NUL */
+static char big[64 * 1024];         /* a whole program, across several read chunks */
+extern char _end[];                 /* user/linker.ld: the page after it is unmapped */
 
 /* "fstest child": started with the parent's fd FD_FIRST open, it must see none. */
 static int child(void)
@@ -51,6 +53,8 @@ static void bad_paths(void)
     expect("open(missing)", sys_open("/etc/nope"), -ENOENT);
     expect("open(a directory)", sys_open("/bin"), -EISDIR);
     expect("open(the root)", sys_open("/"), -EISDIR);
+    expect("open(a file with a trailing /)", sys_open("/etc/motd/"), -ENOTDIR);
+    expect("open(below a file)", sys_open("/etc/motd/x"), -ENOTDIR);
 }
 
 static void reads(void)
@@ -88,16 +92,33 @@ static void reads(void)
     while ((n = sys_read((int)fd, big + total, sizeof(big) - (usize)total)) > 0)
         total += n;
     expect("read(/bin/sh) to the end", n, 0);
-    for (u64 i = 0; sys_readdir("/bin", i, &d) > 0; i++)
-        if (strcmp(d.name, "sh") == 0)
+    bool listed = false;
+
+    for (u64 i = 0; sys_readdir("/bin", i, &d) > 0; i++) {
+        if (strcmp(d.name, "sh") == 0) {
+            listed = true;
             expect("read(/bin/sh): every byte readdir counts", total, (long)d.size);
-    expect("read(/bin/sh): an ELF",
-           memcmp(big,
-                  "\x7f"
-                  "ELF",
-                  4) == 0,
-           1);
-    expect("read(/bin/sh): more than one read chunk", total > 4096, 1);
+        }
+    }
+    expect("readdir(/bin) lists sh", listed, 1);
+    expect("read(/bin/sh): an ELF", total > 4 && big[0] == 0x7f && big[1] == 'E', 1);
+    expect("read(/bin/sh): more than one page", total > 4096, 1);
+    sys_close((int)fd);
+
+    /*
+     * A buffer that runs into an unmapped page: the read stops exactly
+     * there, and the next goes on from the first byte not delivered.
+     */
+    char *edge = (char *)(((u64)_end + 4095) & ~4095ull);
+
+    fd = sys_open("/bin/sh");
+    expect("read(200 bytes, 100 before an unmapped page)", sys_read((int)fd, edge - 100, 200), 100);
+    expect("read: those are the first 100 bytes", memcmp(edge - 100, big, 100) == 0, 1);
+    expect("read: goes on from byte 100", sys_read((int)fd, buf, 8), 8);
+    expect("read: bytes 100 to 107", memcmp(buf, big + 100, 8) == 0, 1);
+    expect("read(all of it unmapped)", sys_read((int)fd, edge, 8), -EFAULT);
+    expect("read: the fault moved nothing", sys_read((int)fd, buf, 8), 8);
+    expect("read: bytes 108 to 115", memcmp(buf, big + 108, 8) == 0, 1);
     sys_close((int)fd);
 }
 
@@ -134,12 +155,15 @@ static void listings(void)
     expect("readdir(a file)", sys_readdir("/etc/motd", 0, &d), -ENOTDIR);
     expect("readdir(missing)", sys_readdir("/nope", 0, &d), -ENOENT);
     expect("readdir(relative)", sys_readdir("bin", 0, &d), -EINVAL);
+    expect("readdir(path unmapped)", sys_readdir(UNMAPPED, 0, &d), -EFAULT);
+    expect("readdir(no NUL in PATH_MAX bytes)", sys_readdir(too_long, 0, &d), -ENAMETOOLONG);
+    expect("readdir(a file with a trailing /)", sys_readdir("/etc/motd/", 0, &d), -ENOTDIR);
     expect("readdir(path at a kernel pointer)", sys_readdir(KPTR, 0, &d), -EFAULT);
     expect("readdir(out at a kernel pointer)", sys_readdir("/", 0, KPTR), -EFAULT);
     expect("readdir(out at a kernel pointer, path missing): the pointer first",
            sys_readdir("/nope", 0, KPTR), -EFAULT);
     expect("readdir(out unmapped)", sys_readdir("/", 0, UNMAPPED), -EFAULT);
-    expect("readdir(out read-only)", sys_readdir("/", 0, (struct dirent *)(void *)read_only),
+    expect("readdir(out read-only)", sys_readdir("/", 0, (struct dirent *)&read_only_dirent),
            -EFAULT);
 }
 

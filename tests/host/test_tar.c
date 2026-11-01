@@ -322,6 +322,20 @@ TEST(tar_rejects_bad_headers)
     memcpy(h, "./", 2); /* a name that is nothing once "./" is dropped */
     seal(h);
     EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+
+    /* names no path could mean: an empty, "." or ".." component */
+    static const char *const not_plain[] = {"a//b", "a/./b", "../x", "x/..", "a/.", "x/../y"};
+
+    for (size_t i = 0; i < sizeof(not_plain) / sizeof(not_plain[0]); i++) {
+        memset(h, 0, 100);
+        memcpy(h, not_plain[i], strlen(not_plain[i]));
+        seal(h);
+        EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    }
+    memset(h, 0, 100);
+    memcpy(h, "a/b.c/..d", 9); /* dots inside a name are fine */
+    seal(h);
+    EXPECT_EQ(tar_validate(a.buf, a.len), 1);
 }
 
 #ifdef INITRD_PATH
