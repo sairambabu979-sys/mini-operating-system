@@ -22,6 +22,7 @@
 #include <compiler.h>
 #include <lib/list.h>
 #include <types.h>
+#include <uapi/syscall.h>
 
 #define TASK_NAME_MAX   16
 #define KSTACK_SIZE     (16ul * 1024)
@@ -51,13 +52,22 @@ struct wait_queue {
 
 struct address_space;
 
+/* A file a process opened: a byte range of the initrd, which is never freed. */
+struct task_file {
+    const u8 *data;
+    u64 size;
+    u64 pos;
+    bool open;
+};
+
 struct task {
     uptr saved_rsp; /* switch.asm: must stay first (asm-offsets checks) */
     void *kstack;   /* vmalloc base; NULL for the boot task */
     uptr kstack_top;
-    struct address_space *as; /* NULL: kernel thread */
-    void *fpu_state;          /* FXSAVE area for user tasks */
-    uptr user_entry;          /* first user RIP (processes only) */
+    struct address_space *as;          /* NULL: kernel thread */
+    void *fpu_state;                   /* FXSAVE area for user tasks */
+    uptr user_entry;                   /* first user RIP (processes only) */
+    struct task_file files[FILES_MAX]; /* fd FD_FIRST + i; all closed in a new task */
 
     enum task_state state;
     int pid;

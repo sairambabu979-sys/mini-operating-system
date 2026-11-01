@@ -21,9 +21,6 @@
 
 #include <lib/errno.h>
 #include <lib/string.h>
-#include <user_programs.h> /* generated: USER_PROGRAM_NAMES */
-
-static const char *const programs[] = {USER_PROGRAM_NAMES};
 
 static void put(const char *s, usize n)
 {
@@ -31,11 +28,15 @@ static void put(const char *s, usize n)
         sys_write(1, s, n);
 }
 
+/* The programs are whatever /bin holds: listed live, so a new one needs no change here. */
 static void help(void)
 {
-    printf("builtins: help exit\nprograms:\n");
-    for (usize i = 0; i < sizeof(programs) / sizeof(programs[0]); i++)
-        printf("  %s\n", programs[i]);
+    struct dirent d;
+
+    printf("builtins: help exit\nprograms (in /bin):\n");
+    for (u64 i = 0; sys_readdir("/bin", i, &d) > 0; i++)
+        if (d.type == DIRENT_FILE)
+            printf("  %s\n", d.name);
 }
 
 static void run(const char *name, const char *const *args)

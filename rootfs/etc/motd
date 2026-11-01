@@ -1,0 +1,2 @@
+Welcome to minios.
+This file is /etc/motd in the initrd: try "ls /" and "cat /etc/motd".

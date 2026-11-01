@@ -8,9 +8,10 @@ Sources: `kernel/proc/`, `kernel/arch/x86_64/{syscall.asm,isr.asm,usercopy.c,fpu
 A process is a task with its own address space and FPU state, started
 from an ELF program in the initrd, `bin/NAME` (`user_image_find()`;
 [boot.md](boot.md#the-initrd) has how the initrd arrives). The kernel
-reads the program in place, as the initrd is never freed. Programs cannot
-open files themselves; `spawn(name, args)` creates a process from a
-program, as `posix_spawn` would, rather than via fork/exec. With no usable
+reads the program in place, as the initrd is never freed. Programs read
+the initrd's files themselves through `open`, `read`, `close` and
+`readdir` (below); `spawn(name, args)` creates a process from a program,
+as `posix_spawn` would, rather than via fork/exec. With no usable
 initrd there is no `init`, and the kernel panics saying so. The program starts as `main(argc, argv)`, `argv[0]` its name:
 the kernel copies the strings to the top of the new stack with the
 NULL-terminated vector below them, leaves RSP 16-byte aligned below both,
@@ -128,7 +129,27 @@ outcome and documents why.
 | 5 | `spawn(name, args)` | name copied byte by byte (it may end just before an unmapped page); `args` is NULL or a NULL-terminated list of at most 8 strings, 256 bytes in all with their NULs (`-E2BIG` past either); all of it is copied and checked before anything is created (`-EFAULT`, `-ENAMETOOLONG`, `-E2BIG`, in that order of discovery); `-EAGAIN` at `TASK_MAX` tasks |
 | 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
-| 8 | `read(fd, buf, len)` | fd 0 only: console input as raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EBADF`, `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device |
+| 8 | `read(fd, buf, len)` | fd 0: console input as raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EBADF`, `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device. A file's fd: from its position, as much as fits, 0 at the end; `-EBADF`, `-EFAULT` for the range, 0 for `len` 0, then copied out one user page at a time: the first page that is not writable ends the read exactly there (`-EFAULT` if it is the first), and the position moves by exactly the bytes before it. Any other fd is `-EBADF` |
+| 9 | `open(path)` | a file in the initrd, read-only (paths below). The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then looked up (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR`, then `-EMFILE` with `FILES_MAX` = 8 open. Returns the lowest free fd from 3 |
+| 10 | `close(fd)` | `-EBADF` for anything but an open file's fd: the console's 0-2 stay open |
+| 11 | `readdir(path, index, struct dirent *out)` | entry `index` of a directory, from 0 in archive order: 1 with `out` filled (`size`, `type` `DIRENT_FILE` or `DIRENT_DIR`, its own `name`), 0 past the last. The path first (`-EFAULT`, `-ENAMETOOLONG`), then `-EFAULT` unless `out` is in the user range, then `-EINVAL`, `-ENOENT`, `-ENOTDIR`, then `-EFAULT` if `out` is not writable. No handle: listing a directory is calling it with 0, 1, 2... |
+
+**Files.** The initrd is the only file system, read-only. A path is
+absolute: `/` is the root and `/bin/sh` the archive's `bin/sh`; a
+trailing `/` names a directory (`-ENOTDIR` on a file); an empty, `.` or
+`..` component, or a path not starting with `/`, is `-EINVAL`
+(`kernel/fs/tarfs.c`, host-tested). There is no current directory. A
+directory is one the archive has an entry for, or the root, and every
+parent on a path must be one (`-ENOENT` if missing, `-ENOTDIR` if a
+file). The first entry of a name wins, for a lookup and in a listing
+alike; the tar reader refuses names with an empty, `.` or `..`
+component outright, so a hostile archive cannot make a lookup and a
+listing disagree. Each process has its own table of `FILES_MAX` open
+files (fds 3-10) in its task; a new process starts with none open, and
+nothing needs closing at exit, since an open file is only a range of the
+never-freed initrd and a position. `fstest` checks each error above from
+ring 3, the order where two can apply, and a read whose buffer runs
+into an unmapped page.
 
 **User memory** is reached only through `copy_from_user`, `copy_to_user`
 and `strncpy_from_user`. Each checks that the whole range lies below

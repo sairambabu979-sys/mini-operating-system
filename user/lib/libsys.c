@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "libsys.h"
 
+#include <lib/errno.h>
 #include <lib/printf.h>
 
 __noreturn void sys_exit(int code)
@@ -52,6 +53,45 @@ long sys_time_ms(void)
 long sys_read(int fd, void *buf, usize len)
 {
     return syscall3(SYS_READ, fd, (long)buf, (long)len);
+}
+
+long sys_open(const char *path)
+{
+    return syscall3(SYS_OPEN, (long)path, 0, 0);
+}
+
+long sys_close(int fd)
+{
+    return syscall3(SYS_CLOSE, fd, 0, 0);
+}
+
+long sys_readdir(const char *path, u64 index, struct dirent *out)
+{
+    return syscall3(SYS_READDIR, (long)path, (long)index, (long)out);
+}
+
+const char *sys_strerror(long err)
+{
+    switch (-err) {
+    case ENOENT:
+        return "not found";
+    case EISDIR:
+        return "is a directory";
+    case ENOTDIR:
+        return "not a directory";
+    case EINVAL:
+        return "bad path (absolute, no empty, . or .. parts)";
+    case ENAMETOOLONG:
+        return "path too long";
+    case EMFILE:
+        return "too many open files";
+    case EFAULT:
+        return "bad address";
+    case EBADF:
+        return "bad file descriptor";
+    default:
+        return "error";
+    }
 }
 
 /* One write per printf call, so concurrent processes never interleave mid-line. */
