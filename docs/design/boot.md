@@ -48,10 +48,7 @@ command line differs (`""` vs `"ktest"`).
 | `7` | ELF validated (class, endianness, type, machine, header sizes, entry in the higher half). Each `PT_LOAD` is bounds-checked against the file and the staging area, copied, and its `.bss` tail zeroed. `boot_info` is published with **magic written last**, then the loader jumps to `e_entry`. |
 
 Errors print `!` and a letter, then halt. Each letter is listed at the top of
-`stage2.asm`. Every character both stages print waits at most 65,535 polls
-of COM1's line status, then is dropped: an absent UART reads `0xFF` and
-ends the wait at once, and a present one whose transmitter never empties
-cannot stop the boot. The null IDT is deliberate: any interrupt before the kernel
+`stage2.asm`. The null IDT is deliberate: any interrupt before the kernel
 installs its own IDT triple-faults immediately, instead of jumping through a
 real-mode IVT that makes no sense in long mode.
 

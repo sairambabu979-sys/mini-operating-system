@@ -2,9 +2,9 @@
 /*
  * The COM1 driver (kernel/drivers/serial.c) against a model 16550: its
  * port I/O comes here (tests/host/platform/arch/io.h). The model can be
- * absent, have a transmitter that never empties, a loopback that never
- * delivers, and a receive FIFO of bytes with errors, so every wait the
- * driver makes can be shown to end.
+ * absent, have a loopback that is slow, corrupt or never delivers, a
+ * transmitter held up for a while, and a receive FIFO of bytes with
+ * errors, whose error bits a line-status read clears as a real one does.
  */
 #include "test.h"
 
@@ -16,7 +16,6 @@
 
 static struct {
     bool absent;         /* every read is 0xFF */
-    bool tx_stuck;       /* the transmitter never has room */
     bool loop_broken;    /* loopback never delivers */
     u8 loop_corrupt;     /* XORed into the looped-back byte */
     unsigned loop_delay; /* line-status polls before a looped byte arrives */
@@ -25,6 +24,7 @@ static struct {
     unsigned rx_head, rx_tail;
     char tx[64];
     unsigned ntx, lsr_polls, data_reads, loop_ready_at;
+    unsigned tx_free_at; /* the transmitter has no room before this many polls */
 } uart;
 
 static void reset(void)
@@ -50,11 +50,13 @@ u8 host_inb(u16 port)
         return uart.ier;
     case 5: { /* line status */
         bool have = uart.rx_head < uart.rx_tail;
-        u8 lsr = uart.tx_stuck ? 0 : 0x60;
+        u8 lsr = uart.lsr_polls < uart.tx_free_at ? 0 : 0x60;
 
         uart.lsr_polls++;
-        if (have && uart.lsr_polls >= uart.loop_ready_at)
+        if (have && uart.lsr_polls >= uart.loop_ready_at) {
             lsr |= 0x01 | uart.rx_err[uart.rx_head];
+            uart.rx_err[uart.rx_head] = 0; /* reading the status clears its error bits */
+        }
         return lsr;
     }
     default:
@@ -113,7 +115,7 @@ TEST(serial_init_gives_up_on_a_uart_that_does_not_answer)
     uart.loop_broken = true;
     EXPECT_TRUE(!serial_init());
     EXPECT_TRUE(!serial_is_present());
-    EXPECT_EQ(uart.lsr_polls, SERIAL_POLL_MAX);
+    EXPECT_EQ(uart.lsr_polls, SERIAL_INIT_POLLS);
     EXPECT_EQ(uart.mcr & 0x10, 0); /* out of loopback even so */
 
     reset();
@@ -128,33 +130,43 @@ TEST(serial_init_gives_up_on_a_uart_that_does_not_answer)
     EXPECT_EQ(uart.ntx, 0);
 }
 
-TEST(serial_gives_up_on_a_transmitter_that_never_empties)
+/*
+ * A transmitter held up for a while (QEMU waiting on its host side): the
+ * byte waits for room and goes out, nothing dropped.
+ */
+TEST(serial_transmit_waits_for_room_and_drops_nothing)
 {
     reset();
     EXPECT_TRUE(serial_init());
-    serial_rx_enable();
-    EXPECT_EQ(uart.ier, 1);
-    uart.tx_stuck = true;
     uart.lsr_polls = 0;
-    serial_write("line\n", 5);
-    EXPECT_TRUE(!serial_is_present());
-    EXPECT_EQ(uart.ntx, 0);
-    EXPECT_EQ(uart.lsr_polls, SERIAL_POLL_MAX); /* one wait, not one per byte */
-    EXPECT_EQ(uart.ier, 0);                     /* receive interrupt off */
-    uart.lsr_polls = 0;
-    serial_putc('\n');
-    EXPECT_EQ(uart.lsr_polls, 0); /* and no waits after */
+    uart.tx_free_at = 5000;
+    serial_write("ok\n", 3);
+    EXPECT_EQ(uart.ntx, 4);
+    EXPECT_TRUE(memcmp(uart.tx, "ok\r\n", 4) == 0);
+    EXPECT_TRUE(uart.lsr_polls >= 5000);
 }
 
-/* A newline is "\r\n": with a stuck transmitter, the "\r" alone uses up the wait. */
-TEST(serial_newline_on_a_stuck_transmitter_waits_once)
+/*
+ * Transmit polling can read the status of a received byte with an error,
+ * which clears its error bits: the drain must still drop that byte.
+ */
+TEST(serial_error_seen_by_transmit_polling_still_drops_the_byte)
 {
+    struct serial_rx_stats before, after;
+    u8 buf[4];
+    bool more, dead;
+
     reset();
     EXPECT_TRUE(serial_init());
-    uart.tx_stuck = true;
-    uart.lsr_polls = 0;
-    serial_putc('\n');
-    EXPECT_EQ(uart.lsr_polls, SERIAL_POLL_MAX);
+    serial_rx_get_stats(&before);
+    rx_push('!', 0x08); /* framing error */
+    rx_push('k', 0);
+    serial_putc('a'); /* polls the status once: sees and clears the error */
+    EXPECT_EQ(uart.rx_err[uart.rx_head], 0);
+    EXPECT_EQ(serial_rx_drain(buf, sizeof(buf), &more, &dead), 1);
+    EXPECT_EQ(buf[0], 'k');
+    serial_rx_get_stats(&after);
+    EXPECT_EQ(after.errors - before.errors, 1);
 }
 
 TEST(serial_drain_counts_dropped_bytes_against_its_limit)

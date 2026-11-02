@@ -75,7 +75,7 @@ bool serial_init(void)
      */
     outb(COM1 + UART_MCR, MCR_LOOPBACK | MCR_OUT2 | MCR_DTR_RTS);
     outb(COM1 + UART_DATA, 0xAE);
-    for (int polls = 0; polls < SERIAL_POLL_MAX; polls++) {
+    for (int polls = 0; polls < SERIAL_INIT_POLLS; polls++) {
         u8 lsr = inb(COM1 + UART_LSR);
 
         if (lsr == LSR_ABSENT)
@@ -86,43 +86,31 @@ bool serial_init(void)
         }
     }
     outb(COM1 + UART_MCR, MCR_OUT2 | MCR_DTR_RTS);
-    lsr_rx_seen = 0; /* the self-test's status reads are no received byte's */
+    lsr_rx_seen = 0; /* no receive errors carried over from before a (re)init */
     serial_present = ok;
     return ok;
 }
 
 /*
- * One byte, once the transmitter has room. A transmitter that never has
- * room (stuck, or gone) is given up on for good after SERIAL_POLL_MAX
- * polls rather than hang every later write, panic() included: it reads as
- * absent from then on, and its receive interrupt is turned off. Nothing
- * is logged, since the console may be holding its own lock.
+ * One byte, once the transmitter has room, however long that takes: under
+ * QEMU it waits while the host side is paused (Ctrl-S, a slow terminal)
+ * and nothing is lost. A bound here was tried: any short enough to help on
+ * a stuck UART drops output under QEMU's flow control (docs/design/
+ * console.md). With no UART the status reads 0xFF, room included.
  */
 static void serial_putc_raw(char c)
 {
-    for (int polls = 0; polls < SERIAL_POLL_MAX; polls++) {
-        u8 lsr = read_lsr();
-
-        if (lsr == LSR_ABSENT)
-            break;
-        if (lsr & LSR_THR_EMPTY) {
-            outb(COM1 + UART_DATA, (u8)c);
-            return;
-        }
-    }
-    serial_present = false;
-    serial_rx_disable();
+    while (!(read_lsr() & LSR_THR_EMPTY))
+        ;
+    outb(COM1 + UART_DATA, (u8)c);
 }
 
 void serial_putc(char c)
 {
     if (!serial_present)
         return;
-    if (c == '\n') {
+    if (c == '\n')
         serial_putc_raw('\r');
-        if (!serial_present)
-            return; /* given up on: one wait, not two */
-    }
     serial_putc_raw(c);
 }
 

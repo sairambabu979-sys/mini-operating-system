@@ -153,15 +153,19 @@ now checks the scroll count too.
   to 44 ms if it is all newlines). Of the ticks that fall due meanwhile,
   one stays pending and the rest are lost to the clock.
   Draining COM1 from a buffer, as the screen is fed, would fix it.
-- **No wait on COM1 is unbounded.** The loopback self-test and each
-  transmitted byte give up after `SERIAL_POLL_MAX` (100,000) line-status
-  polls, with no clock needed; a transmitter that never has room is then
-  given up on for good, COM1 reads as absent and its receive interrupt is
-  turned off, so a stuck UART costs one wait, not one per byte, and
-  `panic()` still reaches the screen. The receive drain counts dropped
-  (errored) bytes against its limit, so a line delivering nothing but
-  errors cannot hold the CPU in IRQ 4. A model UART in the host tests
-  (`tests/host/test_serial.c`) shows each of these ends.
+- **COM1 output waits for the transmitter, however long.** That is flow
+  control: QEMU holds the transmitter while its host side is paused
+  (Ctrl-S, a slow terminal) and nothing is lost. A UART whose transmitter
+  never empties would therefore hang output. Bounding the wait was tried
+  and measured: QEMU runs through 2,000,000 polls in under 3 s, so any
+  bound short enough to matter on a stuck UART dropped output under a
+  short pause, and one long enough not to was minutes on real hardware.
+  The waits that cannot block output are bounded: the loopback self-test
+  waits at most `SERIAL_INIT_POLLS` polls for its byte and always leaves
+  loopback, and the receive drain counts dropped (errored) bytes against
+  its limit, so a receiver reporting bad bytes as fast as they are read
+  (an emulator, or broken hardware) cannot hold IRQ 4. A model UART in
+  the host tests (`tests/host/test_serial.c`) checks each.
 - **Panics before the memory manager is up** (GDT/IDT setup, the CPU
   checks, `mm_init` itself) reach COM1 only. The screen is mapped through
   `iomap()`. An early console drawn through the loader's identity map

@@ -11,23 +11,20 @@
 
 #include <types.h>
 
-/*
- * Every wait on the UART gives up after this many line-status polls: the
- * driver runs before there is a clock, and in panic().
- */
-#define SERIAL_POLL_MAX 100000
+/* Line-status polls the loopback self-test waits for its byte: there is no clock yet. */
+#define SERIAL_INIT_POLLS 100000
 
 /*
  * Programs COM1 for 115200 8N1. Returns false if no UART responds to its
- * loopback self-test within SERIAL_POLL_MAX polls; it is left out of
+ * loopback self-test within SERIAL_INIT_POLLS polls; it is left out of
  * loopback either way.
  */
 bool serial_init(void);
 
 /*
- * Output, polled. "\n" is translated to "\r\n". No-op without a UART. A
- * transmitter with no room after SERIAL_POLL_MAX polls is given up on:
- * the UART reads as absent from then on, its receive interrupt off.
+ * Blocking output: each byte waits for room in the transmitter, so QEMU's
+ * flow control loses nothing. "\n" is translated to "\r\n". No-op
+ * without a UART.
  */
 void serial_putc(char c);
 void serial_write(const char *s, usize len);
