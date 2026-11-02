@@ -157,14 +157,28 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
 #endif
 }
 
+static long test_fail_after = -1; /* pmm_test_fail_after(): successes left, or -1 */
+
 u64 pmm_alloc_pages(unsigned order)
 {
     irqflags_t flags = spin_lock_irqsave(&pmm_lock);
-    u64 pfn = buddy_alloc(&buddy, order);
+    u64 pfn = test_fail_after == 0 ? BUDDY_NONE : buddy_alloc(&buddy, order);
 
+    if (pfn != BUDDY_NONE && test_fail_after > 0)
+        test_fail_after--;
     spin_unlock_irqrestore(&pmm_lock, flags);
 
     return pfn == BUDDY_NONE ? PMM_ALLOC_FAILED : pfn << PAGE_SHIFT;
+}
+
+long pmm_test_fail_after(long n)
+{
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+    long previous = test_fail_after;
+
+    test_fail_after = n;
+    spin_unlock_irqrestore(&pmm_lock, flags);
+    return previous;
 }
 
 void pmm_free_pages(u64 phys, unsigned order)

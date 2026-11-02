@@ -14,6 +14,7 @@
 #include <core/boot.h>
 #include <core/ktest.h>
 #include <core/panic.h>
+#include <core/preempt.h>
 #include <core/sections.h>
 #include <lib/errno.h>
 #include <lib/string.h>
@@ -186,6 +187,127 @@ KTEST(vmm_map_unmap_roundtrip)
     KEXPECT(try_read(va).hit); /* TLB was flushed */
     KEXPECT_EQ(vmm_unmap_page(as, va, &pa), -ENOENT);
     pmm_free_page(frame);
+}
+
+/* A range that fails part-way leaves none of it mapped, and a page mapped before stays. */
+KTEST(vmm_map_failure_leaves_nothing_mapped)
+{
+    struct address_space *as = vmm_kernel_space();
+    uptr va = VMALLOC_BASE + (257ull << 30); /* far from vmalloc, and from the test above */
+    u64 frame = pmm_alloc_page(), pa, pte;
+
+    KEXPECT(frame != PMM_ALLOC_FAILED);
+    if (frame == PMM_ALLOC_FAILED)
+        return;
+    KEXPECT_EQ(vmm_map(as, va + 2 * PAGE_SIZE_4K, frame, PAGE_SIZE_4K, VM_WRITE), 0);
+    KEXPECT_EQ(vmm_map(as, va, frame, 3 * PAGE_SIZE_4K, VM_WRITE), -EEXIST); /* the 3rd page */
+    KEXPECT(!vmm_translate(as, va, &pa, &pte));
+    KEXPECT(!vmm_translate(as, va + PAGE_SIZE_4K, &pa, &pte));
+    KEXPECT(vmm_translate(as, va + 2 * PAGE_SIZE_4K, &pa, &pte) && pa == frame);
+    KEXPECT_EQ(vmm_unmap_page(as, va + 2 * PAGE_SIZE_4K, &pa), 0);
+
+    /*
+     * Out of memory part-way: the 2 MiB boundary needs a new page table.
+     * The page below it has one already (mapped and unmapped first), so it
+     * maps, then the allocation for the next fails, and it is taken back.
+     */
+    uptr edge = va + (2ull << 20);
+
+    KEXPECT_EQ(vmm_map(as, edge - PAGE_SIZE_4K, frame, PAGE_SIZE_4K, VM_WRITE), 0);
+    KEXPECT_EQ(vmm_unmap_page(as, edge - PAGE_SIZE_4K, &pa), 0);
+    preempt_disable();
+    long previous = pmm_test_fail_after(0);
+    int err = vmm_map(as, edge - PAGE_SIZE_4K, frame, 2 * PAGE_SIZE_4K, VM_WRITE);
+
+    (void)pmm_test_fail_after(previous);
+    preempt_enable();
+    KEXPECT_EQ(err, -ENOMEM);
+    KEXPECT(!vmm_translate(as, edge - PAGE_SIZE_4K, &pa, &pte));
+    pmm_free_page(frame);
+}
+
+/* Ranges that wrap, leave the canonical addresses, or cross into the other half are refused. */
+KTEST(vmm_map_refuses_ranges_leaving_their_half)
+{
+    struct address_space *as = vmm_create_user_space();
+    u64 pa, pte;
+
+    KEXPECT(as != NULL);
+    if (!as)
+        return;
+    uptr last_user = 0x00007FFFFFFFF000ull; /* the next page is not canonical */
+
+    KEXPECT_EQ(vmm_map(as, last_user, 0x200000, 2 * PAGE_SIZE_4K, VM_WRITE), -EINVAL);
+    KEXPECT(!vmm_translate(as, last_user, &pa, &pte)); /* refused before anything was mapped */
+    KEXPECT_EQ(vmm_map(as, 0xFFFFFFFFFFFFF000ull, 0x200000, 2 * PAGE_SIZE_4K, VM_WRITE), -EINVAL);
+    KEXPECT_EQ(vmm_map(as, 0x400000, ~0ull & ~0xFFFull, 2 * PAGE_SIZE_4K, VM_WRITE), -EINVAL);
+    vmm_destroy_user_space(as);
+}
+
+/*
+ * Failed allocations hand back their frames and their addresses: a
+ * thousand of them in a row leave the free frames as they were and do
+ * not move vmalloc's bump pointer (seen through an allocation of an
+ * unusual size, which can only come from it, before and after).
+ */
+KTEST(vmalloc_failures_give_back_frames_and_addresses)
+{
+    struct pmm_stats before, after;
+    void *warm = vmalloc(2 * PAGE_SIZE_4K); /* page tables for the region, made now */
+
+    KEXPECT(warm != NULL);
+    vfree(warm);
+    preempt_disable();
+    u8 *probe1 = vmalloc(97 * PAGE_SIZE_4K);
+
+    KEXPECT(probe1 != NULL);
+    vfree(probe1); /* quarantined: the next 97 pages must come from the bump pointer */
+    pmm_get_stats(&before);
+    for (int i = 0; i < 1000; i++) {
+        long previous = pmm_test_fail_after(1); /* the first page's frame, then nothing */
+        void *p = vmalloc(2 * PAGE_SIZE_4K);
+
+        (void)pmm_test_fail_after(previous);
+        KEXPECT(p == NULL);
+        if (p)
+            vfree(p);
+    }
+    pmm_get_stats(&after);
+    u8 *probe2 = vmalloc(97 * PAGE_SIZE_4K);
+
+    preempt_enable();
+    KEXPECT_EQ(after.free_frames, before.free_frames);
+    KEXPECT(probe2 != NULL);
+    KEXPECT_EQ((uptr)probe2, (uptr)probe1 + 98 * PAGE_SIZE_4K); /* right after: no gap */
+    if (probe2)
+        vfree(probe2);
+}
+
+/*
+ * The same for iomap(): 4 MiB of device addresses (an unused stretch of
+ * the PCI hole: nothing is ever read) cross a 2 MiB boundary into a page
+ * table that does not exist yet, which cannot be allocated. The mapping
+ * fails, and its range goes back to the bump pointer.
+ */
+KTEST(iomap_failure_gives_back_its_range)
+{
+    preempt_disable();
+    u8 *probe1 = vmalloc(97 * PAGE_SIZE_4K);
+
+    KEXPECT(probe1 != NULL);
+    vfree(probe1);
+    long previous = pmm_test_fail_after(0);
+    void *io = iomap(0xC0000000ull, 4ull << 20, VM_NOCACHE);
+
+    (void)pmm_test_fail_after(previous);
+    u8 *probe2 = vmalloc(97 * PAGE_SIZE_4K);
+
+    preempt_enable();
+    KEXPECT(io == NULL);
+    KEXPECT(probe2 != NULL);
+    KEXPECT_EQ((uptr)probe2, (uptr)probe1 + 98 * PAGE_SIZE_4K);
+    if (probe2)
+        vfree(probe2);
 }
 
 KTEST(vmalloc_areas_have_guard_pages)

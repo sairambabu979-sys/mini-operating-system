@@ -32,6 +32,14 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
 /* Returns the physical address of 2^order contiguous, aligned frames, or 0. */
 __must_check u64 pmm_alloc_pages(unsigned order);
 
+/*
+ * For tests: after `n` more successful allocations, every allocation
+ * fails, until it is called again; -1 turns that off (the default).
+ * Returns the previous setting. The caller keeps other tasks from
+ * allocating meanwhile (preempt_disable()).
+ */
+long pmm_test_fail_after(long n);
+
 static inline __must_check u64 pmm_alloc_page(void)
 {
     return pmm_alloc_pages(0);

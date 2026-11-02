@@ -148,11 +148,15 @@ static void flush(const struct address_space *as, uptr va)
  * `allow_huge` (direct map only). On -EEXIST the range may be partially
  * mapped; callers treat that as a bug.
  */
+/* Maps page by page; *mapped (if not NULL) says how many bytes were, failure or not. */
 static int map_range(struct address_space *as, uptr va, u64 pa, usize size, unsigned flags,
-                     bool allow_huge)
+                     bool allow_huge, usize *mapped)
 {
     u64 bits = leaf_bits(flags);
     int err = 0;
+
+    if (mapped)
+        *mapped = 0;
 
     while (size > 0) {
         u64 step = PAGE_SIZE_4K;
@@ -175,6 +179,8 @@ static int map_range(struct address_space *as, uptr va, u64 pa, usize size, unsi
             return -EEXIST;
         *entry = pa | bits | (level > 1 ? PTE_HUGE : 0);
         flush(as, va);
+        if (mapped)
+            *mapped += step;
         va += step;
         pa += step;
         size -= step;
@@ -184,14 +190,34 @@ static int map_range(struct address_space *as, uptr va, u64 pa, usize size, unsi
 
 int vmm_map(struct address_space *as, uptr va, u64 pa, usize size, unsigned flags)
 {
+    uptr last = va + size - 1;
+
     if (!IS_ALIGNED(va | pa | size, PAGE_SIZE_4K) || !va_is_canonical(va))
+        return -EINVAL;
+    /* The whole range: no wrap, canonical to its end, on one side of KERNEL_HALF. */
+    if (size && (last < va || pa + size - 1 < pa || !va_is_canonical(last) ||
+                 (va >= KERNEL_HALF) != (last >= KERNEL_HALF)))
         return -EINVAL;
     if ((flags & VM_WRITE) && (flags & VM_EXEC))
         return -EINVAL; /* W^X */
 
     irqflags_t irq = spin_lock_irqsave(&as->lock);
-    int err = map_range(as, va, pa, size, flags, false);
+    usize mapped;
+    int err = map_range(as, va, pa, size, flags, false, &mapped);
 
+    /*
+     * A failure maps nothing: take back what this call mapped (pages that
+     * were already mapped, the cause of an -EEXIST, are not its own). Page
+     * tables it created stay: walkers read kernel tables without a lock.
+     */
+    for (usize off = 0; err && off < mapped; off += PAGE_SIZE_4K) {
+        int ignored;
+        u64 *entry = walk(as, va + off, 1, false, &ignored);
+
+        BUG_ON(!entry || !(*entry & PTE_PRESENT));
+        *entry = 0;
+        flush(as, va + off);
+    }
     spin_unlock_irqrestore(&as->lock, irq);
     return err;
 }
@@ -317,7 +343,8 @@ static void map_kernel_image(void)
         uptr va = (uptr)sections[i].start;
         usize size = (usize)(sections[i].end - sections[i].start);
 
-        must(map_range(&kernel_as, va, va - KERNEL_VMA, size, sections[i].flags | VM_GLOBAL, false),
+        must(map_range(&kernel_as, va, va - KERNEL_VMA, size, sections[i].flags | VM_GLOBAL, false,
+                       NULL),
              sections[i].name);
     }
 }
@@ -355,7 +382,7 @@ static void map_direct(const struct mem_region *regions, usize n, const struct b
             unsigned flags = VM_GLOBAL | (c == 1 ? 0 : VM_WRITE);
 
             must(map_range(&kernel_as, HHDM_BASE + cuts[c], cuts[c], cuts[c + 1] - cuts[c], flags,
-                           true),
+                           true, NULL),
                  "direct map");
         }
         mapped_end = end;

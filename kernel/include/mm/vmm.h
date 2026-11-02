@@ -51,8 +51,10 @@ bool vmm_is_active(void);
 
 /*
  * Maps [va, va + size) to [pa, pa + size) with 4 KiB pages. All arguments
- * page-aligned. -EINVAL on misalignment or a W+X request, -EEXIST if any
- * page is already mapped, -ENOMEM if a page table cannot be allocated.
+ * page-aligned. -EINVAL on misalignment, a W+X request, or a range that
+ * wraps, leaves the canonical addresses or crosses into the other half;
+ * -EEXIST if any page is already mapped, -ENOMEM if a page table cannot be
+ * allocated. On failure no page of the range is left mapped by this call.
  */
 __must_check int vmm_map(struct address_space *as, uptr va, u64 pa, usize size, unsigned flags);
 
