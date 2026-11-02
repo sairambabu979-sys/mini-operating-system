@@ -11,10 +11,21 @@
 
 #include <types.h>
 
-/* Programs COM1 for 115200 8N1. Returns false if no UART responds. */
+/* Line-status polls the loopback self-test waits for its byte: there is no clock yet. */
+#define SERIAL_INIT_POLLS 100000
+
+/*
+ * Programs COM1 for 115200 8N1. Returns false if no UART responds to its
+ * loopback self-test within SERIAL_INIT_POLLS polls; it is left out of
+ * loopback either way.
+ */
 bool serial_init(void);
 
-/* Blocking output. "\n" is translated to "\r\n". No-op without a UART. */
+/*
+ * Blocking output: each byte waits for room in the transmitter, so QEMU's
+ * flow control loses nothing. "\n" is translated to "\r\n". No-op
+ * without a UART.
+ */
 void serial_putc(char c);
 void serial_write(const char *s, usize len);
 
@@ -29,9 +40,11 @@ void serial_rx_disable(void);
 void serial_rx_kick(void);
 
 /*
- * Reads up to `cap` received bytes into `buf` without waiting, and
- * returns how many. A byte with a parity or framing error, or a break,
- * is dropped and counted; an overrun is counted and the byte kept.
+ * Takes up to `cap` received bytes without waiting, keeps them in `buf`,
+ * and returns how many it kept. A byte with a parity or framing error, or
+ * a break, is dropped and counted, but still counts against `cap`, so a
+ * line that only ever delivers bad bytes cannot keep the caller here; an
+ * overrun is counted and the byte kept.
  * *more is set if data was still waiting at `cap`, *dead if the UART
  * reads as absent (line status 0xFF).
  */

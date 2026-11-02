@@ -41,6 +41,7 @@
 #define ICR_SELF           (1u << 18)
 #define ICR_ASSERT         (1u << 14)
 #define ICR_SEND_PENDING   (1u << 12)
+#define IPI_SEND_SPINS     1000000
 #define TIMER_DIVIDE_BY_16 0x3u
 
 static volatile u32 *regs; /* xAPIC */
@@ -82,7 +83,11 @@ u32 lapic_boot_id(void)
     return cpuid(1, 0).ebx >> 24;
 }
 
-/* An IPI to `dest`; in xAPIC mode, waits until the APIC has sent it. */
+/*
+ * An IPI to `dest`; in xAPIC mode, waits until the APIC has sent it. An
+ * APIC sends within microseconds, so one still busy after a million
+ * pauses is broken: a panic names it rather than the machine hanging.
+ */
 static void send_ipi(u32 dest, u32 low)
 {
     if (x2apic) {
@@ -91,8 +96,11 @@ static void send_ipi(u32 dest, u32 low)
     }
     lapic_write(LAPIC_ICR_HI, dest << 24);
     lapic_write(LAPIC_ICR_LO, low);
-    while (lapic_read(LAPIC_ICR_LO) & ICR_SEND_PENDING)
+    for (int spins = 0; lapic_read(LAPIC_ICR_LO) & ICR_SEND_PENDING; spins++) {
+        if (spins == IPI_SEND_SPINS)
+            panic("lapic: IPI %#x to APIC %u still pending after %d spins", low, dest, spins);
         cpu_pause();
+    }
 }
 
 void lapic_eoi(void)

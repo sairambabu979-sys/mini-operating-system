@@ -57,6 +57,9 @@ static u8 read_lsr(void)
 
 bool serial_init(void)
 {
+    bool ok = false;
+
+    serial_present = false;
     outb(COM1 + UART_IER, 0x00);
     outb(COM1 + UART_LCR, LCR_DLAB);
     outb(COM1 + UART_DATA, BAUD_DIVISOR & 0xFF);
@@ -64,19 +67,37 @@ bool serial_init(void)
     outb(COM1 + UART_LCR, LCR_8N1);
     outb(COM1 + UART_FCR, FCR_ENABLE);
 
-    /* Loopback self-test: a byte written must read back unchanged. */
+    /*
+     * Loopback self-test: a byte written must read back unchanged, once the
+     * line status says it has arrived (a bounded wait: there is no clock
+     * yet). Normal mode again whatever happened: a port left in loopback
+     * would swallow everything sent to it.
+     */
     outb(COM1 + UART_MCR, MCR_LOOPBACK | MCR_OUT2 | MCR_DTR_RTS);
     outb(COM1 + UART_DATA, 0xAE);
-    if (inb(COM1 + UART_DATA) != 0xAE) {
-        serial_present = false;
-        return false;
-    }
+    for (int polls = 0; polls < SERIAL_INIT_POLLS; polls++) {
+        u8 lsr = inb(COM1 + UART_LSR);
 
+        if (lsr == LSR_ABSENT)
+            break;
+        if (lsr & LSR_DATA_READY) {
+            ok = inb(COM1 + UART_DATA) == 0xAE;
+            break;
+        }
+    }
     outb(COM1 + UART_MCR, MCR_OUT2 | MCR_DTR_RTS);
-    serial_present = true;
-    return true;
+    lsr_rx_seen = 0; /* no receive errors carried over from before a (re)init */
+    serial_present = ok;
+    return ok;
 }
 
+/*
+ * One byte, once the transmitter has room, however long that takes: under
+ * QEMU it waits while the host side is paused (Ctrl-S, a slow terminal)
+ * and nothing is lost. A bound here was tried: any short enough to help on
+ * a stuck UART drops output under QEMU's flow control (docs/design/
+ * console.md). With no UART the status reads 0xFF, room included.
+ */
 static void serial_putc_raw(char c)
 {
     while (!(read_lsr() & LSR_THR_EMPTY))
@@ -122,7 +143,7 @@ void serial_rx_kick(void)
 
 usize serial_rx_drain(u8 *buf, usize cap, bool *more, bool *dead)
 {
-    usize n = 0;
+    usize n = 0, taken = 0;
 
     *more = false;
     *dead = false;
@@ -135,12 +156,13 @@ usize serial_rx_drain(u8 *buf, usize cap, bool *more, bool *dead)
         }
         if (!(lsr & LSR_DATA_READY))
             break;
-        if (n == cap) {
+        if (taken == cap) { /* dropped bytes count: a stream of them must not hold the CPU */
             *more = true;
             break;
         }
         u8 byte = inb(COM1 + UART_DATA);
 
+        taken++;
         lsr |= lsr_rx_seen; /* what transmit polling saw of this byte */
         lsr_rx_seen = 0;
         if (lsr & LSR_OVERRUN)
