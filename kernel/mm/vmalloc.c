@@ -33,6 +33,7 @@
 struct freed_range {
     uptr base; /* first page after the guard */
     usize npages;
+    bool unpublished; /* failed allocations have never escaped to a caller */
 };
 
 static uptr next_va = VMALLOC_BASE;
@@ -44,10 +45,10 @@ static struct spinlock va_lock = SPINLOCK_INIT("vmalloc");
 /* The oldest freed range of exactly `npages` past the quarantine, removed; or 0. */
 static uptr reuse_va_locked(usize npages)
 {
-    for (unsigned i = 0; i + QUARANTINE < nfreed; i++) {
+    for (unsigned i = 0; i < nfreed; i++) {
         struct freed_range *r = &freed[(freed_head + i) % FREED_MAX];
 
-        if (r->npages != npages)
+        if (r->npages != npages || (!r->unpublished && i + QUARANTINE >= nfreed))
             continue;
         uptr base = r->base;
 
@@ -61,15 +62,20 @@ static uptr reuse_va_locked(usize npages)
     return 0;
 }
 
-static void release_va(uptr base, usize npages)
+static void release_va(uptr base, usize npages, bool unpublished)
 {
     irqflags_t flags = spin_lock_irqsave(&va_lock);
 
+    if (unpublished && base + npages * PAGE_SIZE_4K == next_va) {
+        next_va = base - PAGE_SIZE_4K;
+        spin_unlock_irqrestore(&va_lock, flags);
+        return;
+    }
     if (nfreed == FREED_MAX) {
         freed_head = (freed_head + 1) % FREED_MAX;
         nfreed--;
     }
-    freed[(freed_head + nfreed) % FREED_MAX] = (struct freed_range){base, npages};
+    freed[(freed_head + nfreed) % FREED_MAX] = (struct freed_range){base, npages, unpublished};
     nfreed++;
     spin_unlock_irqrestore(&va_lock, flags);
 }
@@ -106,7 +112,7 @@ static uptr reserve_va(usize npages)
 
 void *vmalloc(usize size)
 {
-    if (size == 0)
+    if (size == 0 || size > VMALLOC_SIZE - PAGE_SIZE_4K)
         return NULL;
     usize npages = ALIGN_UP(size, PAGE_SIZE_4K) / PAGE_SIZE_4K;
     uptr base = reserve_va(npages);
@@ -121,13 +127,14 @@ void *vmalloc(usize size)
             vmm_map(vmm_kernel_space(), va, frame, PAGE_SIZE_4K, VM_WRITE | VM_GLOBAL) != 0) {
             if (frame != PMM_ALLOC_FAILED)
                 pmm_free_page(frame);
-            /* Roll back what was mapped; the VA range is simply abandoned. */
+            /* Roll back before making this never-published range reusable. */
             for (usize j = 0; j < i; j++) {
                 u64 pa;
 
                 if (vmm_unmap_page(vmm_kernel_space(), base + j * PAGE_SIZE_4K, &pa) == 0)
                     pmm_free_page(pa);
             }
+            release_va(base, npages, true);
             return NULL;
         }
         memset((void *)va, 0, PAGE_SIZE_4K);
@@ -159,7 +166,7 @@ void vfree(void *ptr)
         pmm_free_page(pa);
         va += PAGE_SIZE_4K;
     }
-    release_va(base, (va - base) / PAGE_SIZE_4K);
+    release_va(base, (va - base) / PAGE_SIZE_4K, false);
 }
 
 void *iomap(u64 phys, usize size, unsigned flags)
@@ -183,8 +190,12 @@ void *iomap(u64 phys, usize size, unsigned flags)
 
     uptr base = reserve_va(npages);
 
-    if (!base || vmm_map(vmm_kernel_space(), base, first, npages * PAGE_SIZE_4K,
-                         flags | VM_GLOBAL | VM_IOMAP) != 0)
-        return NULL; /* a failed map leaves the VA range abandoned, as in vmalloc */
+    if (!base)
+        return NULL;
+    if (vmm_map(vmm_kernel_space(), base, first, npages * PAGE_SIZE_4K,
+                 flags | VM_GLOBAL | VM_IOMAP) != 0) {
+        release_va(base, npages, true);
+        return NULL;
+    }
     return (void *)(base + (phys - first));
 }

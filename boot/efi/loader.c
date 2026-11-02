@@ -541,6 +541,16 @@ efi_status efi_main(efi_handle image, struct efi_system_table *system_table)
     }
 
     u64 entry = load_kernel(kernel, kernel_size, bi);
+    u64 initrd_size;
+    const u8 *initrd = read_file(root, u"\\minios\\initrd.tar", "initrd.tar", &initrd_size, true);
+
+    if (!initrd_size || initrd_size > (64ull << 20))
+        fail("initrd.tar must be between 1 byte and 64 MiB\n");
+    void *module = alloc_pages_below((initrd_size + PAGE - 1) / PAGE, BOOT_WINDOW);
+
+    memcpy(module, initrd, initrd_size);
+    bi->initrd_phys = (uptr)module;
+    bi->initrd_size = initrd_size;
     u64 pml4 = build_page_tables();
     u64 image_base = (uptr)li->image_base;
 

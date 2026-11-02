@@ -37,6 +37,7 @@
 
 %define KERNEL_PHYS_MIN     0x00100000
 %define KERNEL_STAGING      0x01000000
+%define INITRD_PHYS         0x02000000
 %define KERNEL_VMA          0xFFFFFFFF80000000
 
 ; GDT selectors (stage 2's own GDT; the kernel installs a new one)

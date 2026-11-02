@@ -13,7 +13,12 @@ void *memcpy(void *restrict dst, const void *restrict src, usize n)
 {
     void *ret = dst;
 
+#ifdef __x86_64__
     __asm__ volatile("rep movsb" : "+D"(dst), "+S"(src), "+c"(n) : : "memory");
+#else
+    for (usize i = 0; i < n; i++)
+        ((u8 *)dst)[i] = ((const u8 *)src)[i];
+#endif
     return ret;
 }
 
@@ -27,9 +32,15 @@ void *memmove(void *dst, const void *src, usize n)
 
     if (d < s || d >= s + n) {
         /* No harmful overlap: forward copy is safe. */
+#ifdef __x86_64__
         __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+#else
+        for (usize i = 0; i < n; i++)
+            d[i] = s[i];
+#endif
     } else {
         /* dst overlaps the tail of src: copy backwards. */
+#ifdef __x86_64__
         d += n - 1;
         s += n - 1;
         __asm__ volatile("std\n\t"
@@ -38,6 +49,12 @@ void *memmove(void *dst, const void *src, usize n)
                          : "+D"(d), "+S"(s), "+c"(n)
                          :
                          : "memory");
+#else
+        while (n) {
+            n--;
+            d[n] = s[n];
+        }
+#endif
     }
     return dst;
 }
@@ -46,7 +63,12 @@ void *memset(void *dst, int c, usize n)
 {
     void *ret = dst;
 
+#ifdef __x86_64__
     __asm__ volatile("rep stosb" : "+D"(dst), "+c"(n) : "a"((u8)c) : "memory");
+#else
+    for (usize i = 0; i < n; i++)
+        ((u8 *)dst)[i] = (u8)c;
+#endif
     return ret;
 }
 

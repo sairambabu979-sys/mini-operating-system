@@ -46,6 +46,8 @@ KTEST(pmm_manages_nearly_all_usable_ram)
     const struct boot_info *bi = boot_info_get();
     u64 overhead =
         PMM_LOW_RESERVED_END + (bi->kernel_phys_end - bi->kernel_phys_start) + st.metadata_bytes;
+    overhead += ALIGN_UP(bi->initrd_phys + bi->initrd_size, PAGE_SIZE) -
+                ALIGN_DOWN(bi->initrd_phys, PAGE_SIZE);
 
     KEXPECT(managed <= usable);
     KEXPECT(managed + overhead + 2 * PAGE_SIZE >= usable); /* only the known reservations */
@@ -64,6 +66,7 @@ KTEST(pmm_allocations_avoid_reserved_memory)
         KEXPECT(IS_ALIGNED(p, len));
         KEXPECT(p >= PMM_LOW_RESERVED_END);
         KEXPECT(p + len <= bi->kernel_phys_start || p >= bi->kernel_phys_end);
+        KEXPECT(p + len <= bi->initrd_phys || p >= bi->initrd_phys + bi->initrd_size);
         KEXPECT(in_usable_ram(p, len));
         pmm_free_pages(p, order);
     }

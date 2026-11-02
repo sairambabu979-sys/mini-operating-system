@@ -22,6 +22,7 @@
 #include <compiler.h>
 #include <lib/list.h>
 #include <types.h>
+#include <uapi/fs.h>
 
 #define TASK_NAME_MAX   16
 #define KSTACK_SIZE     (16ul * 1024)
@@ -51,6 +52,14 @@ struct wait_queue {
 
 struct address_space;
 
+/* Immutable VFS nodes need no reference counting. Each task owns its offsets;
+ * spawn starts with an empty table, and exit releases it with the task. */
+struct file_descriptor {
+    int node;
+    u64 offset;
+    bool used;
+};
+
 struct task {
     uptr saved_rsp; /* switch.asm: must stay first (asm-offsets checks) */
     void *kstack;   /* vmalloc base; NULL for the boot task */
@@ -58,6 +67,7 @@ struct task {
     struct address_space *as; /* NULL: kernel thread */
     void *fpu_state;          /* FXSAVE area for user tasks */
     uptr user_entry;          /* first user RIP (processes only) */
+    struct file_descriptor files[FS_FD_MAX]; /* 0..2 reserved for the console */
 
     enum task_state state;
     int pid;

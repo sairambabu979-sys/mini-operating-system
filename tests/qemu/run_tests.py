@@ -45,13 +45,18 @@ EXIT_FAILURE = (0x11 << 1) | 1  # 35
 TAP_PLAN = re.compile(r"^1\.\.(\d+)$")
 
 # OVMF (UEFI firmware for QEMU) as packaged by Debian/Ubuntu (`apt install ovmf`).
-OVMF_CODE_CANDIDATES = ["/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_CODE.fd"]
+OVMF_CODE_CANDIDATES = ["/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_CODE.fd",
+                        "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+                        "/usr/local/share/qemu/edk2-x86_64-code.fd"]
 
 
 def ovmf_drives(workdir: Path) -> list[str]:
     """pflash drives for OVMF: read-only code plus a private copy of the variables."""
-    for code in map(Path, OVMF_CODE_CANDIDATES):
-        vars_template = code.with_name(code.name.replace("CODE", "VARS"))
+    candidates = ([os.environ["OVMF_CODE"]] if os.environ.get("OVMF_CODE") else [])
+    for code in map(Path, candidates + OVMF_CODE_CANDIDATES):
+        default_vars = ("edk2-i386-vars.fd" if code.name.startswith("edk2-")
+                        else code.name.replace("CODE", "VARS"))
+        vars_template = Path(os.environ.get("OVMF_VARS", str(code.with_name(default_vars))))
         if code.exists() and vars_template.exists():
             vars_copy = workdir / "OVMF_VARS.fd"
             shutil.copyfile(vars_template, vars_copy)

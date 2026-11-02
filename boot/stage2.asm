@@ -60,6 +60,8 @@ stage2_header:
 .magic:             dd STAGE2_MAGIC
 .kernel_lba:        dd 0
 .kernel_sectors:    dd 0
+.initrd_lba:        dd 0
+.initrd_size:       dd 0
 .cmdline:           times BOOT_CMDLINE_MAX db 0
 
 stage2_main:
@@ -178,10 +180,15 @@ putc:
     pusha
     mov     ah, al
     mov     dx, COM1 + 5
+    mov     cx, 0xFFFF
 .wait:
     in      al, dx
     test    al, 0x20
-    jz      .wait
+    jnz     .send
+    loop    .wait
+    popa
+    ret
+.send:
     mov     al, ah
     mov     dx, COM1
     out     dx, al
@@ -404,8 +411,21 @@ detect_memory:
 ; before writing to it, rather than corrupting whatever lives there.
 check_staging_area:
     mov     edx, [stage2_header.kernel_sectors]
+    cmp     edx, (INITRD_PHYS - KERNEL_STAGING) / 512
+    ja      err_stage
     shl     edx, 9                  ; bytes
-    add     edx, KERNEL_STAGING     ; EDX = staging end (exclusive)
+    mov     edi, KERNEL_STAGING
+    call    check_usable_area
+    mov     edx, [stage2_header.initrd_size]
+    test    edx, edx
+    jz      err_header
+    add     edx, 511
+    jc      err_stage
+    and     edx, ~511
+    mov     edi, INITRD_PHYS
+    ; fall through
+check_usable_area:
+    add     edx, edi                ; end (exclusive)
     jc      err_stage
     mov     si, BOOT_INFO_PHYS + BI_MMAP
     mov     cx, [BOOT_INFO_PHYS + BI_MMAP_COUNT]
@@ -414,7 +434,7 @@ check_staging_area:
     jne     .next
     cmp     dword [si + E820_BASE + 4], 0
     jne     .next                   ; starts above 4 GiB
-    cmp     dword [si + E820_BASE], KERNEL_STAGING
+    cmp     dword [si + E820_BASE], edi
     ja      .next                   ; starts after the staging area
     cmp     dword [si + E820_LENGTH + 4], 0
     jne     .ok                     ; >= 4 GiB long and starts below: covers it
@@ -486,10 +506,21 @@ enter_unreal:
 
 load_kernel:
     mov     eax, [stage2_header.kernel_lba]
+    mov     ecx, [stage2_header.kernel_sectors]
+    mov     edi, KERNEL_STAGING
+    call    load_blob
+    mov     eax, [stage2_header.initrd_lba]
+    mov     ecx, [stage2_header.initrd_size]
+    add     ecx, 511
+    jc      err_header
+    shr     ecx, 9
+    mov     edi, INITRD_PHYS
+    ; fall through
+load_blob:
     mov     [kernel_dap.lba], eax
-    mov     eax, [stage2_header.kernel_sectors]
-    mov     [sectors_left], eax
-    mov     dword [dest_ptr], KERNEL_STAGING
+    mov     dword [kernel_dap.lba + 4], 0
+    mov     [sectors_left], ecx
+    mov     [dest_ptr], edi
 .chunk:
     mov     eax, [sectors_left]
     test    eax, eax
@@ -532,6 +563,9 @@ fill_boot_info_real:
     movzx   eax, byte [boot_drive]
     mov     [BOOT_INFO_PHYS + BI_BOOT_DRIVE], eax
     mov     dword [BOOT_INFO_PHYS + BI_LOADER], BOOT_LOADER_BIOS
+    mov     dword [BOOT_INFO_PHYS + BI_INITRD_PHYS], INITRD_PHYS
+    mov     eax, [stage2_header.initrd_size]
+    mov     [BOOT_INFO_PHYS + BI_INITRD_SIZE], eax
     ret
 
 ; --------------------------------------------------------------------------
@@ -735,15 +769,22 @@ fail64:
 
 ; putc64: AL to COM1 (no BIOS in long mode). Clobbers DX, AH.
 putc64:
+    push    rcx
     mov     ah, al
     mov     dx, COM1 + 5
+    mov     ecx, 0xFFFF
 .wait:
     in      al, dx
     test    al, 0x20
-    jz      .wait
+    jnz     .send
+    loop    .wait
+    pop     rcx
+    ret
+.send:
     mov     al, ah
     mov     dx, COM1
     out     dx, al
+    pop     rcx
     ret
 
 ; --------------------------------------------------------------------------

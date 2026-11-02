@@ -29,6 +29,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--loader", type=Path, required=True)
     ap.add_argument("--kernel", type=Path, required=True)
+    ap.add_argument("--initrd", type=Path, required=True)
     ap.add_argument("--cmdline", default="")
     ap.add_argument("-o", "--output", type=Path, required=True)
     args = ap.parse_args()
@@ -41,6 +42,7 @@ def main() -> int:
     run("mmd", "-i", img, "::/EFI", "::/EFI/BOOT", "::/minios")
     run("mcopy", "-i", img, str(args.loader), "::/EFI/BOOT/BOOTX64.EFI")
     run("mcopy", "-i", img, str(args.kernel), "::/minios/kernel.elf")
+    run("mcopy", "-i", img, str(args.initrd), "::/minios/initrd.tar")
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as c:
         c.write(args.cmdline + "\n")
     try:

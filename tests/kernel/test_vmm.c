@@ -188,6 +188,48 @@ KTEST(vmm_map_unmap_roundtrip)
     pmm_free_page(frame);
 }
 
+KTEST(vmm_failed_range_mapping_preserves_only_the_existing_page)
+{
+    struct address_space *as = vmm_kernel_space();
+    uptr va = VMALLOC_BASE + (257ull << 30);
+    u64 frame = pmm_alloc_pages(1), pa, pte;
+
+    KEXPECT(frame != PMM_ALLOC_FAILED);
+    if (!frame)
+        return;
+    KEXPECT_EQ(vmm_map(as, va + PAGE_SIZE_4K, frame, PAGE_SIZE_4K, VM_WRITE), 0);
+    KEXPECT_EQ(vmm_map(as, va, frame, 2 * PAGE_SIZE_4K, VM_WRITE), -EEXIST);
+    KEXPECT(!vmm_translate(as, va, &pa, &pte));
+    KEXPECT(vmm_translate(as, va + PAGE_SIZE_4K, &pa, &pte));
+    KEXPECT_EQ(pa, frame);
+    KEXPECT_EQ(vmm_unmap_page(as, va + PAGE_SIZE_4K, &pa), 0);
+    pmm_free_pages(frame, 1);
+}
+
+KTEST(vmalloc_repeated_failures_return_frames_and_reuse_addresses)
+{
+    struct pmm_stats before, after;
+    /* Warm the table path, then repeatedly fail after one backing frame. */
+    void *warm = vmalloc(2 * PAGE_SIZE_4K);
+
+    KEXPECT(warm != NULL);
+    vfree(warm);
+    preempt_disable();
+    pmm_get_stats(&before);
+    for (unsigned i = 0; i < 1000; i++) {
+        long previous = pmm_test_fail_after(1);
+        void *p = vmalloc(2 * PAGE_SIZE_4K);
+
+        (void)pmm_test_fail_after(previous);
+        KEXPECT(p == NULL);
+        if (p)
+            vfree(p);
+    }
+    pmm_get_stats(&after);
+    preempt_enable();
+    KEXPECT_EQ(after.free_frames, before.free_frames);
+}
+
 KTEST(vmalloc_areas_have_guard_pages)
 {
     u8 *p = vmalloc(4 * PAGE_SIZE_4K);

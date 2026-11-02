@@ -91,8 +91,11 @@ static void send_ipi(u32 dest, u32 low)
     }
     lapic_write(LAPIC_ICR_HI, dest << 24);
     lapic_write(LAPIC_ICR_LO, low);
-    while (lapic_read(LAPIC_ICR_LO) & ICR_SEND_PENDING)
+    for (unsigned tries = 0; lapic_read(LAPIC_ICR_LO) & ICR_SEND_PENDING; tries++) {
+        if (tries == 1000000)
+            panic("local APIC did not complete IPI delivery to %u", dest);
         cpu_pause();
+    }
 }
 
 void lapic_eoi(void)

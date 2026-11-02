@@ -19,7 +19,7 @@
 #include <types.h>
 
 #define BOOT_INFO_MAGIC   0x4F464E49544F4F42ull /* "BOOTINFO" in little-endian */
-#define BOOT_INFO_VERSION 4u                    /* 4: `framebuffer` added */
+#define BOOT_INFO_VERSION 5u                    /* 5: read-only initrd module */
 #define BOOT_INFO_PHYS    0x1000u               /* where the BIOS loader puts it */
 #define BOOT_MMAP_MAX     128u
 #define BOOT_CMDLINE_MAX  128u
@@ -72,6 +72,8 @@ struct boot_info {
     struct e820_entry mmap[BOOT_MMAP_MAX];
     u64 acpi_rsdp; /* physical address of the RSDP, or 0: the kernel scans for it */
     struct boot_framebuffer framebuffer;
+    u64 initrd_phys;
+    u64 initrd_size;
 };
 
 static_assert(sizeof(struct e820_entry) == 24, "E820 entries are 24 bytes (ACPI 3.0)");

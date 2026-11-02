@@ -33,6 +33,7 @@ enum {
 #define LSR_ABSENT     0xFF
 #define IER_RDA        0x01 /* received data available */
 #define TX_IDLE_SPINS  1000000
+#define UART_POLL_MAX  100000 /* bounded even before the clock is initialized */
 #define BAUD_DIVISOR   1 /* 115200 / 115200 */
 
 static bool serial_present;
@@ -57,6 +58,8 @@ static u8 read_lsr(void)
 
 bool serial_init(void)
 {
+    serial_present = false;
+    lsr_rx_seen = 0;
     outb(COM1 + UART_IER, 0x00);
     outb(COM1 + UART_LCR, LCR_DLAB);
     outb(COM1 + UART_DATA, BAUD_DIVISOR & 0xFF);
@@ -67,21 +70,39 @@ bool serial_init(void)
     /* Loopback self-test: a byte written must read back unchanged. */
     outb(COM1 + UART_MCR, MCR_LOOPBACK | MCR_OUT2 | MCR_DTR_RTS);
     outb(COM1 + UART_DATA, 0xAE);
-    if (inb(COM1 + UART_DATA) != 0xAE) {
-        serial_present = false;
-        return false;
-    }
+    for (unsigned i = 0; i < UART_POLL_MAX; i++) {
+        u8 status = read_lsr();
 
+        if (status == LSR_ABSENT)
+            break;
+        if (status & LSR_DATA_READY) {
+            serial_present = inb(COM1 + UART_DATA) == 0xAE;
+            break;
+        }
+    }
+    /* A missing or slow UART must never leave the port in loopback. */
     outb(COM1 + UART_MCR, MCR_OUT2 | MCR_DTR_RTS);
-    serial_present = true;
-    return true;
+    lsr_rx_seen = 0;
+    return serial_present;
 }
 
 static void serial_putc_raw(char c)
 {
-    while (!(read_lsr() & LSR_THR_EMPTY))
-        ;
-    outb(COM1 + UART_DATA, (u8)c);
+    if (!serial_present)
+        return;
+    for (unsigned i = 0; i < UART_POLL_MAX; i++) {
+        u8 status = read_lsr();
+
+        if (status == LSR_ABSENT)
+            break;
+        if (status & LSR_THR_EMPTY) {
+            outb(COM1 + UART_DATA, (u8)c);
+            return;
+        }
+    }
+    /* No logging here: the console may hold its lock, or be panicking. */
+    serial_present = false;
+    serial_rx_disable();
 }
 
 void serial_putc(char c)
@@ -122,12 +143,12 @@ void serial_rx_kick(void)
 
 usize serial_rx_drain(u8 *buf, usize cap, bool *more, bool *dead)
 {
-    usize n = 0;
+    usize n = 0, consumed = 0;
 
     *more = false;
     *dead = false;
     for (;;) {
-        u8 lsr = inb(COM1 + UART_LSR);
+        u8 lsr = read_lsr();
 
         if (lsr == LSR_ABSENT) {
             *dead = true;
@@ -135,12 +156,13 @@ usize serial_rx_drain(u8 *buf, usize cap, bool *more, bool *dead)
         }
         if (!(lsr & LSR_DATA_READY))
             break;
-        if (n == cap) {
+        if (consumed == cap) {
             *more = true;
             break;
         }
         u8 byte = inb(COM1 + UART_DATA);
 
+        consumed++;
         lsr |= lsr_rx_seen; /* what transmit polling saw of this byte */
         lsr_rx_seen = 0;
         if (lsr & LSR_OVERRUN)

@@ -8,6 +8,7 @@
 #include <compiler.h>
 #include <types.h>
 #include <uapi/syscall.h>
+#include <uapi/fs.h>
 
 static inline long syscall3(long nr, long a0, long a1, long a2)
 {
@@ -31,6 +32,11 @@ long sys_spawnv(const char *name, const char *const *args);
 long sys_wait(int pid, int *status);
 long sys_time_ms(void);
 long sys_read(int fd, void *buf, usize len);
+long sys_open(const char *path);
+long sys_close(int fd);
+long sys_fstat(int fd, struct fs_stat *out);
+long sys_readdir(int fd, struct fs_dirent *out);
+long sys_seek(int fd, s64 offset, int whence);
 
 int printf(const char *fmt, ...) __printf(1, 2);
 

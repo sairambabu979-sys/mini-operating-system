@@ -221,6 +221,95 @@ TEST(tar_rejects_bad_headers)
     EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
 }
 
+TEST(tar_rejects_unknown_magic_versions_and_corrupt_suffixes)
+{
+    static struct archive a;
+    struct tar_entry e;
+
+    a.len = 0;
+    uint8_t *h = add(&a, "", "file", '0', "x", 1);
+    finish(&a);
+    memcpy(h + 257, "ustarXYZ", 8);
+    seal(h);
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+
+    sample(&a);
+    a.buf[1536] ^= 1; /* etc/motd, after bin/hello: lookup must reject the whole archive */
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    EXPECT_TRUE(!tar_find(a.buf, a.len, "bin/hello", &e));
+}
+
+TEST(tar_gnu_prefix_and_signed_checksum)
+{
+    static struct archive a;
+    struct tar_entry e;
+    size_t pos = 0;
+
+    a.len = 0;
+    uint8_t *h = add(&a, "1234567", "file", '0', "x", 1);
+
+    memcpy(h + 257, "ustar  \0", 8);
+    seal(h);
+    finish(&a);
+    EXPECT_EQ(tar_next(a.buf, a.len, &pos, &e), 1);
+    EXPECT_STREQ(e.name, "file"); /* GNU stores timestamps where POSIX stores a prefix */
+
+    h[0] = 0xFF;
+    memset(h + 148, ' ', 8);
+    int sum = 0;
+
+    for (int i = 0; i < 512; i++)
+        sum += (int8_t)h[i];
+    snprintf((char *)h + 148, 8, "%06o", (unsigned)sum);
+    h[155] = ' ';
+    EXPECT_EQ(tar_validate(a.buf, a.len), 1);
+}
+
+TEST(tar_root_directories_are_skipped_but_root_files_are_rejected)
+{
+    static struct archive a;
+
+    a.len = 0;
+    add(&a, "", "./", '5', NULL, 0);
+    add(&a, "", ".", '5', NULL, 0);
+    add(&a, "", "file", '0', "x", 1);
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), 1);
+    a.len = 0;
+    add(&a, "", ".", '0', "x", 1);
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+}
+
+TEST(tar_refuses_long_names_and_pax_name_or_size_overrides)
+{
+    static struct archive a;
+    const char *records[] = {"12 path=foo\n", "16 linkpath=foo\n", "10 size=1\n",
+                             "999999999999999999999999999 path=x\n", "7 bad=x\n", "7 =abc\n"};
+
+    for (size_t i = 0; i < sizeof(records) / sizeof(records[0]); i++) {
+        for (int global = 0; global < 2; global++) {
+            a.len = 0;
+            add(&a, "", "pax", global ? 'g' : 'x', records[i], strlen(records[i]));
+            add(&a, "", "file", '0', "x", 1);
+            finish(&a);
+            EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+        }
+    }
+    for (int link = 0; link < 2; link++) {
+        a.len = 0;
+        add(&a, "", "long", link ? 'K' : 'L', "name", 5);
+        add(&a, "", "file", '0', "x", 1);
+        finish(&a);
+        EXPECT_EQ(tar_validate(a.buf, a.len), -EINVAL);
+    }
+    a.len = 0;
+    add(&a, "", "pax", 'x', "11 mtime=1\n", 11);
+    add(&a, "", "file", '0', "x", 1);
+    finish(&a);
+    EXPECT_EQ(tar_validate(a.buf, a.len), 1);
+}
+
 #ifdef INITRD_PATH
 /* The archive the build makes with tools/mkinitrd.py, which uses Python's tarfile. */
 TEST(tar_reads_the_built_initrd)

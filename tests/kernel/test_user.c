@@ -604,3 +604,9 @@ KTEST(spawn_arguments_fill_their_limits_exactly)
     KEXPECT_EQ(spawn_args_add(&args, longer), -E2BIG);
     KEXPECT_EQ(args.argc, SPAWN_ARGS_MAX - 1); /* a failed add changes nothing */
 }
+
+KTEST(file_syscalls_preserve_offsets_and_enforce_limits)
+{
+    KEXPECT_EQ(run("filecheck"), 0);
+    KEXPECT_EQ(run("filecheck"), 0); /* no descriptors survive process exit */
+}

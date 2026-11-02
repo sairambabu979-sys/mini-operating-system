@@ -88,10 +88,15 @@ putc:
     pusha
     mov     ah, al
     mov     dx, COM1 + 5            ; line status register
+    mov     cx, 0xFFFF              ; a broken UART must not prevent disk boot
 .wait:
     in      al, dx
     test    al, 0x20
-    jz      .wait
+    jnz     .send
+    loop    .wait
+    popa
+    ret
+.send:
     mov     al, ah
     mov     dx, COM1
     out     dx, al

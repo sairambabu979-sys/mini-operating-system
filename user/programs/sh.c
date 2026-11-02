@@ -21,9 +21,6 @@
 
 #include <lib/errno.h>
 #include <lib/string.h>
-#include <user_programs.h> /* generated: USER_PROGRAM_NAMES */
-
-static const char *const programs[] = {USER_PROGRAM_NAMES};
 
 static void put(const char *s, usize n)
 {
@@ -34,8 +31,21 @@ static void put(const char *s, usize n)
 static void help(void)
 {
     printf("builtins: help exit\nprograms:\n");
-    for (usize i = 0; i < sizeof(programs) / sizeof(programs[0]); i++)
-        printf("  %s\n", programs[i]);
+    int fd = (int)sys_open("/bin");
+    struct fs_dirent entry;
+
+    if (fd < 0) {
+        printf("sh: cannot list /bin (%d)\n", fd);
+        return;
+    }
+    long r;
+
+    while ((r = sys_readdir(fd, &entry)) > 0)
+        if (entry.stat.type == FS_REGULAR)
+            printf("  %s\n", entry.name);
+    if (r < 0)
+        printf("sh: directory read failed (%ld)\n", r);
+    sys_close(fd);
 }
 
 static void run(const char *name, const char *const *args)

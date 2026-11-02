@@ -10,6 +10,7 @@
 #include <arch/segments.h>
 #include <core/klog.h>
 #include <core/panic.h>
+#include <fs/vfs.h>
 #include <lib/errno.h>
 #include <lib/string.h>
 #include <mm/kmalloc.h>
@@ -22,25 +23,24 @@
 
 #include "../sched/sched_internal.h"
 
-struct raw_image {
-    const char *name;
-    const u8 *start;
-    u64 size;
-};
-
-extern const struct raw_image user_images[];
-extern const u64 user_images_count;
-
 bool user_image_find(const char *name, struct user_image *out)
 {
-    for (u64 i = 0; i < user_images_count; i++) {
-        if (strcmp(user_images[i].name, name) == 0) {
-            *out =
-                (struct user_image){user_images[i].name, user_images[i].start, user_images[i].size};
-            return true;
-        }
-    }
-    return false;
+    char path[FS_PATH_MAX] = "/bin/";
+    const u8 *data;
+    usize size;
+
+    if (!name[0] || strnlen(name, TASK_NAME_MAX) == TASK_NAME_MAX)
+        return false;
+    for (const char *p = name; *p; p++)
+        if (*p == '/')
+            return false;
+    strlcpy(path + 5, name, sizeof(path) - 5);
+    int node = vfs_lookup(path);
+
+    if (node < 0 || vfs_data(node, &data, &size) < 0)
+        return false;
+    *out = (struct user_image){name, data, size};
+    return true;
 }
 
 /* Maps one zeroed page at va, filled from [src, src + len) at offset `skip`. */

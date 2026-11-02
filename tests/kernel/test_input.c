@@ -539,7 +539,7 @@ KTEST(com1_bytes_reach_the_queue_through_irq4)
 /* As much as the FIFO holds, in one burst: every byte arrives, in order. */
 KTEST(com1_takes_a_full_fifo_in_order)
 {
-    static const u8 bytes[14] = "0123456789abcd";
+    static const u8 bytes[] = "0123456789abcd";
     struct input_stats st;
 
     if (!input_have_com1())
@@ -548,14 +548,14 @@ KTEST(com1_takes_a_full_fifo_in_order)
     input_get_stats(&st);
     u64 before = st.com1_bytes;
 
-    KEXPECT(serial_test_loopback_inject(bytes, sizeof(bytes)));
+    KEXPECT(serial_test_loopback_inject(bytes, sizeof(bytes) - 1));
     u64 deadline = time_ticks() + 100;
 
-    while (st.com1_bytes - before < sizeof(bytes) && time_ticks() < deadline) {
+    while (st.com1_bytes - before < sizeof(bytes) - 1 && time_ticks() < deadline) {
         sleep_ms(1);
         input_get_stats(&st);
     }
-    KEXPECT_EQ(st.com1_bytes - before, sizeof(bytes));
+    KEXPECT_EQ(st.com1_bytes - before, sizeof(bytes) - 1);
     expect_queued("0123456789abcd");
 }
 

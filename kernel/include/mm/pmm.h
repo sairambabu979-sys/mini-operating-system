@@ -63,4 +63,8 @@ void pmm_get_stats(struct pmm_stats *out);
 /* Full allocator consistency check (O(frames)); 0 if consistent. */
 int pmm_verify(const char **reason);
 
+/* Test-only fault injection: -1 disables it; returns the previous budget.
+ * The caller disables preemption so unrelated allocations cannot consume it. */
+long pmm_test_fail_after(long successful_allocations);
+
 #endif /* MINIOS_MM_PMM_H */

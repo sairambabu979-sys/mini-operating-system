@@ -27,6 +27,8 @@ static struct spinlock pmm_lock = SPINLOCK_INIT("pmm");
 static const struct mem_region *regions;
 static usize nregions;
 static u64 metadata_bytes;
+static u64 module_start, module_end;
+static long test_alloc_budget = -1;
 
 static u64 pfn_of(u64 phys)
 {
@@ -43,6 +45,8 @@ static u64 find_free_area(u64 bytes, u64 lo, u64 hi)
         u64 end = MIN(regions[i].end, hi);
 
         start = ALIGN_UP(start, PAGE_SIZE);
+        if (start < module_end && module_start < start + bytes)
+            start = module_end;
         if (start < end && end - start >= bytes)
             return start;
     }
@@ -67,6 +71,8 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
 {
     regions = map;
     nregions = nmap;
+    module_start = ALIGN_DOWN(bi->initrd_phys, PAGE_SIZE);
+    module_end = ALIGN_UP(bi->initrd_phys + bi->initrd_size, PAGE_SIZE);
 
     u64 top = 0, beyond = 0;
 
@@ -99,11 +105,23 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
     buddy_init(&buddy, phys_to_virt(meta), nframes);
 
     /* Sorted and disjoint: low memory < kernel image < metadata. */
-    const struct phys_range reserved[] = {
+    struct phys_range reserved[] = {
         {0, PMM_LOW_RESERVED_END},
         {ALIGN_DOWN(bi->kernel_phys_start, PAGE_SIZE), kernel_end},
         {meta, meta + metadata_bytes},
+        {module_start, module_end},
     };
+
+    for (usize i = 1; i < ARRAY_SIZE(reserved); i++) {
+        struct phys_range item = reserved[i];
+        usize j = i;
+
+        while (j && reserved[j - 1].start > item.start) {
+            reserved[j] = reserved[j - 1];
+            j--;
+        }
+        reserved[j] = item;
+    }
 
     for (usize i = 0; i < nregions; i++) {
         if (regions[i].type == E820_USABLE && regions[i].base < HHDM_SIZE)
@@ -127,11 +145,24 @@ void pmm_init(const struct mem_region *map, usize nmap, const struct boot_info *
 u64 pmm_alloc_pages(unsigned order)
 {
     irqflags_t flags = spin_lock_irqsave(&pmm_lock);
-    u64 pfn = buddy_alloc(&buddy, order);
+    u64 pfn = test_alloc_budget == 0 ? BUDDY_NONE : buddy_alloc(&buddy, order);
+
+    if (pfn != BUDDY_NONE && test_alloc_budget > 0)
+        test_alloc_budget--;
 
     spin_unlock_irqrestore(&pmm_lock, flags);
 
     return pfn == BUDDY_NONE ? PMM_ALLOC_FAILED : pfn << PAGE_SHIFT;
+}
+
+long pmm_test_fail_after(long successful_allocations)
+{
+    irqflags_t flags = spin_lock_irqsave(&pmm_lock);
+    long previous = test_alloc_budget;
+
+    test_alloc_budget = successful_allocations;
+    spin_unlock_irqrestore(&pmm_lock, flags);
+    return previous;
 }
 
 void pmm_free_pages(u64 phys, unsigned order)

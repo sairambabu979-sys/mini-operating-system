@@ -14,6 +14,7 @@
 #include <core/input.h>
 #include <core/printk.h>
 #include <core/time.h>
+#include <fs/vfs.h>
 #include <lib/errno.h>
 #include <proc/process.h>
 #include <proc/uaccess.h>
@@ -39,6 +40,8 @@ static s64 sys_write(u64 fd, u64 user_buf, u64 len)
 {
     char chunk[WRITE_CHUNK];
 
+    if (fd >= 3 && fd < FS_FD_MAX && task_current()->files[fd].used)
+        return -EROFS;
     if (fd != 1 && fd != 2)
         return -EBADF;
     if (!user_range_ok(user_buf, len))
@@ -153,6 +156,22 @@ static s64 sys_read(u64 fd, u64 user_buf, u64 len)
     u8 buf[INPUT_READ_MAX];
     usize n;
 
+    if (fd >= 3 && fd < FS_FD_MAX && task_current()->files[fd].used) {
+        struct file_descriptor *file = &task_current()->files[fd];
+        const u8 *data;
+        usize size;
+        int r = vfs_data(file->node, &data, &size);
+
+        if (r < 0)
+            return r;
+        if (!user_range_ok(user_buf, len))
+            return -EFAULT;
+        n = (usize)MIN(len, size - file->offset);
+        if (n && copy_to_user((void *)user_buf, data + file->offset, n) != 0)
+            return -EFAULT;
+        file->offset += n;
+        return (s64)n;
+    }
     if (fd != 0)
         return -EBADF;
     if (!user_range_ok(user_buf, len))
@@ -171,6 +190,120 @@ static s64 sys_read(u64 fd, u64 user_buf, u64 len)
     return (s64)n;
 }
 
+static struct file_descriptor *file_get(u64 fd)
+{
+    if (fd < 3 || fd >= FS_FD_MAX || !task_current()->files[fd].used)
+        return NULL;
+    return &task_current()->files[fd];
+}
+
+static s64 sys_open(u64 user_path, u64 a1, u64 a2)
+{
+    char path[FS_PATH_MAX];
+    int r;
+
+    (void)a1;
+    (void)a2;
+    r = strncpy_from_user(path, (const char *)user_path, sizeof(path));
+    if (r < 0)
+        return r;
+    int node = vfs_lookup(path);
+
+    if (node < 0)
+        return node;
+    for (int fd = 3; fd < FS_FD_MAX; fd++) {
+        struct file_descriptor *file = &task_current()->files[fd];
+
+        if (!file->used) {
+            *file = (struct file_descriptor){.node = node, .used = true};
+            return fd;
+        }
+    }
+    return -EMFILE;
+}
+
+static s64 sys_close(u64 fd, u64 a1, u64 a2)
+{
+    struct file_descriptor *file = file_get(fd);
+
+    (void)a1;
+    (void)a2;
+    if (!file)
+        return -EBADF;
+    *file = (struct file_descriptor){0};
+    return 0;
+}
+
+static s64 sys_fstat(u64 fd, u64 user_out, u64 a2)
+{
+    struct file_descriptor *file = file_get(fd);
+    struct fs_stat st;
+
+    (void)a2;
+    if (!file)
+        return -EBADF;
+    int r = vfs_stat(file->node, &st);
+
+    if (r < 0)
+        return r;
+    return copy_to_user((void *)user_out, &st, sizeof(st)) ? -EFAULT : 0;
+}
+
+static s64 sys_readdir(u64 fd, u64 user_out, u64 a2)
+{
+    struct file_descriptor *file = file_get(fd);
+    struct fs_dirent entry;
+
+    (void)a2;
+    if (!file)
+        return -EBADF;
+    int r = vfs_readdir(file->node, file->offset, &entry);
+
+    if (r <= 0)
+        return r;
+    if (copy_to_user((void *)user_out, &entry, sizeof(entry)))
+        return -EFAULT;
+    file->offset++;
+    return 1;
+}
+
+static s64 sys_seek(u64 fd, u64 offset, u64 whence)
+{
+    struct file_descriptor *file = file_get(fd);
+    struct fs_stat st;
+
+    if (!file)
+        return -EBADF;
+    int r = vfs_stat(file->node, &st);
+
+    if (r < 0)
+        return r;
+    if (st.type == FS_DIRECTORY)
+        return -EISDIR;
+    u64 base;
+
+    switch (whence) {
+    case FS_SEEK_SET: base = 0; break;
+    case FS_SEEK_CUR: base = file->offset; break;
+    case FS_SEEK_END: base = st.size; break;
+    default: return -EINVAL;
+    }
+    /* Keep every position in [0, size], including the signed-minimum case. */
+    if ((s64)offset < 0) {
+        u64 distance = 0 - offset;
+
+        if (distance > base)
+            return -EINVAL;
+        base -= distance;
+    } else {
+        if (offset > st.size - base)
+            return -EINVAL;
+        base += offset;
+    }
+    file->offset = base;
+    return (s64)base;
+}
+
 static s64 sys_time_ms(u64 a0, u64 a1, u64 a2)
 {
     (void)a0;
@@ -183,6 +316,8 @@ static const syscall_fn syscall_table[SYS_COUNT] = {
     [SYS_EXIT] = sys_exit,     [SYS_WRITE] = sys_write,       [SYS_YIELD] = sys_yield,
     [SYS_GETPID] = sys_getpid, [SYS_SLEEP_MS] = sys_sleep_ms, [SYS_SPAWN] = sys_spawn,
     [SYS_WAIT] = sys_wait,     [SYS_TIME_MS] = sys_time_ms,   [SYS_READ] = sys_read,
+    [SYS_OPEN] = sys_open, [SYS_CLOSE] = sys_close, [SYS_FSTAT] = sys_fstat,
+    [SYS_READDIR] = sys_readdir, [SYS_SEEK] = sys_seek,
 };
 
 /* Called from syscall.asm with interrupts enabled. Result goes in RAX. */

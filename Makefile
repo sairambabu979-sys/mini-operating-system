@@ -101,9 +101,9 @@ USER_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack --build
 
 # Rebuild everything when the flags change, not only when sources do.
 FLAGS_STAMP := $(BUILD)/flags.stamp
-FLAGS_SIG   := $(CC) $(KERNEL_CFLAGS) | $(HOSTCC) $(HOST_CFLAGS) | $(USER_CFLAGS)
-$(shell mkdir -p $(BUILD) && { printf '%s' '$(FLAGS_SIG)' | cmp -s - $(FLAGS_STAMP) || \
-	printf '%s' '$(FLAGS_SIG)' > $(FLAGS_STAMP); })
+FLAGS_SIG = $(CC) $(KERNEL_CFLAGS) | $(HOSTCC) $(HOST_CFLAGS) | $(USER_CFLAGS) | \
+	$(EFI_CFLAGS) | $(LD) $(KERNEL_LDFLAGS) $(USER_LDFLAGS) | \
+	$(NASM) $(KERNEL_ASFLAGS) $(BOOT_ASFLAGS) | $(OBJCOPY) | $(KERNEL_C_SRCS) $(USER_PROGRAMS)
 
 KERNEL_ASFLAGS := -f elf64 -w+all -Ikernel/arch/x86_64/ -I$(BUILD)/gen/
 KERNEL_LDFLAGS := -nostdlib -static -z max-page-size=0x1000 -z noexecstack \
@@ -151,14 +151,14 @@ $(KERNEL_C_OBJS): $(BUILD)/%.o: %.c $(FLAGS_STAMP)
 # not rebuild the assembly that uses it.
 nasm_deps = $(NASM) $(1) -M -MF $(2) -MP -MT $(3) $(4)
 
-$(BUILD)/kernel/%.asm.o: kernel/%.asm | $(ASM_OFFSETS)
+$(BUILD)/kernel/%.asm.o: kernel/%.asm $(FLAGS_STAMP) | $(ASM_OFFSETS)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$<)
 	$(Q)$(call nasm_deps,$(KERNEL_ASFLAGS),$(@:.o=.d),$@,$<)
 	$(Q)$(NASM) $(KERNEL_ASFLAGS) $< -o $@
 
 # --------------------------------------------------------------------------
-# User programs, embedded in the kernel image (kernel/proc/process.c)
+# User programs, loaded from /bin in the boot initrd
 # --------------------------------------------------------------------------
 
 USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/user/lib/lineedit.o \
@@ -166,24 +166,12 @@ USER_LIB_OBJS := $(BUILD)/user/user/lib/libsys.o $(BUILD)/user/user/lib/lineedit
 	$(BUILD)/user/user/lib/crt0.asm.o
 USER_PROGRAMS := $(sort $(basename $(notdir $(wildcard user/programs/*.c user/programs/*.asm))))
 USER_ELFS     := $(USER_PROGRAMS:%=$(BUILD)/user/bin/%.elf)
-USER_IMAGES   := $(BUILD)/gen/user_images.o
-
-# The shell's `help` lists the embedded programs. Generated as the Makefile
-# is read, and rewritten only when the list changes (as cmdline.stamp is).
-comma := ,
-USER_PROGRAMS_H    := $(BUILD)/gen/user_programs.h
-USER_PROGRAMS_LINE := \#define USER_PROGRAM_NAMES $(patsubst %,"%"$(comma),$(USER_PROGRAMS))
-$(shell mkdir -p $(BUILD)/gen && { printf '%s\n' '$(USER_PROGRAMS_LINE)' | \
-	cmp -s - $(USER_PROGRAMS_H) || printf '%s\n' '$(USER_PROGRAMS_LINE)' > $(USER_PROGRAMS_H); })
-$(BUILD)/user/user/programs/sh.o: $(USER_PROGRAMS_H)
-$(BUILD)/user/user/programs/sh.o: USER_CFLAGS += -I$(BUILD)/gen
-
 $(BUILD)/user/%.o: %.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,CC,$<)
 	$(Q)$(CC) $(USER_CFLAGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/user/%.asm.o: %.asm
+$(BUILD)/user/%.asm.o: %.asm $(FLAGS_STAMP)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$<)
 	$(Q)$(NASM) -f elf64 -w+all $< -o $@
@@ -200,21 +188,11 @@ $(BUILD)/user/bin/%.elf: $(BUILD)/user/user/programs/%.asm.o user/programs/%.ld
 	$(call msg,LD,$@)
 	$(Q)$(LD) $(USER_LDFLAGS) -T user/programs/$*.ld $< -o $@
 
-$(BUILD)/gen/user_images.asm: $(USER_ELFS) tools/gen_user_images.py
-	@mkdir -p $(@D)
-	$(call msg,GEN,$@)
-	$(Q)$(PYTHON) tools/gen_user_images.py -o $@ \
-	  $(foreach p,$(USER_PROGRAMS),$(p)=$(BUILD)/user/bin/$(p).elf)
-
-# The initrd: every user program as bin/NAME, in a ustar archive (not loaded yet).
+# The initrd: every user program as bin/NAME, in the read-only boot filesystem.
 INITRD := $(BUILD)/initrd.tar
-$(INITRD): $(USER_ELFS) tools/mkinitrd.py
+$(INITRD): $(USER_ELFS) tools/mkinitrd.py $(FLAGS_STAMP) user/root/etc/motd
 	$(call msg,INITRD,$@)
-	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
-
-$(USER_IMAGES): $(BUILD)/gen/user_images.asm $(USER_ELFS)
-	$(call msg,NASM,$<)
-	$(Q)$(NASM) -f elf64 $< -o $@
+	$(Q)$(PYTHON) tools/mkinitrd.py -o $@ etc/motd=user/root/etc/motd $(foreach p,$(USER_PROGRAMS),bin/$(p)=$(BUILD)/user/bin/$(p).elf)
 
 # Code that UBSan reports through must not itself be instrumented.
 $(BUILD)/kernel/core/ubsan.o: KERNEL_CFLAGS += -fno-sanitize=all
@@ -238,13 +216,13 @@ $(BUILD)/gen/%.o: $(BUILD)/gen/%.c $(FLAGS_STAMP)
 	$(call msg,CC,$<)
 	$(Q)$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL_PASS1): $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms_empty.o kernel/linker.ld
+$(KERNEL_PASS1): $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o kernel/linker.ld
 	$(call msg,LD,$@)
-	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms_empty.o -o $@
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms_empty.o -o $@
 
-$(KERNEL_ELF): $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms.o kernel/linker.ld
+$(KERNEL_ELF): $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o kernel/linker.ld
 	$(call msg,LD,$@)
-	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(USER_IMAGES) $(BUILD)/gen/ksyms.o -o $@
+	$(Q)$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/gen/ksyms.o -o $@
 	$(Q)$(PYTHON) tools/gen_ksyms.py --check $@ $(KSYMS)
 
 $(KERNEL_STRIPPED): $(KERNEL_ELF)
@@ -259,7 +237,7 @@ BOOT_ASFLAGS := -f bin -w+all -Iboot/inc/ -I$(BUILD)/gen/
 STAGE1 := $(BUILD)/boot/stage1.bin
 STAGE2 := $(BUILD)/boot/stage2.bin
 
-$(BUILD)/boot/%.bin: boot/%.asm | $(ASM_OFFSETS)
+$(BUILD)/boot/%.bin: boot/%.asm $(FLAGS_STAMP) | $(ASM_OFFSETS)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$<)
 	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS),$(@:.bin=.d),$@,$<)
@@ -268,7 +246,7 @@ $(BUILD)/boot/%.bin: boot/%.asm | $(ASM_OFFSETS)
 # Stage 2 test builds: A20 off first, then back on by one method only.
 A20_METHODS := bios kbc fast
 
-$(BUILD)/boot/stage2-a20-%.bin: boot/stage2.asm | $(ASM_OFFSETS)
+$(BUILD)/boot/stage2-a20-%.bin: boot/stage2.asm $(FLAGS_STAMP) | $(ASM_OFFSETS)
 	@mkdir -p $(@D)
 	$(call msg,NASM,$(@F))
 	$(Q)$(call nasm_deps,$(BOOT_ASFLAGS) -DA20_SELFTEST=$*,$(@:.bin=.d),$@,$<)
@@ -294,10 +272,10 @@ TRIPLEFAULT_IMG := $(BUILD)/disk-selftest-triplefault.img
 
 # $(call bios_image,<image>,<command line>): a BIOS disk image of the same kernel.
 define bios_image
-$(1): $$(STAGE1) $$(STAGE2) $$(KERNEL_STRIPPED) tools/mkimage.py
+$(1): $$(STAGE1) $$(STAGE2) $$(KERNEL_STRIPPED) $$(INITRD) tools/mkimage.py
 	$$(call msg,IMAGE,$$@)
 	$$(Q)$$(PYTHON) tools/mkimage.py --stage1 $$(STAGE1) --stage2 $$(STAGE2) \
-	  --kernel $$(KERNEL_STRIPPED) --cmdline "$(2)" -o $$@
+	  --kernel $$(KERNEL_STRIPPED) --initrd $$(INITRD) --cmdline "$(2)" -o $$@
 endef
 
 $(eval $(call bios_image,$(TEST_IMG),ktest))
@@ -315,10 +293,10 @@ $(eval $(call bios_image,$(TRIPLEFAULT_IMG),selftest=triplefault))
 
 A20_IMGS := $(A20_METHODS:%=$(BUILD)/disk-a20-%.img)
 
-$(BUILD)/disk-a20-%.img: $(STAGE1) $(BUILD)/boot/stage2-a20-%.bin $(KERNEL_STRIPPED) tools/mkimage.py
+$(BUILD)/disk-a20-%.img: $(STAGE1) $(BUILD)/boot/stage2-a20-%.bin $(KERNEL_STRIPPED) $(INITRD) tools/mkimage.py
 	$(call msg,IMAGE,$@)
 	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(BUILD)/boot/stage2-a20-$*.bin \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "exit-after-init" -o $@
+	  --kernel $(KERNEL_STRIPPED) --initrd $(INITRD) --cmdline "exit-after-init" -o $@
 
 # --------------------------------------------------------------------------
 # UEFI loader (boot/efi) and UEFI boot images
@@ -350,10 +328,10 @@ UEFI_SHELL_IMG := $(BUILD)/disk-uefi-shell.img
 
 # $(call uefi_image,<image>,<command line>): the same kernel behind the UEFI loader.
 define uefi_image
-$(1): $$(EFI_LOADER) $$(KERNEL_STRIPPED) tools/mkesp.py $(3)
+$(1): $$(EFI_LOADER) $$(KERNEL_STRIPPED) $$(INITRD) tools/mkesp.py $(3)
 	$$(call msg,ESP,$$@)
 	$$(Q)$$(PYTHON) tools/mkesp.py --loader $$(EFI_LOADER) --kernel $$(KERNEL_STRIPPED) \
-	  --cmdline "$(2)" -o $$@
+	  --initrd $$(INITRD) --cmdline "$(2)" -o $$@
 endef
 
 $(eval $(call uefi_image,$(UEFI_TEST_IMG),ktest))
@@ -367,10 +345,10 @@ $(shell mkdir -p $(BUILD) && { printf '%s' '$(CMDLINE)' | cmp -s - $(CMDLINE_STA
 
 $(eval $(call uefi_image,$(UEFI_IMG),$(CMDLINE),$(CMDLINE_STAMP)))
 
-$(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) tools/mkimage.py $(CMDLINE_STAMP)
+$(DISK_IMG): $(STAGE1) $(STAGE2) $(KERNEL_STRIPPED) $(INITRD) tools/mkimage.py $(CMDLINE_STAMP)
 	$(call msg,IMAGE,$@)
 	$(Q)$(PYTHON) tools/mkimage.py --stage1 $(STAGE1) --stage2 $(STAGE2) \
-	  --kernel $(KERNEL_STRIPPED) --cmdline "$(CMDLINE)" -o $@
+	  --kernel $(KERNEL_STRIPPED) --initrd $(INITRD) --cmdline "$(CMDLINE)" -o $@
 
 .PHONY: all
 all: $(DISK_IMG) $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $(PANIC_IMG) $(DEMO_IMG) $(BENCH_IMG) \
@@ -395,10 +373,11 @@ QEMU_RUN_FLAGS := $(subst -serial stdio,-serial mon:stdio,$(QEMU_FLAGS))
 .PHONY: run run-uefi run-shell run-shell-uefi debug bench
 
 # Boots disk-uefi.img through OVMF (apt install ovmf).
-OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd))
+OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /opt/homebrew/share/qemu/edk2-x86_64-code.fd /usr/local/share/qemu/edk2-x86_64-code.fd))
+OVMF_VARS ?= $(if $(findstring edk2-,$(OVMF_CODE)),$(dir $(OVMF_CODE))edk2-i386-vars.fd,$(subst CODE,VARS,$(OVMF_CODE)))
 run-uefi: $(UEFI_IMG)
 	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
-	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
+	@cp $(OVMF_VARS) $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(subst $(DISK_IMG),$(UEFI_IMG),$(QEMU_RUN_FLAGS)) \
 	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA)
@@ -415,7 +394,7 @@ run-shell: $(SHELL_IMG)
 	$(QEMU) $(subst $(DISK_IMG),$(SHELL_IMG),$(QEMU_RUN_FLAGS)) $(QEMU_EXTRA) || test $$? -eq 33
 run-shell-uefi: $(UEFI_SHELL_IMG)
 	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
-	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
+	@cp $(OVMF_VARS) $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(subst $(DISK_IMG),$(UEFI_SHELL_IMG),$(QEMU_RUN_FLAGS)) \
 	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA) || test $$? -eq 33
@@ -432,7 +411,7 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
 	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c \
 	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c kernel/lib/kbdmap.c \
-	kernel/lib/tar.c
+	kernel/lib/tar.c kernel/drivers/serial.c kernel/fs/vfs.c
 HOST_TEST_USER_SRCS   := user/lib/lineedit.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
@@ -440,6 +419,9 @@ HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests
 
 HOST_TEST_OBJS := $(HOST_TEST_SRCS:%.c=$(BUILD)/host/%.o) \
 	$(HOST_TEST_KERNEL_SRCS:%.c=$(BUILD)/host/%.o) $(HOST_TEST_USER_SRCS:%.c=$(BUILD)/host/%.o)
+
+# The real UART driver against a simulated register interface on the host.
+$(BUILD)/host/kernel/drivers/serial.o: HOST_CFLAGS += -Itests/host/platform
 
 $(BUILD)/host/tests/%.o: tests/%.c $(FLAGS_STAMP)
 	@mkdir -p $(@D)
@@ -464,7 +446,11 @@ $(HOST_TEST_BIN): $(HOST_TEST_OBJS)
 	$(Q)$(HOSTCC) $(HOST_CFLAGS) $^ -o $@
 
 .PHONY: test host-test qemu-test check-binary gdb-test
-test: host-test check-binary qemu-test gdb-test
+test: python-test host-test check-binary qemu-test gdb-test
+
+.PHONY: python-test
+python-test:
+	$(Q)$(PYTHON) -m unittest discover -s tests/tools -v
 
 # The gdb helpers (tools/gdb/minios.py), driven against a live kernel.
 gdb-test: $(DISK_IMG) $(KERNEL_ELF)
@@ -677,5 +663,9 @@ lint: $(ASM_OFFSETS)
 .PHONY: clean
 clean:
 	rm -rf build
+
+# Evaluate after every flag and source list has been defined, including EFI.
+$(shell mkdir -p $(BUILD) && { printf '%s' '$(FLAGS_SIG)' | cmp -s - $(FLAGS_STAMP) || \
+	printf '%s' '$(FLAGS_SIG)' > $(FLAGS_STAMP); })
 
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)

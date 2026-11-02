@@ -17,7 +17,12 @@
 #define SYS_SPAWN    5 /* spawn(const char *name, const char *const *args) -> child pid */
 #define SYS_WAIT     6 /* wait(int pid or -1, int *status) -> pid */
 #define SYS_TIME_MS  7 /* time_ms() -> milliseconds since boot */
-#define SYS_READ     8 /* read(int fd, void *buf, size_t len) -> bytes; fd 0 only, blocks for >= 1 */
+#define SYS_READ     8 /* read(int fd, void *buf, size_t len) -> bytes; console fd 0 blocks */
+#define SYS_OPEN     9 /* open(const char *absolute_path) -> read-only fd >= 3 */
+#define SYS_CLOSE   10 /* close(int fd) -> 0; file/directory descriptors only */
+#define SYS_FSTAT   11 /* fstat(int fd, struct fs_stat *out) -> 0 */
+#define SYS_READDIR 12 /* readdir(int fd, struct fs_dirent *out) -> 1, 0 at end */
+#define SYS_SEEK    13 /* seek(int fd, s64 offset, int whence) -> position, within file */
 
 /*
  * spawn()'s arguments: `args` is NULL or a NULL-terminated list of at most
@@ -29,7 +34,7 @@
 #define SPAWN_ARGS_MAX  8
 #define SPAWN_ARGS_SIZE 256
 
-#define SYS_COUNT 9
+#define SYS_COUNT 14
 
 /* Exit status of a process killed by CPU exception `vector`. */
 #define EXIT_STATUS_FAULT(vector) (128 + (vector))

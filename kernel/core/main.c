@@ -24,6 +24,7 @@
 #include <drivers/qemu.h>
 #include <drivers/screen.h>
 #include <drivers/serial.h>
+#include <fs/vfs.h>
 #include <lib/cmdline.h>
 #include <lib/string.h>
 #include <mm/mm.h>
@@ -109,6 +110,14 @@ static const struct boot_info *validate_boot_info(u64 phys)
         qemu_exit(QEMU_EXIT_FAILURE);
     }
     memcpy(&boot_info_copy, bi, sizeof(boot_info_copy));
+    if (!bi->initrd_size || bi->initrd_size > (64ull << 20) ||
+        bi->initrd_phys < 0x100000 || bi->initrd_phys >= BOOT_WINDOW_SIZE ||
+        bi->initrd_size > BOOT_WINDOW_SIZE - bi->initrd_phys ||
+        (bi->initrd_phys < bi->kernel_phys_end &&
+         bi->kernel_phys_start < bi->initrd_phys + bi->initrd_size)) {
+        kprintf("FATAL: invalid initrd range\n");
+        qemu_exit(QEMU_EXIT_FAILURE);
+    }
     boot_info_copy.mmap_count = MIN(boot_info_copy.mmap_count, BOOT_MMAP_MAX);
     boot_info_copy.cmdline[BOOT_CMDLINE_MAX - 1] = '\0';
     return &boot_info_copy;
@@ -214,6 +223,8 @@ __noreturn void kmain(u64 boot_info_phys)
 
     cpu_detect_features();
     mm_init(boot_info);
+    if (vfs_mount(phys_to_virt(boot_info->initrd_phys), boot_info->initrd_size) < 0)
+        panic("invalid initrd filesystem");
 
     screen_init(boot_info); /* replays everything logged so far */
     acpi_init(boot_info);

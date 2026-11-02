@@ -162,7 +162,7 @@ int tar_next(const u8 *archive, usize len, usize *pos, struct tar_entry *e)
 
         if (all_zero(h))
             return 0;
-        if (memcmp(h + H_MAGIC, "ustar", 5) != 0 || !checksum_ok(h))
+        if ((!posix_ustar(h) && memcmp(h + H_MAGIC, "ustar  \0", 8) != 0) || !checksum_ok(h))
             return -EINVAL;
         u64 size;
 
@@ -215,6 +215,8 @@ bool tar_find(const u8 *archive, usize len, const char *name, struct tar_entry *
 {
     usize pos = 0;
 
+    if (tar_validate(archive, len) < 0)
+        return false;
     while (tar_next(archive, len, &pos, e) > 0)
         if (!e->is_dir && strcmp(e->name, name) == 0)
             return true;

@@ -9,7 +9,9 @@
 #define __aligned(x)                __attribute__((aligned(x)))
 #define __noreturn                  __attribute__((noreturn))
 #define __section(s)                __attribute__((section(s)))
+#ifndef __used
 #define __used                      __attribute__((used))
+#endif
 #define __maybe_unused              __attribute__((unused))
 #define __must_check                __attribute__((warn_unused_result))
 #define __printf(fmt_idx, args_idx) __attribute__((format(printf, fmt_idx, args_idx)))

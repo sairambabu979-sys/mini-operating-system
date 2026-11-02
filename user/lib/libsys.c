@@ -54,6 +54,31 @@ long sys_read(int fd, void *buf, usize len)
     return syscall3(SYS_READ, fd, (long)buf, (long)len);
 }
 
+long sys_open(const char *path)
+{
+    return syscall3(SYS_OPEN, (long)path, 0, 0);
+}
+
+long sys_close(int fd)
+{
+    return syscall3(SYS_CLOSE, fd, 0, 0);
+}
+
+long sys_fstat(int fd, struct fs_stat *out)
+{
+    return syscall3(SYS_FSTAT, fd, (long)out, 0);
+}
+
+long sys_readdir(int fd, struct fs_dirent *out)
+{
+    return syscall3(SYS_READDIR, fd, (long)out, 0);
+}
+
+long sys_seek(int fd, s64 offset, int whence)
+{
+    return syscall3(SYS_SEEK, fd, (long)offset, whence);
+}
+
 /* One write per printf call, so concurrent processes never interleave mid-line. */
 int printf(const char *fmt, ...)
 {

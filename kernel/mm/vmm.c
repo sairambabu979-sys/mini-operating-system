@@ -184,13 +184,33 @@ static int map_range(struct address_space *as, uptr va, u64 pa, usize size, unsi
 
 int vmm_map(struct address_space *as, uptr va, u64 pa, usize size, unsigned flags)
 {
-    if (!IS_ALIGNED(va | pa | size, PAGE_SIZE_4K) || !va_is_canonical(va))
+    if (!IS_ALIGNED(va | pa | size, PAGE_SIZE_4K) || !va_is_canonical(va) ||
+        (size && (va + size - 1 < va || !va_is_canonical(va + size - 1) ||
+                  ((va ^ (va + size - 1)) & KERNEL_HALF) != 0 || pa + size - 1 < pa)))
         return -EINVAL;
     if ((flags & VM_WRITE) && (flags & VM_EXEC))
         return -EINVAL; /* W^X */
 
     irqflags_t irq = spin_lock_irqsave(&as->lock);
-    int err = map_range(as, va, pa, size, flags, false);
+    usize done = 0;
+    int err = 0;
+
+    for (; done < size; done += PAGE_SIZE_4K) {
+        err = map_range(as, va + done, pa + done, PAGE_SIZE_4K, flags, false);
+        if (err)
+            break;
+    }
+    if (err) {
+        /* Preserve any pre-existing conflicting mapping; undo only our prefix. */
+        for (usize off = 0; off < done; off += PAGE_SIZE_4K) {
+            int ignored = 0;
+            u64 *entry = walk(as, va + off, 1, false, &ignored);
+
+            BUG_ON(!entry);
+            *entry = 0;
+            flush(as, va + off);
+        }
+    }
 
     spin_unlock_irqrestore(&as->lock, irq);
     return err;

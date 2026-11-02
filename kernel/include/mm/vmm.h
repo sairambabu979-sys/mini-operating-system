@@ -53,6 +53,8 @@ bool vmm_is_active(void);
  * Maps [va, va + size) to [pa, pa + size) with 4 KiB pages. All arguments
  * page-aligned. -EINVAL on misalignment or a W+X request, -EEXIST if any
  * page is already mapped, -ENOMEM if a page table cannot be allocated.
+ * On failure no new leaf mappings remain. Empty kernel tables are retained
+ * for lock-free walkers and reused on a retry of the same range.
  */
 __must_check int vmm_map(struct address_space *as, uptr va, u64 pa, usize size, unsigned flags);
 

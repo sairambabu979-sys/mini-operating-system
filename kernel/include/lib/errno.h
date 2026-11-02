@@ -21,7 +21,12 @@
 #define EBUSY        16
 #define EEXIST       17
 #define ENODEV       19
+#define ENOTDIR      20
+#define EISDIR       21
 #define EINVAL       22
+#define EMFILE       24
+#define ENOSPC       28
+#define EROFS        30
 #define ENAMETOOLONG 36
 #define ENOSYS       38
 
