@@ -77,8 +77,10 @@ fail:
     jmp     .halt
 
 ; putc: prints AL on the BIOS console and COM1. Preserves all registers.
-; COM1 is polled for "transmit holding register empty"; with no UART the
-; status port reads 0xFF, so the loop cannot hang.
+; COM1 is polled for "transmit holding register empty". With no UART the
+; status port reads 0xFF, so the poll ends at once; a UART whose
+; transmitter never empties is given up on after 65535 polls, and the
+; character is dropped, so a stuck port cannot stop the boot.
 putc:
     pusha
     mov     ah, 0x0E                ; BIOS teletype
@@ -88,10 +90,15 @@ putc:
     pusha
     mov     ah, al
     mov     dx, COM1 + 5            ; line status register
+    mov     cx, 0xFFFF
 .wait:
     in      al, dx
     test    al, 0x20
-    jz      .wait
+    jnz     .send
+    loop    .wait
+    popa                            ; stuck: drop the character
+    ret
+.send:
     mov     al, ah
     mov     dx, COM1
     out     dx, al

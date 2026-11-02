@@ -183,10 +183,15 @@ putc:
     pusha
     mov     ah, al
     mov     dx, COM1 + 5
+    mov     cx, 0xFFFF              ; bounded, as in stage 1: a stuck UART drops it
 .wait:
     in      al, dx
     test    al, 0x20
-    jz      .wait
+    jnz     .send
+    loop    .wait
+    popa
+    ret
+.send:
     mov     al, ah
     mov     dx, COM1
     out     dx, al
@@ -775,17 +780,25 @@ fail64:
     hlt
     jmp     .halt
 
-; putc64: AL to COM1 (no BIOS in long mode). Clobbers DX, AH.
+; putc64: AL to COM1 (no BIOS in long mode). Clobbers DX, AH. The wait is
+; bounded, as in putc: a stuck UART drops the character.
 putc64:
+    push    rcx
     mov     ah, al
     mov     dx, COM1 + 5
+    mov     ecx, 0xFFFF
 .wait:
     in      al, dx
     test    al, 0x20
-    jz      .wait
+    jnz     .send
+    loop    .wait
+    pop     rcx
+    ret
+.send:
     mov     al, ah
     mov     dx, COM1
     out     dx, al
+    pop     rcx
     ret
 
 ; --------------------------------------------------------------------------
