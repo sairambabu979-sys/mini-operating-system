@@ -44,20 +44,36 @@ EXIT_FAILURE = (0x11 << 1) | 1  # 35
 
 TAP_PLAN = re.compile(r"^1\.\.(\d+)$")
 
-# OVMF (UEFI firmware for QEMU) as packaged by Debian/Ubuntu (`apt install ovmf`).
-OVMF_CODE_CANDIDATES = ["/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_CODE.fd"]
+# OVMF (UEFI firmware for QEMU): as Debian/Ubuntu package it (`apt install ovmf`), then as
+# Homebrew's QEMU ships it (Apple Silicon, then Intel prefix). $OVMF_CODE and $OVMF_VARS
+# name another pair.
+OVMF_CODE_CANDIDATES = ["/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_CODE.fd",
+                        "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+                        "/usr/local/share/qemu/edk2-x86_64-code.fd"]
+
+
+def ovmf_vars_for(code: Path) -> Path:
+    """The variable store that goes with a firmware image."""
+    if os.environ.get("OVMF_VARS"):
+        return Path(os.environ["OVMF_VARS"])
+    if code.name.startswith("edk2-"):  # QEMU's own build: one 32-bit vars template for both
+        return code.with_name("edk2-i386-vars.fd")
+    return code.with_name(code.name.replace("CODE", "VARS"))
 
 
 def ovmf_drives(workdir: Path) -> list[str]:
     """pflash drives for OVMF: read-only code plus a private copy of the variables."""
-    for code in map(Path, OVMF_CODE_CANDIDATES):
-        vars_template = code.with_name(code.name.replace("CODE", "VARS"))
+    candidates = ([os.environ["OVMF_CODE"]] if os.environ.get("OVMF_CODE") else []) + \
+        OVMF_CODE_CANDIDATES
+    for code in map(Path, candidates):
+        vars_template = ovmf_vars_for(code)
         if code.exists() and vars_template.exists():
             vars_copy = workdir / "OVMF_VARS.fd"
             shutil.copyfile(vars_template, vars_copy)
             return ["-drive", f"if=pflash,format=raw,readonly=on,file={code}",
                     "-drive", f"if=pflash,format=raw,file={vars_copy}"]
-    sys.exit("run_tests: OVMF not found (apt install ovmf); cannot run a UEFI test")
+    sys.exit("run_tests: OVMF not found (apt install ovmf, or brew install qemu, or set "
+             "OVMF_CODE and OVMF_VARS); cannot run a UEFI test")
 TAP_RESULT = re.compile(r"^(not ok|ok) (\d+) - (.+)$")
 
 

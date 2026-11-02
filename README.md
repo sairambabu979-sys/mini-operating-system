@@ -68,6 +68,20 @@ On Ubuntu 24.04 (everything but the newer QEMU):
 apt install clang lld llvm nasm gcc make python3 qemu-system-x86 ovmf mtools gdb clang-format clang-tidy
 ```
 
+On a Mac with Apple Silicon (not run by CI; the host tests' Mac-only code is), with
+Homebrew. Apple's own `make` and `clang` are too old or lack `lld`, so use Homebrew's;
+there is no gdb for Apple Silicon, so run the test suites without `make test`'s gdb step:
+
+```sh
+brew install llvm lld nasm make python qemu mtools
+export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"
+gmake HOSTCC=clang                         # build
+gmake HOSTCC=clang host-test qemu-test     # the host and QEMU test suites
+```
+
+`run_tests.py` finds Homebrew QEMU's UEFI firmware by itself (or set `OVMF_CODE` and
+`OVMF_VARS`). QEMU emulates the x86_64 machine in software there, as it does in CI.
+
 ```sh
 make            # bootloader, kernel, user programs, disk images  -> build/debug/
 make run        # boot in QEMU; this terminal is COM1 (Ctrl-A x quits)
