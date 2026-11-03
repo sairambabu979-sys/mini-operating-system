@@ -16,10 +16,12 @@
  * frame per ~100 tasks, from any user program that spawns in a loop.
  * (On SMP, reuse will also need a TLB shootdown.) The extent of an area
  * needs no metadata: it ends at the next unmapped page, the following
- * area's guard. A range whose allocation failed goes back to the bump
- * pointer when it was the last one taken (as it is unless another
- * allocation came in between), so failures do not spread allocations
- * over fresh page tables; otherwise to the ring like a freed one.
+ * area's guard. A range whose allocation failed never reached a caller:
+ * it goes back to the bump pointer if it was the last one taken from it,
+ * otherwise (it came from the ring, as kernel stacks do once tasks have
+ * exited) to the ring's oldest end. There it ages no freed range, as one
+ * more entry at the new end would: sixteen failed allocations would let
+ * a just-freed stack be handed out again at once.
  */
 #include <arch/cpuid.h>
 #include <arch/paging.h>
@@ -65,25 +67,31 @@ static uptr reuse_va_locked(usize npages)
 }
 
 /*
- * Gives a range back. One whose allocation failed (`unused`) never reached
- * a caller: if it was the last taken, the bump pointer simply takes it
- * back, guard and all.
+ * Gives a range back. One whose allocation failed (`unused`) goes to the
+ * bump pointer if it was the last taken (guard and all), else to the
+ * ring's oldest end, ageing nothing; dropped if the ring is full. A freed
+ * one goes to the newest end, evicting the oldest if need be.
  */
 static void release_va(uptr base, usize npages, bool unused)
 {
     irqflags_t flags = spin_lock_irqsave(&va_lock);
 
     if (unused && base + npages * PAGE_SIZE_4K == next_va) {
-        next_va = base - PAGE_SIZE_4K; /* the last one taken: its guard too */
-        spin_unlock_irqrestore(&va_lock, flags);
-        return;
+        next_va = base - PAGE_SIZE_4K;
+    } else if (unused) {
+        if (nfreed < FREED_MAX) {
+            freed_head = (freed_head + FREED_MAX - 1) % FREED_MAX;
+            freed[freed_head] = (struct freed_range){base, npages};
+            nfreed++;
+        }
+    } else {
+        if (nfreed == FREED_MAX) {
+            freed_head = (freed_head + 1) % FREED_MAX;
+            nfreed--;
+        }
+        freed[(freed_head + nfreed) % FREED_MAX] = (struct freed_range){base, npages};
+        nfreed++;
     }
-    if (nfreed == FREED_MAX) {
-        freed_head = (freed_head + 1) % FREED_MAX;
-        nfreed--;
-    }
-    freed[(freed_head + nfreed) % FREED_MAX] = (struct freed_range){base, npages};
-    nfreed++;
     spin_unlock_irqrestore(&va_lock, flags);
 }
 

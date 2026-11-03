@@ -241,6 +241,8 @@ KTEST(vmm_map_refuses_ranges_leaving_their_half)
     KEXPECT(!vmm_translate(as, last_user, &pa, &pte)); /* refused before anything was mapped */
     KEXPECT_EQ(vmm_map(as, 0xFFFFFFFFFFFFF000ull, 0x200000, 2 * PAGE_SIZE_4K, VM_WRITE), -EINVAL);
     KEXPECT_EQ(vmm_map(as, 0x400000, ~0ull & ~0xFFFull, 2 * PAGE_SIZE_4K, VM_WRITE), -EINVAL);
+    /* canonical at both ends and no wrap, but from the user half into the kernel half */
+    KEXPECT_EQ(vmm_map(as, last_user, 0, 0xFFFF800000001000ull - last_user, VM_WRITE), -EINVAL);
     vmm_destroy_user_space(as);
 }
 
@@ -284,20 +286,24 @@ KTEST(vmalloc_failures_give_back_frames_and_addresses)
 }
 
 /*
- * The same for iomap(): 4 MiB of device addresses (an unused stretch of
- * the PCI hole: nothing is ever read) cross a 2 MiB boundary into a page
- * table that does not exist yet, which cannot be allocated. The mapping
- * fails, and its range goes back to the bump pointer.
+ * The same for iomap(): 4 MiB of physical addresses far above any RAM a
+ * test machine has (half the CPU's physical range: nothing is ever read,
+ * and iomap()'s check against RAM's direct map cannot refuse it first)
+ * cross a 2 MiB boundary into a page table that does not exist yet, which
+ * cannot be allocated. The mapping fails, and its range goes back to the
+ * bump pointer.
  */
 KTEST(iomap_failure_gives_back_its_range)
 {
+    u64 phys = 1ull << (cpu_features()->phys_addr_bits - 1);
+
     preempt_disable();
     u8 *probe1 = vmalloc(97 * PAGE_SIZE_4K);
 
     KEXPECT(probe1 != NULL);
     vfree(probe1);
     long previous = pmm_test_fail_after(0);
-    void *io = iomap(0xC0000000ull, 4ull << 20, VM_NOCACHE);
+    void *io = iomap(phys, 4ull << 20, VM_NOCACHE);
 
     (void)pmm_test_fail_after(previous);
     u8 *probe2 = vmalloc(97 * PAGE_SIZE_4K);
@@ -308,6 +314,40 @@ KTEST(iomap_failure_gives_back_its_range)
     KEXPECT_EQ((uptr)probe2, (uptr)probe1 + 98 * PAGE_SIZE_4K);
     if (probe2)
         vfree(probe2);
+}
+
+/*
+ * A failed allocation whose range came from the reuse ring (as kernel
+ * stacks do) must not age the quarantine: sixteen of them must not make
+ * a range freed just before reusable.
+ */
+KTEST(vmalloc_failed_reuse_does_not_age_the_quarantine)
+{
+    u8 *areas[VMALLOC_QUARANTINE + 1];
+
+    preempt_disable();
+    for (unsigned i = 0; i < ARRAY_SIZE(areas); i++)
+        areas[i] = vmalloc(11 * PAGE_SIZE_4K);
+    for (unsigned i = 0; i < ARRAY_SIZE(areas); i++) /* past the quarantine, the oldest */
+        if (areas[i])
+            vfree(areas[i]);
+    u8 *s = vmalloc(13 * PAGE_SIZE_4K);
+
+    KEXPECT(s != NULL);
+    vfree(s); /* the newest: no newer frees */
+    for (int i = 0; i < VMALLOC_QUARANTINE; i++) {
+        long previous = pmm_test_fail_after(0);
+        void *p = vmalloc(11 * PAGE_SIZE_4K); /* takes an 11-page range from the ring, fails */
+
+        (void)pmm_test_fail_after(previous);
+        KEXPECT(p == NULL);
+    }
+    u8 *s2 = vmalloc(13 * PAGE_SIZE_4K);
+
+    preempt_enable();
+    KEXPECT(s2 != NULL && s2 != s); /* still quarantined */
+    if (s2)
+        vfree(s2);
 }
 
 KTEST(vmalloc_areas_have_guard_pages)

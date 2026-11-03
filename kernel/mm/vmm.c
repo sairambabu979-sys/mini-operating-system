@@ -145,10 +145,10 @@ static void flush(const struct address_space *as, uptr va)
 
 /*
  * Maps one range, using 1 GiB / 2 MiB pages where alignment allows when
- * `allow_huge` (direct map only). On -EEXIST the range may be partially
- * mapped; callers treat that as a bug.
+ * `allow_huge` (direct map only). A failure leaves what was mapped before
+ * it; *mapped (if not NULL) says how many bytes that is, for vmm_map() to
+ * take back. The boot-time callers treat any failure as fatal.
  */
-/* Maps page by page; *mapped (if not NULL) says how many bytes were, failure or not. */
 static int map_range(struct address_space *as, uptr va, u64 pa, usize size, unsigned flags,
                      bool allow_huge, usize *mapped)
 {

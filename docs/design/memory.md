@@ -184,8 +184,10 @@ bounded. (On SMP, reuse will also need a TLB shootdown.)
 An area needs no metadata: it ends at the next unmapped page. `vfree()`
 of anything but an area's first page panics. A failed `vmalloc()` or
 `iomap()` gives its frames back and its VA range too: to the bump pointer
-when it was the last range taken, as it is unless another allocation
-came in between, else to the reuse ring like a freed one. Abandoned
+if it was the last range taken from it, otherwise (a range from the reuse
+ring, as kernel stacks are once tasks have exited) to the ring's oldest
+end, where it ages no freed range: at the newest end, sixteen failed
+allocations would make a just-freed stack reusable at once. Abandoned
 ranges cost little address space (the region is 512 GiB) but spread
 later allocations over fresh page tables, which are never freed.
 
