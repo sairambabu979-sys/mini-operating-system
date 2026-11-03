@@ -69,18 +69,19 @@ apt install clang lld llvm nasm gcc make python3 qemu-system-x86 ovmf mtools gdb
 ```
 
 On a Mac with Apple Silicon (not run by CI; the host tests' Mac-only code is), with
-Homebrew. Apple's own `make` and `clang` are too old or lack `lld`, so use Homebrew's;
+Homebrew and the Xcode Command Line Tools (the host tests build with Apple's clang).
+Apple's own `make` is too old, and its `clang` has no `lld`, so use Homebrew's for those;
 there is no gdb for Apple Silicon, so run the test suites without `make test`'s gdb step:
 
 ```sh
 brew install llvm lld nasm make python qemu mtools
 export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"
-gmake HOSTCC=clang                         # build
-gmake HOSTCC=clang host-test qemu-test     # the host and QEMU test suites
+gmake                                      # build
+gmake host-test check-binary qemu-test     # make test, but for its gdb step
 ```
 
-`run_tests.py` finds Homebrew QEMU's UEFI firmware by itself (or set `OVMF_CODE` and
-`OVMF_VARS`). QEMU emulates the x86_64 machine in software there, as it does in CI.
+`run_tests.py`, and so `make run-uefi`, finds Homebrew QEMU's UEFI firmware by itself
+(or set `OVMF_CODE`, and `OVMF_VARS` if its name does not imply the store). QEMU emulates the x86_64 machine in software there, as it does in CI.
 
 ```sh
 make            # bootloader, kernel, user programs, disk images  -> build/debug/
