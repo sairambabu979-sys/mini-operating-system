@@ -149,6 +149,14 @@ synchronization later.
 
 **W^X at the API.** `vmm_map()` rejects `VM_WRITE | VM_EXEC`.
 
+**A failed `vmm_map()` maps nothing.** If a page is already mapped
+(`-EEXIST`) or a page table cannot be allocated (`-ENOMEM`) part-way, the
+pages that call mapped are taken back; the page tables it created stay,
+since walkers read kernel tables without a lock. A range that wraps,
+leaves the canonical addresses or crosses `KERNEL_HALF` is `-EINVAL`
+before anything is mapped: one running from the last user page into the
+kernel half would otherwise write the kernel tables every process shares.
+
 ## vmalloc
 
 ```
@@ -175,7 +183,13 @@ bounded. (On SMP, reuse will also need a TLB shootdown.)
 
 An area needs no metadata: it ends at the next unmapped page. `vfree()`
 of anything but an area's first page panics. A failed `vmalloc()` or
-`iomap()` abandons its VA range.
+`iomap()` gives its frames back and its VA range too: to the bump pointer
+if it was the last range taken from it, otherwise (a range from the reuse
+ring, as kernel stacks are once tasks have exited) to the ring's oldest
+end, where it ages no freed range: at the newest end, sixteen failed
+allocations would make a just-freed stack reusable at once. Abandoned
+ranges cost little address space (the region is 512 GiB) but spread
+later allocations over fresh page tables, which are never freed.
 
 The price of reuse: a double or stale `vfree()` panics only while its
 range is quarantined. Once 16 newer ranges were freed, the range may
@@ -256,7 +270,7 @@ is in [traps.md](traps.md).
 | `tests/host/test_memmap.c` | sorting, merging, overlap resolution, page shrinking, unknown types, top-of-address-space wrap, randomized brute-force check |
 | `tests/host/test_buddy.c` | carving, split/merge round trip, alignment and disjointness, exhaustion, bad frees, reserved islands, 20k-step fuzz |
 | `tests/kernel/test_pmm.c` | consistency after init; managed = usable RAM below the 512 GiB direct map minus known reservations; allocations avoid reserved memory, the initrd included; drain-and-restore through every frame, none of them in the initrd; double free panics |
-| `tests/kernel/test_vmm.c` | each forbidden access attempted and its `#PF` decoded; translate permissions; map/unmap round trip; guard pages, and a freed area that faults; **a real kernel stack overflow** caught as `#DF` on IST1 with CR2 in the guard |
+| `tests/kernel/test_vmm.c` | each forbidden access attempted and its `#PF` decoded; translate permissions; map/unmap round trip; guard pages, and a freed area that faults; failures part-way through `vmm_map()`, `vmalloc()` and `iomap()` (with `pmm_test_fail_after()` making the allocator fail on cue) leave nothing mapped and hand back frames and addresses; ranges that leave their half refused; **a real kernel stack overflow** caught as `#DF` on IST1 with CR2 in the guard |
 | `tests/kernel/test_kmalloc.c` | alignment, disjointness, reuse, large allocations, `kcalloc` overflow, stats; sizes above `KMALLOC_MAX` and near `SIZE_MAX` refused; foreign-pointer frees, including a live PMM block kmalloc did not allocate, which stays allocated (via `panic_expect()`); in debug builds only, double free, use after free and heap overflow |
 | `tests/kernel/test_sched.c`, `test_user.c` | after a warm-up, 200 threads and 40 processes created and reaped give back every frame, with no slack (before VA reuse, the tests allowed 8 and 4 frames for vmalloc's page tables); reaping 8 zombies frees at most 5 frames each, a kernel stack and a task struct |
 

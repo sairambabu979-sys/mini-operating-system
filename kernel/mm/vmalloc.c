@@ -16,7 +16,12 @@
  * frame per ~100 tasks, from any user program that spawns in a loop.
  * (On SMP, reuse will also need a TLB shootdown.) The extent of an area
  * needs no metadata: it ends at the next unmapped page, the following
- * area's guard.
+ * area's guard. A range whose allocation failed never reached a caller:
+ * it goes back to the bump pointer if it was the last one taken from it,
+ * otherwise (it came from the ring, as kernel stacks do once tasks have
+ * exited) to the ring's oldest end. There it ages no freed range, as one
+ * more entry at the new end would: sixteen failed allocations would let
+ * a just-freed stack be handed out again at once.
  */
 #include <arch/cpuid.h>
 #include <arch/paging.h>
@@ -61,16 +66,32 @@ static uptr reuse_va_locked(usize npages)
     return 0;
 }
 
-static void release_va(uptr base, usize npages)
+/*
+ * Gives a range back. One whose allocation failed (`unused`) goes to the
+ * bump pointer if it was the last taken (guard and all), else to the
+ * ring's oldest end, ageing nothing; dropped if the ring is full. A freed
+ * one goes to the newest end, evicting the oldest if need be.
+ */
+static void release_va(uptr base, usize npages, bool unused)
 {
     irqflags_t flags = spin_lock_irqsave(&va_lock);
 
-    if (nfreed == FREED_MAX) {
-        freed_head = (freed_head + 1) % FREED_MAX;
-        nfreed--;
+    if (unused && base + npages * PAGE_SIZE_4K == next_va) {
+        next_va = base - PAGE_SIZE_4K;
+    } else if (unused) {
+        if (nfreed < FREED_MAX) {
+            freed_head = (freed_head + FREED_MAX - 1) % FREED_MAX;
+            freed[freed_head] = (struct freed_range){base, npages};
+            nfreed++;
+        }
+    } else {
+        if (nfreed == FREED_MAX) {
+            freed_head = (freed_head + 1) % FREED_MAX;
+            nfreed--;
+        }
+        freed[(freed_head + nfreed) % FREED_MAX] = (struct freed_range){base, npages};
+        nfreed++;
     }
-    freed[(freed_head + nfreed) % FREED_MAX] = (struct freed_range){base, npages};
-    nfreed++;
     spin_unlock_irqrestore(&va_lock, flags);
 }
 
@@ -121,13 +142,14 @@ void *vmalloc(usize size)
             vmm_map(vmm_kernel_space(), va, frame, PAGE_SIZE_4K, VM_WRITE | VM_GLOBAL) != 0) {
             if (frame != PMM_ALLOC_FAILED)
                 pmm_free_page(frame);
-            /* Roll back what was mapped; the VA range is simply abandoned. */
+            /* Roll back what was mapped, then give the range back: it never escaped. */
             for (usize j = 0; j < i; j++) {
                 u64 pa;
 
                 if (vmm_unmap_page(vmm_kernel_space(), base + j * PAGE_SIZE_4K, &pa) == 0)
                     pmm_free_page(pa);
             }
+            release_va(base, npages, true);
             return NULL;
         }
         memset((void *)va, 0, PAGE_SIZE_4K);
@@ -159,7 +181,7 @@ void vfree(void *ptr)
         pmm_free_page(pa);
         va += PAGE_SIZE_4K;
     }
-    release_va(base, (va - base) / PAGE_SIZE_4K);
+    release_va(base, (va - base) / PAGE_SIZE_4K, false);
 }
 
 void *iomap(u64 phys, usize size, unsigned flags)
@@ -183,8 +205,12 @@ void *iomap(u64 phys, usize size, unsigned flags)
 
     uptr base = reserve_va(npages);
 
-    if (!base || vmm_map(vmm_kernel_space(), base, first, npages * PAGE_SIZE_4K,
-                         flags | VM_GLOBAL | VM_IOMAP) != 0)
-        return NULL; /* a failed map leaves the VA range abandoned, as in vmalloc */
+    if (!base)
+        return NULL;
+    if (vmm_map(vmm_kernel_space(), base, first, npages * PAGE_SIZE_4K,
+                flags | VM_GLOBAL | VM_IOMAP) != 0) {
+        release_va(base, npages, true); /* vmm_map left none of it mapped */
+        return NULL;
+    }
     return (void *)(base + (phys - first));
 }
