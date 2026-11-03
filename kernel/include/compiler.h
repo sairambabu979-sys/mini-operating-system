@@ -5,11 +5,13 @@
 #ifndef MINIOS_COMPILER_H
 #define MINIOS_COMPILER_H
 
-#define __packed                    __attribute__((packed))
-#define __aligned(x)                __attribute__((aligned(x)))
-#define __noreturn                  __attribute__((noreturn))
-#define __section(s)                __attribute__((section(s)))
-#define __used                      __attribute__((used))
+#define __packed     __attribute__((packed))
+#define __aligned(x) __attribute__((aligned(x)))
+#define __noreturn   __attribute__((noreturn))
+#define __section(s) __attribute__((section(s)))
+#ifndef __used /* macOS's <sys/cdefs.h> has it too, meaning the same (host tests) */
+#define __used __attribute__((used))
+#endif
 #define __maybe_unused              __attribute__((unused))
 #define __must_check                __attribute__((warn_unused_result))
 #define __printf(fmt_idx, args_idx) __attribute__((format(printf, fmt_idx, args_idx)))

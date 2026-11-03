@@ -539,7 +539,8 @@ KTEST(com1_bytes_reach_the_queue_through_irq4)
 /* As much as the FIFO holds, in one burst: every byte arrives, in order. */
 KTEST(com1_takes_a_full_fifo_in_order)
 {
-    static const u8 bytes[14] = "0123456789abcd";
+    static const u8 bytes[14] = {'0', '1', '2', '3', '4', '5', '6',
+                                 '7', '8', '9', 'a', 'b', 'c', 'd'}; /* no NUL: newer clang warns */
     struct input_stats st;
 
     if (!input_have_com1())

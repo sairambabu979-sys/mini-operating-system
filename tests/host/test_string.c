@@ -42,14 +42,18 @@ TEST(memmove_handles_overlap_both_directions)
     }
 }
 
+/* The backward path uses std/cld: DF must be clear after it (x86_64 hosts only). */
 TEST(memmove_leaves_direction_flag_clear)
 {
     char buf[16] = "abcdefgh";
+
+    kmemmove(buf + 1, buf, 8);
+#ifdef __x86_64__
     unsigned long flags;
 
-    kmemmove(buf + 1, buf, 8); /* backward path uses std/cld */
     __asm__ volatile("pushfq; popq %0" : "=r"(flags));
     EXPECT_EQ(flags & (1ul << 10), 0);
+#endif
     EXPECT_STREQ(buf, "aabcdefgh");
 }
 

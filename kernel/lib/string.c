@@ -5,15 +5,28 @@
  * The bulk copy/fill paths use `rep movsb`/`rep stosb`, which are fast on any
  * CPU with ERMSB and, unlike C loops, cannot be pattern-matched back into a
  * call to the very function being defined. They also run unchanged in host
- * unit tests, since the host is x86_64 as well.
+ * unit tests on an x86_64 host. On any other host (an Apple Silicon Mac),
+ * the host tests get plain loops instead (HOST_LOOPS): there the kernel's
+ * names are renamed (tests/host/kernel_shim.h), so a loop the compiler
+ * turns into a memcpy() call reaches the host's, not itself. The kernel is
+ * always x86_64 and always uses the instructions.
  */
 #include <lib/string.h>
+
+#ifndef __x86_64__
+#define HOST_LOOPS 1
+#endif
 
 void *memcpy(void *restrict dst, const void *restrict src, usize n)
 {
     void *ret = dst;
 
+#ifdef HOST_LOOPS
+    for (usize i = 0; i < n; i++)
+        ((u8 *)dst)[i] = ((const u8 *)src)[i];
+#else
     __asm__ volatile("rep movsb" : "+D"(dst), "+S"(src), "+c"(n) : : "memory");
+#endif
     return ret;
 }
 
@@ -25,6 +38,15 @@ void *memmove(void *dst, const void *src, usize n)
     if (d == s || n == 0)
         return dst;
 
+#ifdef HOST_LOOPS
+    if (d < s || d >= s + n) {
+        for (usize i = 0; i < n; i++)
+            d[i] = s[i];
+    } else {
+        while (n--)
+            d[n] = s[n];
+    }
+#else
     if (d < s || d >= s + n) {
         /* No harmful overlap: forward copy is safe. */
         __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
@@ -39,6 +61,7 @@ void *memmove(void *dst, const void *src, usize n)
                          :
                          : "memory");
     }
+#endif
     return dst;
 }
 
@@ -46,7 +69,12 @@ void *memset(void *dst, int c, usize n)
 {
     void *ret = dst;
 
+#ifdef HOST_LOOPS
+    for (usize i = 0; i < n; i++)
+        ((u8 *)dst)[i] = (u8)c;
+#else
     __asm__ volatile("rep stosb" : "+D"(dst), "+c"(n) : "a"((u8)c) : "memory");
+#endif
     return ret;
 }
 

@@ -408,14 +408,16 @@ QEMU_RUN_FLAGS := $(subst -serial stdio,-serial mon:stdio,$(QEMU_FLAGS))
 
 .PHONY: run run-uefi run-shell run-shell-uefi debug bench
 
-# Boots disk-uefi.img through OVMF (apt install ovmf).
-OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd))
+# Boots disk-uefi.img through OVMF, found as the tests find it (run_tests.py: Debian's
+# or Homebrew's, or OVMF_CODE and OVMF_VARS, from the environment or the make command line).
+# ovmf_setup sets $code and copies the store, in the shell of the recipe line it starts.
+ovmf_setup = pair="$$(OVMF_CODE='$(OVMF_CODE)' OVMF_VARS='$(OVMF_VARS)' \
+	$(PYTHON) tests/qemu/run_tests.py --print-ovmf)" || exit 1; \
+	set -- $$pair; code=$$1; cp "$$2" $(BUILD)/OVMF_VARS.fd;
+ovmf_drives = -drive if=pflash,format=raw,readonly=on,file="$$code" \
+	-drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd
 run-uefi: $(UEFI_IMG)
-	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
-	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
-	$(QEMU) $(subst $(DISK_IMG),$(UEFI_IMG),$(QEMU_RUN_FLAGS)) \
-	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA)
+	@$(ovmf_setup) $(QEMU) $(subst $(DISK_IMG),$(UEFI_IMG),$(QEMU_RUN_FLAGS)) $(ovmf_drives) $(QEMU_EXTRA)
 # Numbers under TCG reflect the emulator too; use QEMU_EXTRA="-enable-kvm -cpu host" for real ones.
 bench: $(BENCH_IMG)
 	$(Q)$(QEMU) $(subst $(DISK_IMG),$(BENCH_IMG),$(QEMU_FLAGS)) $(QEMU_EXTRA) | grep --line-buffered 'bench:' || true
@@ -428,11 +430,8 @@ run: $(DISK_IMG)
 run-shell: $(SHELL_IMG)
 	$(QEMU) $(subst $(DISK_IMG),$(SHELL_IMG),$(QEMU_RUN_FLAGS)) $(QEMU_EXTRA) || test $$? -eq 33
 run-shell-uefi: $(UEFI_SHELL_IMG)
-	@test -n "$(OVMF_CODE)" || { echo "OVMF not found: apt install ovmf"; exit 1; }
-	@cp $(subst CODE,VARS,$(OVMF_CODE)) $(BUILD)/OVMF_VARS.fd
-	$(QEMU) $(subst $(DISK_IMG),$(UEFI_SHELL_IMG),$(QEMU_RUN_FLAGS)) \
-	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-	  -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd $(QEMU_EXTRA) || test $$? -eq 33
+	@$(ovmf_setup) $(QEMU) $(subst $(DISK_IMG),$(UEFI_SHELL_IMG),$(QEMU_RUN_FLAGS)) $(ovmf_drives) \
+	  $(QEMU_EXTRA) || test $$? -eq 33
 
 # Waits for gdb on :1234 before the first instruction. In another shell:
 #   gdb -x tools/gdb/gdbinit $(KERNEL_ELF)

@@ -44,20 +44,57 @@ EXIT_FAILURE = (0x11 << 1) | 1  # 35
 
 TAP_PLAN = re.compile(r"^1\.\.(\d+)$")
 
-# OVMF (UEFI firmware for QEMU) as packaged by Debian/Ubuntu (`apt install ovmf`).
-OVMF_CODE_CANDIDATES = ["/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_CODE.fd"]
+# OVMF (UEFI firmware for QEMU): as Debian/Ubuntu package it (`apt install ovmf`), then as
+# Homebrew's QEMU ships it (Apple Silicon, then Intel prefix). $OVMF_CODE and $OVMF_VARS
+# name another pair.
+OVMF_CODE_CANDIDATES = ["/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_CODE.fd",
+                        "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+                        "/usr/local/share/qemu/edk2-x86_64-code.fd"]
+
+
+def ovmf_vars_for(code: Path) -> "Path | None":
+    """The variable store that goes with a firmware image, by its name; None if it says nothing."""
+    if code.name.startswith("edk2-"):  # QEMU's own build: one 32-bit vars template for both
+        return code.with_name("edk2-i386-vars.fd")
+    if "CODE" in code.name:
+        return code.with_name(code.name.replace("CODE", "VARS"))
+    return None
+
+
+def find_ovmf() -> tuple[Path, Path]:
+    """
+    The OVMF firmware image and its variable store. $OVMF_CODE, with $OVMF_VARS or the
+    store its name implies, is used alone: a missing file is an error, not a reason to
+    try the others. Otherwise the first candidate whose store exists.
+    """
+    env_code, env_vars = os.environ.get("OVMF_CODE"), os.environ.get("OVMF_VARS")
+    if env_vars and not env_code:
+        sys.exit("run_tests: OVMF_VARS needs OVMF_CODE, the image it goes with")
+    if env_code:
+        code = Path(env_code)
+        vars_template = Path(env_vars) if env_vars else ovmf_vars_for(code)
+        if not code.is_file():
+            sys.exit(f"run_tests: OVMF_CODE={code}: no such file")
+        if vars_template is None or vars_template == code or not vars_template.is_file():
+            sys.exit(f"run_tests: no variable store for {code}: set OVMF_VARS")
+        return code, vars_template
+    for code in map(Path, OVMF_CODE_CANDIDATES):
+        vars_template = ovmf_vars_for(code)
+        if code.is_file() and vars_template and vars_template.is_file():
+            return code, vars_template
+    sys.exit("run_tests: OVMF not found (apt install ovmf, or brew install qemu, or set "
+             "OVMF_CODE); cannot run a UEFI test")
 
 
 def ovmf_drives(workdir: Path) -> list[str]:
     """pflash drives for OVMF: read-only code plus a private copy of the variables."""
-    for code in map(Path, OVMF_CODE_CANDIDATES):
-        vars_template = code.with_name(code.name.replace("CODE", "VARS"))
-        if code.exists() and vars_template.exists():
-            vars_copy = workdir / "OVMF_VARS.fd"
-            shutil.copyfile(vars_template, vars_copy)
-            return ["-drive", f"if=pflash,format=raw,readonly=on,file={code}",
-                    "-drive", f"if=pflash,format=raw,file={vars_copy}"]
-    sys.exit("run_tests: OVMF not found (apt install ovmf); cannot run a UEFI test")
+    code, vars_template = find_ovmf()
+    vars_copy = workdir / "OVMF_VARS.fd"
+    shutil.copyfile(vars_template, vars_copy)
+    return ["-drive", f"if=pflash,format=raw,readonly=on,file={code}",
+            "-drive", f"if=pflash,format=raw,file={vars_copy}"]
+
+
 TAP_RESULT = re.compile(r"^(not ok|ok) (\d+) - (.+)$")
 
 
@@ -252,6 +289,9 @@ def parse_tap(lines: list[str]) -> tuple[int | None, list[tuple[bool, int, str]]
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--print-ovmf"]:  # for make run-uefi: the same lookup, as "CODE VARS"
+        print(*find_ovmf())
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--image", type=Path, required=True)
     ap.add_argument("--timeout", type=float, default=60.0)
