@@ -95,6 +95,9 @@ def ovmf_drives(workdir: Path) -> list[str]:
             "-drive", f"if=pflash,format=raw,file={vars_copy}"]
 
 
+# sockaddr_un.sun_path, NUL included: 108 bytes on Linux, 104 on macOS and the BSDs.
+SUN_PATH_MAX = 108 if sys.platform.startswith("linux") else 104
+
 TAP_RESULT = re.compile(r"^(not ok|ok) (\d+) - (.+)$")
 
 
@@ -211,8 +214,9 @@ def run_typing(cmd: list[str], args, steps, workdir: Path):
     deadline = time.monotonic() + args.timeout
     qmp_path = str(workdir / "qmp.sock")
     if args.input == "ps2":
-        if len(qmp_path.encode()) >= 108:
-            sys.exit(f"run_tests: QMP socket path too long for AF_UNIX: {qmp_path}")
+        if len(qmp_path.encode()) >= SUN_PATH_MAX:
+            sys.exit(f"run_tests: QMP socket path too long for AF_UNIX ({SUN_PATH_MAX - 1} bytes "
+                     f"at most here): {qmp_path}; set TMPDIR to a shorter directory, e.g. /tmp")
         cmd = cmd + ["-qmp", f"unix:{qmp_path},server=on,wait=off"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             stdin=subprocess.PIPE if args.input == "serial" else subprocess.DEVNULL)
