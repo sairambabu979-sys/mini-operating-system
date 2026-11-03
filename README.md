@@ -30,7 +30,7 @@ irq: using the local APIC and 24 I/O APIC pin(s)
 hpet: 100.000000 MHz, 64-bit counter, 3 comparators, at 0xfed00000
 time: tick: local APIC timer at 1000 Hz (1000004 ns/tick); TSC 2100.897 MHz; calibrated against the HPET
 sched: round robin, 10 ms slices, 16 KiB kernel stacks
-minios 1.4.0 (x86_64, debug build)
+minios 1.4.1 (x86_64, debug build)
 ...
 init: pid 3, starting 11 programs
 hello: hello from ring 3, pid 4
