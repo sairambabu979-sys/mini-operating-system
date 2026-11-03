@@ -10,6 +10,7 @@
 #include <arch/segments.h>
 #include <core/klog.h>
 #include <core/panic.h>
+#include <fs/file.h>
 #include <fs/initrd.h>
 #include <lib/errno.h>
 #include <lib/string.h>
@@ -168,10 +169,10 @@ static int process_start(void *arg)
 
 int process_spawn(const char *name)
 {
-    return process_spawn_args(name, NULL);
+    return process_spawn_args(name, NULL, NULL);
 }
 
-int process_spawn_args(const char *name, const struct spawn_args *args)
+int process_spawn_args(const char *name, const struct spawn_args *args, struct file *const *std)
 {
     struct user_image image;
     const struct user_image *img = &image;
@@ -220,6 +221,7 @@ int process_spawn_args(const char *name, const struct spawn_args *args)
         return err;
     }
     t->user_entry = elf.entry;
+    fd_set_std(t, std); /* last: no failure path above has files to drop */
     sched_admit(t, 0);
     return t->pid;
 }
