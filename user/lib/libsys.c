@@ -176,16 +176,37 @@ const char *sys_strerror(long err)
     }
 }
 
-/* One write per printf call, so concurrent processes never interleave mid-line. */
-int printf(const char *fmt, ...)
+/*
+ * One write per call, so concurrent processes never interleave mid-line
+ * (on a pipe too: 256 bytes is PIPE_ATOMIC, and the NUL is not written).
+ */
+static int vdprintf(int fd, const char *fmt, va_list ap)
 {
     char buf[256];
+    int n = k_vsnprintf(buf, sizeof(buf), fmt, ap);
+
+    sys_write(fd, buf, (usize)MIN(n, (int)sizeof(buf) - 1));
+    return n;
+}
+
+int printf(const char *fmt, ...)
+{
     va_list ap;
 
     va_start(ap, fmt);
-    int n = k_vsnprintf(buf, sizeof(buf), fmt, ap);
+    int n = vdprintf(1, fmt, ap);
 
     va_end(ap);
-    sys_write(1, buf, (usize)MIN(n, (int)sizeof(buf) - 1));
+    return n;
+}
+
+int eprintf(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    int n = vdprintf(2, fmt, ap);
+
+    va_end(ap);
     return n;
 }

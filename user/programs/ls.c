@@ -3,7 +3,8 @@
  * Lists each directory named ("/" with none), one entry per line in the
  * archive's order: a directory with a trailing "/", a file with its size.
  * A file named is printed as it was given. With several paths, each
- * listing is headed "PATH:". Exit status 0, or 1 if any path failed.
+ * listing is headed "PATH:". A path that fails is reported on fd 2. Exit
+ * status 0, or 1 if any path failed.
  */
 #include "libsys.h"
 
@@ -18,7 +19,7 @@ static int list(const char *path, bool heading)
         long fd = sys_open(path);
 
         if (fd < 0) {
-            printf("ls: %s: %s\n", path, sys_strerror(fd));
+            eprintf("ls: %s: %s\n", path, sys_strerror(fd));
             return 1;
         }
         sys_close((int)fd);
@@ -26,7 +27,7 @@ static int list(const char *path, bool heading)
         return 0;
     }
     if (r < 0) {
-        printf("ls: %s: %s\n", path, sys_strerror(r));
+        eprintf("ls: %s: %s\n", path, sys_strerror(r));
         return 1;
     }
     if (heading)
@@ -39,7 +40,7 @@ static int list(const char *path, bool heading)
         r = sys_readdir(path, i, &d);
     }
     if (r < 0) {
-        printf("ls: %s: %s\n", path, sys_strerror(r));
+        eprintf("ls: %s: %s\n", path, sys_strerror(r));
         return 1;
     }
     return 0;
