@@ -37,6 +37,7 @@ long sys_open(const char *path);
 long sys_close(int fd);
 long sys_readdir(const char *path, u64 index, struct dirent *out);
 long sys_fstat(int fd, struct stat *out);
+long sys_pipe(int fds[2]);
 
 /*
  * Standard input for a program that reads it to its end (cat, wc):

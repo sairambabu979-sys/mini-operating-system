@@ -122,18 +122,19 @@ outcome and documents why.
 | # | Call | Notes |
 |---|------|-------|
 | 0 | `exit(code)` | |
-| 1 | `write(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be written: only the console's output can. Copied in 256-byte chunks; each chunk is one console message, sent to COM1 with interrupts off (see [console.md](console.md)) |
+| 1 | `write(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be written: the console's output or a pipe's write end. The console: copied in 256-byte chunks; each chunk is one console message, sent to COM1 with interrupts off (see [console.md](console.md)). A pipe: below |
 | 2 | `yield()` | |
 | 3 | `getpid()` | |
 | 4 | `sleep_ms(ms)` | capped at one hour; sleeps at least `ms` (see [scheduler.md](scheduler.md)) |
 | 5 | `spawn(name, args, stdio)` | name copied byte by byte (it may end just before an unmapped page); `args` is NULL or a NULL-terminated list of at most 8 strings, 256 bytes in all with their NULs (`-E2BIG` past either); `stdio` is NULL (the child gets the caller's fds 0-2) or three of the caller's fds to be the child's 0-2 (`-EBADF` for one that is not open). All of it is copied and checked before anything is created (`-EFAULT`, `-ENAMETOOLONG`, `-E2BIG`, `-EBADF`, in that order of discovery); `-EAGAIN` at `TASK_MAX` tasks |
 | 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
-| 8 | `read(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be read, then as the file's kind says. The console's input (fd 0 unless spawn said otherwise): raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device. An initrd file: from its position, as much as fits, 0 at the end; `-EFAULT` for the range, 0 for `len` 0, then copied out one user page at a time: the first page that is not writable ends the read exactly there (`-EFAULT` if it is the first), and the position moves by exactly the bytes before it |
+| 8 | `read(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be read, then as the file's kind says. The console's input (fd 0 unless spawn said otherwise): raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device. An initrd file: from its position, as much as fits, 0 at the end; `-EFAULT` for the range, 0 for `len` 0, then copied out one user page at a time: the first page that is not writable ends the read exactly there (`-EFAULT` if it is the first), and the position moves by exactly the bytes before it. A pipe's read end: below |
 | 9 | `open(path)` | a file in the initrd, read-only (paths below). The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then looked up (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR`, then `-EMFILE` with `FILES_MAX` = 8 open, then `-ENOMEM`. Returns the lowest free fd from 3 |
 | 10 | `close(fd)` | `-EBADF` for 0-2, which stay open until exit, and for any fd not open |
 | 11 | `readdir(path, index, struct dirent *out)` | entry `index` of a directory, from 0 in archive order: 1 with `out` filled (`size`, `type` `DIRENT_FILE` or `DIRENT_DIR`, its own `name`), 0 past the last. The path first (`-EFAULT`, `-ENAMETOOLONG`), then `-EFAULT` unless `out` is in the user range, then `-EINVAL`, `-ENOENT`, `-ENOTDIR`, then `-EFAULT` if `out` is not writable. No handle: listing a directory is calling it with 0, 1, 2... |
-| 12 | `fstat(fd, struct stat *out)` | what an open fd is: `type` `STAT_FILE` (an initrd file; `size` its size) or `STAT_CONSOLE` (`size` 0). `-EBADF`, then `-EFAULT` unless `out` is writable |
+| 12 | `fstat(fd, struct stat *out)` | what an open fd is: `type` `STAT_FILE` (an initrd file; `size` its size), `STAT_CONSOLE` (`size` 0) or `STAT_PIPE` (either end; `size` the bytes waiting). `-EBADF`, then `-EFAULT` unless `out` is writable |
+| 13 | `pipe(int fds[2])` | a new pipe: `fds[0]` its read end and `fds[1]` its write end, at the two lowest free fds from 3. `-EFAULT` unless both ints are writable (probed, contents kept, before anything is made), `-EMFILE` with fewer than two fds free, `-ENOMEM` |
 
 **Files.** The initrd is the only file system, read-only. A path is
 absolute: `/` is the root and `/bin/sh` the archive's `bin/sh`; a
@@ -148,8 +149,8 @@ component outright, so a hostile archive cannot make a lookup and a
 listing disagree.
 
 **Open files** (`kernel/fs/file.c`). An fd refers to an open file: the
-console's input, the console's output, or an initrd file (a range of the
-never-freed initrd, and a position). Each kind says whether it can be
+console's input, the console's output, an initrd file (a range of the
+never-freed initrd, and a position), or one end of a pipe. Each kind says whether it can be
 read and written; one that cannot is `-EBADF`. Every fd that refers to a
 file shares it, its position included, and holds a reference; the last
 to close frees it. The console's two files are static and never freed.
@@ -174,6 +175,31 @@ most), echoes it to fd 2 when that is the console too, and takes Ctrl-D
 on an empty line as the end, as a terminal would. A first byte LF is
 skipped: the shell starts a program at the CR of a terminal's CRLF, and
 the LF is still queued.
+
+**Pipes** (`kernel/fs/pipe.c`). A pipe is a 4 KiB ring and its two
+ends, each an open file shared by every fd on it; an end closes when the
+last of those does, and the pipe is freed when both have. A read waits
+for at least one byte, then takes what is there; once no write end is
+open anywhere, it returns what is left and then 0. A write waits until
+all of it is in, 256 bytes (`PIPE_ATOMIC`) at a time, each piece put in
+whole, so writes of up to 256 bytes from several processes never mix;
+once no read end is open, it returns the bytes it put in, or `-EPIPE`
+if none (there are no signals). A process that reads a pipe it also
+holds the only write end of, with nothing in it, waits forever, as on
+Unix. User memory is copied outside the
+pipe's lock, a piece at a time through a buffer on the kernel stack. A
+read probes each piece of the buffer before it takes a byte, as the
+console's read does, so a buffer that is not writable never loses data:
+the call ends at the first bad piece, with `-EFAULT` if it is the first.
+Both sides wait with `wait_event()`, which checks after the task is
+queued and marked blocked, so a wakeup cannot be lost between the check
+and the sleep. `pipetest` checks all of this from ring 3, with children
+that wait on a full and an empty pipe, a 200-byte write that must wait
+with none of it in while the pipe has room for only 150, two writers of
+whole records into one pipe, and `cat` between two pipes; the kernel
+test around it checks that every pipe and end is freed, and another
+fails each of the four allocations a pipe makes in turn
+(`kmalloc_test_fail_one()`).
 
 `fstest` checks each error above from ring 3, the order where two can
 apply, a read whose buffer runs into an unmapped page, and `spawn`'s

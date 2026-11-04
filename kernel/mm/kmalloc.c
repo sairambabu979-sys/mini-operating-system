@@ -182,6 +182,16 @@ static unsigned order_for(usize size)
     return order;
 }
 
+static long test_fail_in = -1; /* kmalloc_test_fail_one(): allocations before the one that fails */
+
+long kmalloc_test_fail_one(long n)
+{
+    long previous = test_fail_in;
+
+    test_fail_in = n;
+    return previous;
+}
+
 void *kmalloc(usize size)
 {
     if (!initialized)
@@ -193,6 +203,13 @@ void *kmalloc(usize size)
      */
     if (size == 0 || size > KMALLOC_MAX)
         return NULL;
+    if (test_fail_in >= 0) {
+        bool fail = test_fail_in == 0;
+
+        test_fail_in--; /* -1 after the one that fails: off */
+        if (fail)
+            return NULL;
+    }
 
     int idx = class_for(size + DEBUG_OVERHEAD);
 

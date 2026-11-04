@@ -117,22 +117,39 @@ static s64 initrd_read(struct file *f, u64 user_buf, u64 len)
     return done || want == 0 ? (s64)done : -EFAULT;
 }
 
+static u64 initrd_size(struct file *f)
+{
+    return f->size;
+}
+
 static void initrd_release(struct file *f)
 {
     kfree(f);
 }
 
 static const struct file_ops initrd_ops = {
-    .type = STAT_FILE, .read = initrd_read, .release = initrd_release};
+    .type = STAT_FILE, .read = initrd_read, .size = initrd_size, .release = initrd_release};
 
-struct file *file_open_initrd(const u8 *data, u64 size)
+struct file *file_alloc(const struct file_ops *ops)
 {
     struct file *f = kzalloc(sizeof(*f));
 
     if (!f)
         return NULL;
-    *f = (struct file){.ops = &initrd_ops, .refs = 1, .data = data, .size = size};
+    f->ops = ops;
+    f->refs = 1;
     __atomic_fetch_add(&nfiles, 1, __ATOMIC_RELAXED);
+    return f;
+}
+
+struct file *file_open_initrd(const u8 *data, u64 size)
+{
+    struct file *f = file_alloc(&initrd_ops);
+
+    if (f) {
+        f->data = data;
+        f->size = size;
+    }
     return f;
 }
 

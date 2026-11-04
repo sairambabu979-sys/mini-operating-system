@@ -15,6 +15,7 @@
 #include <core/time.h>
 #include <fs/file.h>
 #include <fs/initrd.h>
+#include <fs/pipe.h>
 #include <fs/tarfs.h>
 #include <lib/errno.h>
 #include <proc/process.h>
@@ -235,7 +236,7 @@ static s64 sys_fstat(u64 fd, u64 user_out, u64 a2)
     if (!f)
         return -EBADF;
     st.type = f->ops->type;
-    st.size = f->ops->type == STAT_FILE ? f->size : 0;
+    st.size = f->ops->size ? f->ops->size(f) : 0;
     if (copy_to_user((void *)user_out, &st, sizeof(st)) != 0)
         return -EFAULT;
     return 0;
@@ -264,6 +265,36 @@ static s64 sys_readdir(u64 user_path, u64 index, u64 user_out)
     return r;
 }
 
+/*
+ * pipe(fds): -EFAULT unless both ints are writable (probed, contents kept,
+ * before anything is made), -EMFILE with fewer than two fds free, -ENOMEM.
+ * fds[0] is the read end, at the lower fd; fds[1] the write end.
+ */
+static s64 sys_pipe(u64 user_fds, u64 a1, u64 a2)
+{
+    int fds[2];
+    struct file *rd, *wr;
+    int err;
+
+    (void)a1;
+    (void)a2;
+    if (copy_from_user(fds, (const void *)user_fds, sizeof(fds)) != 0 ||
+        copy_to_user((void *)user_fds, fds, sizeof(fds)) != 0)
+        return -EFAULT;
+    fds[0] = fd_free(FD_FIRST);
+    fds[1] = fds[0] < 0 ? fds[0] : fd_free(fds[0] + 1);
+    if (fds[1] < 0)
+        return -EMFILE;
+    err = pipe_create(&rd, &wr);
+    if (err)
+        return err;
+    fd_install(fds[0], rd);
+    fd_install(fds[1], wr);
+    if (copy_to_user((void *)user_fds, fds, sizeof(fds)) != 0)
+        return -EFAULT; /* cannot happen: probed above, and nothing else runs in this process */
+    return 0;
+}
+
 static s64 sys_time_ms(u64 a0, u64 a1, u64 a2)
 {
     (void)a0;
@@ -277,7 +308,7 @@ static const syscall_fn syscall_table[SYS_COUNT] = {
     [SYS_GETPID] = sys_getpid, [SYS_SLEEP_MS] = sys_sleep_ms, [SYS_SPAWN] = sys_spawn,
     [SYS_WAIT] = sys_wait,     [SYS_TIME_MS] = sys_time_ms,   [SYS_READ] = sys_read,
     [SYS_OPEN] = sys_open,     [SYS_CLOSE] = sys_close,       [SYS_READDIR] = sys_readdir,
-    [SYS_FSTAT] = sys_fstat,
+    [SYS_FSTAT] = sys_fstat,   [SYS_PIPE] = sys_pipe,
 };
 
 /* Called from syscall.asm with interrupts enabled. Result goes in RAX. */
