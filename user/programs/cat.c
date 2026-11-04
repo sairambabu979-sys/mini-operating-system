@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 /*
  * Prints each file named, in order, or with no names its standard input
- * to its end (at the console, until Ctrl-D on an empty line: see
- * stdin_read()). A file that cannot be opened or read is reported and
+ * to its end (at the console, line by line, 31 characters at most, until
+ * Ctrl-D on an empty line: see stdin_read()). A file that cannot be opened or read is reported and
  * skipped. Exit status 0 if everything printed, 1 if anything failed.
  */
 #include "libsys.h"

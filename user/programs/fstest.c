@@ -125,11 +125,16 @@ static int child_swapped(void)
     return failures;
 }
 
-/* "fstest crash": dies by a fault with files open; the kernel test checks they closed. */
+/*
+ * "fstest crash": dies by a fault with files open, one closed below the
+ * last, so closing them all must not stop at the first gap; the kernel
+ * test checks they closed.
+ */
 static int child_crash(void)
 {
     for (int i = 0; i < FILES_MAX; i++)
         sys_open("/etc/motd");
+    sys_close(FD_FIRST + 2);
     *(volatile int *)0x1000 = 1; /* UNMAPPED */
     return 1;
 }

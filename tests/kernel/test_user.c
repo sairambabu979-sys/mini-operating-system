@@ -75,7 +75,7 @@ KTEST(syscalls_reject_hostile_arguments)
 /*
  * open, read, close, readdir and fstat on the initrd, every error in its
  * order, and spawn()'s stdio. Every fd fstest and its children had is
- * closed by the end, the child killed by a fault with nine open included.
+ * closed by the end, the child killed by a fault with a closed fd among open ones included.
  */
 KTEST(file_calls_work_and_reject_hostile_arguments)
 {
@@ -608,6 +608,24 @@ KTEST(cat_reads_the_console_until_ctrl_d)
     input_inject((const u8 *)session, sizeof(session) - 1);
     KEXPECT_EQ(run("sh"), 0);
     KEXPECT(log_has("sh> cat\nhi\nhi\nabc^C\nthere\nthere\n[exit 0]\nsh> exit\n"));
+    input_test_flush();
+    input_test_set_present(was);
+}
+
+/*
+ * The same from a serial terminal, whose Enter is CRLF: the shell ends
+ * "cat" at the CR, and the LF left queued is not an empty line for cat.
+ */
+KTEST(cat_reads_crlf_lines_from_the_console)
+{
+    static const char session[] = "cat\r\nhi\r\n\x04"
+                                  "exit\r\n";
+    bool was = input_test_set_present(true);
+
+    input_test_flush();
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    KEXPECT_EQ(run("sh"), 0);
+    KEXPECT(log_has("sh> cat\nhi\nhi\n[exit 0]\nsh> exit\n"));
     input_test_flush();
     input_test_set_present(was);
 }

@@ -41,10 +41,12 @@ long sys_fstat(int fd, struct stat *out);
 /*
  * Standard input for a program that reads it to its end (cat, wc):
  * read(0), unless fd 0 is the console, which has no end and never
- * echoes. There input is edited a line at a time (lineedit.h), echoed to
- * fd 2 if that is the console too, and handed over line by line, each
- * with its "\n"; Ctrl-D on an empty line ends it, and every call after
- * that returns 0. -EIO if the console read fails without saying why.
+ * echoes. There input is edited a line at a time (lineedit.h: at most
+ * LE_LINE_MAX - 1 characters, more are ignored), echoed to fd 2 if that
+ * is the console too, and handed over line by line, each with its "\n";
+ * Ctrl-D on an empty line ends it, and every call after that returns 0.
+ * An LF first of all is taken as the end of the CRLF that ended the
+ * shell's line. -EIO if the console read fails without saying why.
  */
 long stdin_read(void *buf, usize len);
 

@@ -130,7 +130,7 @@ outcome and documents why.
 | 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
 | 8 | `read(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be read, then as the file's kind says. The console's input (fd 0 unless spawn said otherwise): raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device. An initrd file: from its position, as much as fits, 0 at the end; `-EFAULT` for the range, 0 for `len` 0, then copied out one user page at a time: the first page that is not writable ends the read exactly there (`-EFAULT` if it is the first), and the position moves by exactly the bytes before it |
-| 9 | `open(path)` | a file in the initrd, read-only (paths below). The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then looked up (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR`, then `-EMFILE` with `FILES_MAX` = 8 open. Returns the lowest free fd from 3 |
+| 9 | `open(path)` | a file in the initrd, read-only (paths below). The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then looked up (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR`, then `-EMFILE` with `FILES_MAX` = 8 open, then `-ENOMEM`. Returns the lowest free fd from 3 |
 | 10 | `close(fd)` | `-EBADF` for 0-2, which stay open until exit, and for any fd not open |
 | 11 | `readdir(path, index, struct dirent *out)` | entry `index` of a directory, from 0 in archive order: 1 with `out` filled (`size`, `type` `DIRENT_FILE` or `DIRENT_DIR`, its own `name`), 0 past the last. The path first (`-EFAULT`, `-ENAMETOOLONG`), then `-EFAULT` unless `out` is in the user range, then `-EINVAL`, `-ENOENT`, `-ENOTDIR`, then `-EFAULT` if `out` is not writable. No handle: listing a directory is calling it with 0, 1, 2... |
 | 12 | `fstat(fd, struct stat *out)` | what an open fd is: `type` `STAT_FILE` (an initrd file; `size` its size) or `STAT_CONSOLE` (`size` 0). `-EBADF`, then `-EFAULT` unless `out` is writable |
@@ -169,14 +169,17 @@ reading one file never both read from the same place.
 The console has no end of its own, so a program that reads standard
 input to its end (`cat` with no arguments) goes through `stdin_read()`
 in `user/lib/libsys.c`: when `fstat` says fd 0 is the console, it edits
-input a line at a time with the shell's line editor, echoes it to fd 2,
-and takes Ctrl-D on an empty line as the end, as a terminal would.
+input a line at a time with the shell's line editor (31 characters at
+most), echoes it to fd 2 when that is the console too, and takes Ctrl-D
+on an empty line as the end, as a terminal would. A first byte LF is
+skipped: the shell starts a program at the CR of a terminal's CRLF, and
+the LF is still queued.
 
 `fstest` checks each error above from ring 3, the order where two can
 apply, a read whose buffer runs into an unmapped page, and `spawn`'s
 `stdio`: a child sharing the parent's file position, a grandchild
 inheriting fd 0 after the parent closed it, the console's input and
-output swapped, and one killed by a fault with every fd open. The kernel
+output swapped, and one killed by a fault with a closed fd among open ones. The kernel
 test around it checks that no file outlives the processes.
 
 **User memory** is reached only through `copy_from_user`, `copy_to_user`

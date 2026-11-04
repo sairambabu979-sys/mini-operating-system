@@ -164,7 +164,8 @@ byte.
 
 **`read(fd, buf, len)`, syscall 8.** The order of the checks is part of
 the ABI:
-1. `-EBADF` for any fd but 0;
+1. `-EBADF` unless the fd is open and is the console's input (fd 0,
+   unless `spawn` gave the process another);
 2. `-EFAULT` if the range is bad as a whole;
 3. 0 for `len` 0;
 4. `-EFAULT` unless every byte this call could fill, `min(len, 256)`, is

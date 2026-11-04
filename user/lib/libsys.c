@@ -102,6 +102,13 @@ long stdin_read(void *buf, usize len)
         kind = is_console(0) ? CONSOLE : OTHER;
         echo = is_console(2);
         le_reset(&le);
+        /*
+         * The shell ends a line at its CR and starts the program at once, so
+         * the LF of a terminal's CRLF may still be queued. As the CR's pair
+         * it is no line of ours: a first byte LF is skipped, like any LF
+         * after a CR.
+         */
+        le.last_cr = true;
     }
     if (kind == OTHER)
         return sys_read(0, buf, len);
