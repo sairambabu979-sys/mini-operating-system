@@ -23,6 +23,7 @@
 #define SYS_READDIR                                                                                \
     11 /* readdir(const char *path, u64 index, struct dirent *out) -> 1, or 0 past the end */
 #define SYS_FSTAT 12 /* fstat(int fd, struct stat *out) -> 0 */
+#define SYS_PIPE  13 /* pipe(int fds[2]) -> 0: fds[0] the read end, fds[1] the write end */
 
 /*
  * spawn()'s arguments: `args` is NULL or a NULL-terminated list of at most
@@ -76,11 +77,33 @@ struct dirent {
 /*
  * fstat()'s record: what an open fd refers to. `type` uses readdir()'s
  * numbers where they overlap: STAT_FILE is an initrd file, `size` its
- * size; STAT_CONSOLE the console's input or output, `size` 0. -EBADF for
- * an fd that is not open, then -EFAULT unless `out` is writable.
+ * size; STAT_CONSOLE the console's input or output, `size` 0; STAT_PIPE
+ * either end of a pipe, `size` the bytes waiting in it. -EBADF for an fd
+ * that is not open, then -EFAULT unless `out` is writable.
  */
 #define STAT_FILE    DIRENT_FILE
 #define STAT_CONSOLE 3
+#define STAT_PIPE    4
+
+/*
+ * Pipes: pipe() makes one, its two ends at the two lowest free fds from
+ * FD_FIRST (-EMFILE with fewer than two free). -EFAULT unless both ints
+ * of fds are writable, checked before anything is made; -ENOMEM.
+ *
+ * It holds PIPE_SIZE bytes. A read blocks until at least one byte is
+ * there, then takes what is, up to len; once no write end is open
+ * anywhere, it returns what is left and then 0. A write blocks until all
+ * of it is in, PIPE_ATOMIC bytes at a time, each piece whole: a write of
+ * at most PIPE_ATOMIC bytes is never mixed with another's. Once no read
+ * end is open anywhere, a write returns the bytes it put in before that,
+ * or -EPIPE if none. Reading the write end or writing the read end is
+ * -EBADF. Either call goes PIPE_ATOMIC bytes at a time, and a piece of
+ * the buffer that is not readable (write) or writable (read) ends it
+ * before any of that piece moves: -EFAULT if it is the first, else the
+ * bytes moved before it. So a bad buffer never loses a byte.
+ */
+#define PIPE_SIZE   4096
+#define PIPE_ATOMIC 256
 
 struct stat {
     unsigned long long size;
@@ -88,7 +111,7 @@ struct stat {
     unsigned int reserved; /* 0 */
 };
 
-#define SYS_COUNT 13
+#define SYS_COUNT 14
 
 /* Exit status of a process killed by CPU exception `vector`. */
 #define EXIT_STATUS_FAULT(vector) (128 + (vector))

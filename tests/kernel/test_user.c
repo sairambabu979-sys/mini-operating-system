@@ -16,6 +16,7 @@
 #include <core/time.h>
 #include <fs/file.h>
 #include <fs/initrd.h>
+#include <fs/pipe.h>
 #include <fs/tarfs.h>
 #include <lib/errno.h>
 #include <lib/string.h>
@@ -555,6 +556,20 @@ KTEST(shell_leaves_typeahead_to_the_program_it_starts)
     }
     input_test_flush();
     input_test_set_present(was);
+}
+
+/*
+ * pipe() from ring 3: pipetest and its children (writers that wait,
+ * readers that wait, the end, -EPIPE, bad buffers, whole records, cat
+ * between two pipes). Every pipe and every end is freed by the end.
+ */
+KTEST(pipes_work_and_reject_hostile_arguments)
+{
+    u32 files = file_count(), pipes = pipe_count();
+
+    KEXPECT_EQ(run("pipetest"), 0); /* exit status = number of wrong answers, each printed */
+    KEXPECT_EQ(file_count(), files);
+    KEXPECT_EQ(pipe_count(), pipes);
 }
 
 /* cat with no arguments copies its standard input to its end: here a file the test opened. */

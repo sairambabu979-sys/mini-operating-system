@@ -83,6 +83,11 @@ long sys_fstat(int fd, struct stat *out)
     return syscall3(SYS_FSTAT, fd, (long)out, 0);
 }
 
+long sys_pipe(int fds[2])
+{
+    return syscall3(SYS_PIPE, (long)fds, 0, 0);
+}
+
 static bool is_console(int fd)
 {
     struct stat st = {0};
@@ -162,6 +167,10 @@ const char *sys_strerror(long err)
         return "bad address";
     case EBADF:
         return "bad file descriptor";
+    case EPIPE:
+        return "broken pipe";
+    case ENOMEM:
+        return "out of memory";
     default:
         return "error";
     }

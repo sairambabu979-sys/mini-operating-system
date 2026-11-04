@@ -2,8 +2,8 @@
 /*
  * Open files: what a process's fds refer to.
  *
- * A file is one open thing: the console's input, the console's output, or
- * an initrd file with its read position. Every fd that refers to it, in
+ * A file is one open thing: the console's input, the console's output, an
+ * initrd file with its read position, or one end of a pipe (fs/pipe.c). Every fd that refers to it, in
  * one process or several (spawn() hands a child its parent's), shares it,
  * position included, and counts as one reference; the last to go frees
  * it. The console's two files are static and never freed.
@@ -33,9 +33,16 @@ struct file_ops {
      */
     s64 (*read)(struct file *f, u64 user_buf, u64 len);
     s64 (*write)(struct file *f, u64 user_buf, u64 len);
-    /* The last reference went. NULL for a static file, which never loses its last. */
+    /* What fstat() reports as the size; NULL: 0. */
+    u64 (*size)(struct file *f);
+    /*
+     * The last reference went: free what the file holds, and the file
+     * itself. NULL for a static file, which never loses its last.
+     */
     void (*release)(struct file *f);
 };
+
+struct pipe;
 
 struct file {
     const struct file_ops *ops;
@@ -44,10 +51,14 @@ struct file {
     const u8 *data;
     u64 size;
     u64 pos;
+    struct pipe *pipe; /* a pipe end: its pipe */
 };
 
 /* The console: fd 0 of the first process, and fds 1 and 2. */
 extern struct file console_input, console_output;
+
+/* A new file of this kind, zeroed but for its ops and one reference; NULL without memory. */
+struct file *file_alloc(const struct file_ops *ops);
 
 /* A new open initrd file on [data, data + size), holding one reference; NULL without memory. */
 struct file *file_open_initrd(const u8 *data, u64 size);
