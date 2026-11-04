@@ -51,7 +51,9 @@ long sys_pipe(int fds[2]);
  */
 long stdin_read(void *buf, usize len);
 
+/* To fd 1, and to fd 2 (errors, so they stay out of a pipe): one write each, 255 bytes at most. */
 int printf(const char *fmt, ...) __printf(1, 2);
+int eprintf(const char *fmt, ...) __printf(1, 2);
 
 /* A short description of a negative errno, for messages ("not found"). */
 const char *sys_strerror(long err);

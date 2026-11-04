@@ -19,6 +19,7 @@
 #include <fs/pipe.h>
 #include <fs/tarfs.h>
 #include <lib/errno.h>
+#include <lib/printf.h>
 #include <lib/string.h>
 #include <mm/kmalloc.h>
 #include <mm/pmm.h>
@@ -645,6 +646,61 @@ KTEST(cat_reads_crlf_lines_from_the_console)
     input_test_set_present(was);
 }
 
+/*
+ * Pipelines: each program's output is the next one's input, with or
+ * without spaces around the |, through as many as four; errors go to
+ * the console, not down the pipe; a program that cannot start leaves the
+ * rest to run on an empty pipe or a reader-less one; and a line that is
+ * not a pipeline is refused before anything runs. Every pipe is freed.
+ */
+KTEST(shell_runs_pipelines)
+{
+    static const char session[] = "cat /etc/motd | wc\n"
+                                  "cat /etc/motd|cat|cat|wc\n"
+                                  "cat /nope | wc\n"
+                                  "nosuch | wc\n"
+                                  "ls /bin | nosuch\n"
+                                  "cat /bin/sh | nosuch\n"
+                                  "nosuch\n"
+                                  "| wc\nwc |\nls || wc\nhelp | wc\nhelp x | wc\n"
+                                  "wc|wc|wc|wc|wc|wc|wc|wc|wc\n"
+                                  "wc /etc/motd /nope\n"
+                                  "wc\nab cd\n\x04"
+                                  "exit\n";
+    static const char *const want[] = {
+        "sh> cat /etc/motd | wc\n2 16 89\n[exit 0 0]\n",
+        "sh> cat /etc/motd|cat|cat|wc\n2 16 89\n[exit 0 0 0 0]\n",
+        "sh> cat /nope | wc\ncat: /nope: not found\n0 0 0\n[exit 1 0]\n",
+        "sh> nosuch | wc\nsh: nosuch: not found\n0 0 0\n[exit - 0]\n",
+        "sh> ls /bin | nosuch\nsh: nosuch: not found\n[exit 0 -]\n",
+        /* more than a pipe holds, to a reader that never came: cat must get -EPIPE, not wait */
+        ("sh> cat /bin/sh | nosuch\nsh: nosuch: not found\ncat: standard output: broken pipe\n"
+         "[exit 1 -]\n"),
+        "sh> nosuch\nsh: nosuch: not found\nsh> ", /* alone, no [exit] line */
+        "sh> | wc\nsh: a pipeline needs a program on each side of every |\n",
+        "sh> wc |\nsh: a pipeline needs a program on each side of every |\n",
+        "sh> ls || wc\nsh: a pipeline needs a program on each side of every |\n",
+        "sh> help | wc\nsh: help cannot be in a pipeline\n",
+        "sh> help x | wc\nsh: help cannot be in a pipeline\n",
+        "sh> wc|wc|wc|wc|wc|wc|wc|wc|wc\nsh: too many programs in a pipeline (8 at most)\n",
+        "2 16 89 /etc/motd\nwc: /nope: not found\n2 16 89 total\n[exit 1]\n",
+        "sh> wc\nab cd\n1 2 6\n[exit 0]\nsh> exit\n",
+    };
+    bool was = input_test_set_present(true);
+    u32 files = file_count(), pipes = pipe_count();
+
+    input_test_flush();
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    KEXPECT_EQ(run("sh"), 0);
+    for (usize i = 0; i < ARRAY_SIZE(want); i++)
+        if (!log_has(want[i]))
+            ktest_fail(__FILE__, __LINE__, "no '%s' in the console log", want[i]);
+    KEXPECT_EQ(file_count(), files);
+    KEXPECT_EQ(pipe_count(), pipes);
+    input_test_flush();
+    input_test_set_present(was);
+}
+
 /* Ctrl-D on an empty line leaves, and the output still ends with a newline. */
 KTEST(shell_eof_exits_cleanly)
 {
@@ -709,4 +765,65 @@ KTEST(spawn_arguments_fill_their_limits_exactly)
     longer[sizeof(arg)] = '\0';
     KEXPECT_EQ(spawn_args_add(&args, longer), -E2BIG);
     KEXPECT_EQ(args.argc, SPAWN_ARGS_MAX - 1); /* a failed add changes nothing */
+}
+
+/*
+ * wc counts what crosses many of its reads: /bin/sh (any bytes will do)
+ * by name, and through a pipe the test makes, from cat to wc. The counts
+ * are worked out here from the archive itself.
+ */
+KTEST(wc_counts_a_file_and_a_pipe)
+{
+    usize len;
+    const u8 *rd = initrd_get(&len);
+    struct tarfs_node node;
+    struct spawn_args args = {0};
+    u64 lines = 0, words = 0;
+    bool in_word = false;
+    char want[96];
+    struct file *r, *w;
+    int status = -1;
+
+    if (!rd || tarfs_lookup(rd, len, "/bin/sh", &node) != 0) {
+        ktest_fail(__FILE__, __LINE__, "no /bin/sh");
+        return;
+    }
+    KEXPECT(node.size > 8ul * 512); /* many of wc's 512-byte reads */
+    for (u64 i = 0; i < node.size; i++) {
+        u8 b = node.data[i];
+        bool space = b == ' ' || b == '\t' || b == '\r' || b == '\n';
+
+        lines += b == '\n';
+        words += !space && !in_word;
+        in_word = !space;
+    }
+    KEXPECT_EQ(spawn_args_add(&args, "/bin/sh"), 0);
+    k_snprintf(want, sizeof(want), "\n%lu %lu %lu /bin/sh\n", lines, words, node.size);
+    KEXPECT_EQ(run_args("wc", &args), 0);
+    KEXPECT(log_has(want));
+
+    u32 files = file_count(), pipes = pipe_count();
+
+    KEXPECT_EQ(pipe_create(&r, &w), 0);
+
+    struct file *cat_std[3] = {&console_input, w, &console_output};
+    struct file *wc_std[3] = {r, &console_output, &console_output};
+    int cat = process_spawn_args("cat", &args, cat_std);
+    int wc = process_spawn_args("wc", NULL, wc_std);
+
+    file_put(r); /* the children hold their own ends: wc sees the end when cat exits */
+    file_put(w);
+    KEXPECT(cat > 0 && wc > 0);
+    if (cat > 0) {
+        KEXPECT_EQ(task_wait(cat, &status), cat);
+        KEXPECT_EQ(status, 0);
+    }
+    if (wc > 0) {
+        KEXPECT_EQ(task_wait(wc, &status), wc);
+        KEXPECT_EQ(status, 0);
+    }
+    k_snprintf(want, sizeof(want), "\n%lu %lu %lu\n", lines, words, node.size);
+    KEXPECT(log_has(want));
+    KEXPECT_EQ(file_count(), files);
+    KEXPECT_EQ(pipe_count(), pipes);
 }
