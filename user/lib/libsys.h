@@ -28,12 +28,27 @@ long sys_sleep_ms(u64 ms);
 long sys_spawn(const char *name);
 /* With arguments: `args` is NULL-terminated; argv[0] is the name (see SPAWN_ARGS_MAX). */
 long sys_spawnv(const char *name, const char *const *args);
+/* And with stdio[0..2] as the child's fds 0-2 (NULL: this process's own). */
+long sys_spawn_stdio(const char *name, const char *const *args, const int *stdio);
 long sys_wait(int pid, int *status);
 long sys_time_ms(void);
 long sys_read(int fd, void *buf, usize len);
 long sys_open(const char *path);
 long sys_close(int fd);
 long sys_readdir(const char *path, u64 index, struct dirent *out);
+long sys_fstat(int fd, struct stat *out);
+
+/*
+ * Standard input for a program that reads it to its end (cat, wc):
+ * read(0), unless fd 0 is the console, which has no end and never
+ * echoes. There input is edited a line at a time (lineedit.h: at most
+ * LE_LINE_MAX - 1 characters, more are ignored), echoed to fd 2 if that
+ * is the console too, and handed over line by line, each with its "\n";
+ * Ctrl-D on an empty line ends it, and every call after that returns 0.
+ * An LF first of all is taken as the end of the CRLF that ended the
+ * shell's line. -EIO if the console read fails without saying why.
+ */
+long stdin_read(void *buf, usize len);
 
 int printf(const char *fmt, ...) __printf(1, 2);
 

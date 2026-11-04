@@ -28,6 +28,7 @@
 #include <core/printk.h>
 #include <core/spinlock.h>
 #include <core/time.h>
+#include <fs/file.h>
 #include <lib/errno.h>
 #include <lib/string.h>
 #include <mm/kmalloc.h>
@@ -483,7 +484,11 @@ __noreturn void task_exit(int code)
     if (t == &boot_task || t == idle_task)
         panic("task %s (pid %d) must never exit", t->name, t->pid);
 
-    /* Its memory goes back now, not when (or if) the parent reaps it. */
+    /*
+     * Its files close now, and its memory goes back, not when (or if) the
+     * parent reaps it.
+     */
+    fd_close_all(t);
     sched_arch_task_exit(t);
     lock_sched(&flags);
     BUG_ON(t->on_rq); /* running tasks are never queued: see wake_locked() */

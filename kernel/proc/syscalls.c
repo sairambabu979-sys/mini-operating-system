@@ -9,12 +9,11 @@
 
 #include <arch/cpu.h>
 #include <arch/msr.h>
-#include <arch/paging.h>
 #include <arch/segments.h>
 #include <arch/trap.h>
-#include <core/input.h>
 #include <core/printk.h>
 #include <core/time.h>
+#include <fs/file.h>
 #include <fs/initrd.h>
 #include <fs/tarfs.h>
 #include <lib/errno.h>
@@ -23,8 +22,7 @@
 #include <sched/sched.h>
 #include <uapi/syscall.h>
 
-#define WRITE_CHUNK 256
-#define NAME_MAX    TASK_NAME_MAX
+#define NAME_MAX TASK_NAME_MAX
 
 typedef s64 (*syscall_fn)(u64 a0, u64 a1, u64 a2);
 
@@ -38,23 +36,14 @@ static s64 sys_exit(u64 code, u64 a1, u64 a2)
     task_exit((int)code);
 }
 
+/* write(fd, ...): -EBADF unless fd is open and its kind can be written, then the kind's own. */
 static s64 sys_write(u64 fd, u64 user_buf, u64 len)
 {
-    char chunk[WRITE_CHUNK];
+    struct file *f = fd_get(fd);
 
-    if (fd != 1 && fd != 2)
+    if (!f || !f->ops->write)
         return -EBADF;
-    if (!user_range_ok(user_buf, len))
-        return -EFAULT;
-    for (u64 done = 0; done < len;) {
-        usize n = (usize)MIN(len - done, (u64)WRITE_CHUNK);
-
-        if (copy_from_user(chunk, (const void *)(user_buf + done), n) != 0)
-            return done ? (s64)done : -EFAULT;
-        console_write(chunk, n);
-        done += n;
-    }
-    return (s64)len;
+    return f->ops->write(f, user_buf, len);
 }
 
 static s64 sys_yield(u64 a0, u64 a1, u64 a2)
@@ -83,23 +72,46 @@ static s64 sys_sleep_ms(u64 ms, u64 a1, u64 a2)
 }
 
 /*
- * spawn(name, args): the name first (-EFAULT, -ENAMETOOLONG), then each
- * argument pointer and string in turn (-EFAULT, or -E2BIG past either
- * limit), all before anything is created.
+ * The child's fds 0-2 for spawn(): the caller's own, or the three fds
+ * `user_stdio` names. -EFAULT, or -EBADF for one that is not open. The
+ * files are borrowed, not counted: the caller is single-threaded and in
+ * this call, so none can close before the child takes its own references.
  */
-static s64 sys_spawn(u64 user_name, u64 user_args, u64 a2)
+static int std_from_user(struct file *std[FD_FIRST], u64 user_stdio)
+{
+    int fds[FD_FIRST];
+
+    if (!user_stdio) {
+        for (int i = 0; i < FD_FIRST; i++)
+            std[i] = fd_get((u64)i);
+        return 0;
+    }
+    if (copy_from_user(fds, (const void *)user_stdio, sizeof(fds)) != 0)
+        return -EFAULT;
+    for (int i = 0; i < FD_FIRST; i++) {
+        std[i] = fd_get((u64)(s64)fds[i]); /* a negative fd is far past the table */
+        if (!std[i])
+            return -EBADF;
+    }
+    return 0;
+}
+
+/*
+ * spawn(name, args, stdio): the name first (-EFAULT, -ENAMETOOLONG), then
+ * each argument pointer and string in turn (-EFAULT, or -E2BIG past either
+ * limit), then stdio (-EFAULT, -EBADF), all before anything is created.
+ */
+static s64 sys_spawn(u64 user_name, u64 user_args, u64 user_stdio)
 {
     char name[NAME_MAX];
     struct spawn_args args = {0};
+    struct file *std[FD_FIRST];
     int len;
 
-    (void)a2;
     len = strncpy_from_user(name, (const char *)user_name, sizeof(name));
     if (len < 0)
         return len;
-    if (!user_args)
-        return process_spawn(name);
-    for (usize i = 0;; i++) {
+    for (usize i = 0; user_args; i++) {
         u64 arg;
 
         if (copy_from_user(&arg, (const void *)(user_args + i * sizeof(u64)), sizeof(arg)) != 0)
@@ -117,7 +129,10 @@ static s64 sys_spawn(u64 user_name, u64 user_args, u64 a2)
         args.len += (usize)len + 1;
         args.argc++;
     }
-    return process_spawn_args(name, &args);
+    len = std_from_user(std, user_stdio);
+    if (len < 0)
+        return len;
+    return process_spawn_args(name, &args, std);
 }
 
 static s64 sys_wait(u64 pid, u64 user_status, u64 a2)
@@ -141,19 +156,6 @@ static s64 sys_wait(u64 pid, u64 user_status, u64 a2)
     return r;
 }
 
-/* The open file behind fd, or NULL: fds below FD_FIRST are the console's. */
-static struct task_file *file_of(u64 fd)
-{
-    struct task *self = task_current();
-    struct task_file *f;
-
-    /* No test can see an off-by-one here (one past the table is the task's next field). */
-    if (fd < FD_FIRST || fd - FD_FIRST >= ARRAY_SIZE(self->files))
-        return NULL;
-    f = &self->files[fd - FD_FIRST];
-    return f->open ? f : NULL;
-}
-
 /* Copies a path in: -EFAULT, or -ENAMETOOLONG at PATH_MAX bytes with no NUL. */
 static int path_from_user(char path[PATH_MAX], u64 user_path)
 {
@@ -172,67 +174,16 @@ static int lookup(const char *path, struct tarfs_node *node)
 }
 
 /*
- * read(fd >= FD_FIRST, ...): from the file's position, as much as fits,
- * 0 at its end. -EFAULT for the range, then 0 for len 0. It copies out
- * one user page at a time: copy_to_user is all or nothing, so a fault
- * inside a page fails that page's whole piece. The first page that is not
- * writable ends the read there (-EFAULT if it was the first), and the
- * position moves by exactly the bytes before it, so no byte is lost.
- */
-static s64 read_file(struct task_file *f, u64 user_buf, u64 len)
-{
-    u64 want, done = 0;
-
-    if (!user_range_ok(user_buf, len))
-        return -EFAULT;
-    want = MIN(len, f->size - f->pos);
-    while (done < want) {
-        u64 to_page_end = PAGE_SIZE_4K - ((user_buf + done) & (PAGE_SIZE_4K - 1));
-        usize n = (usize)MIN(want - done, to_page_end);
-
-        if (copy_to_user((void *)(user_buf + done), f->data + f->pos + done, n) != 0)
-            break;
-        done += n;
-    }
-    f->pos += done;
-    return done || want == 0 ? (s64)done : -EFAULT;
-}
-
-/*
- * read(0, buf, len): console input, raw bytes, at least one. The order of
- * the checks is part of the ABI: -EBADF, then -EFAULT for the range, then
- * 0 for an empty read, then -EFAULT for a buffer that is not mapped and
- * writable, then -ENODEV with no input device. Every failure comes before
- * anything is taken off the queue, and the buffer is probed, its contents
- * kept, rather than merely range-checked (the sys_wait precedent): a bad
- * buffer must not swallow a keystroke. The process is single-threaded, so
- * nothing can unmap the buffer between the probe and the copy out.
- * A file's fd reads the file (read_file).
+ * read(fd, ...): -EBADF unless fd is open and its kind can be read, then
+ * the kind's own (<fs/file.h>: the console's input, an initrd file).
  */
 static s64 sys_read(u64 fd, u64 user_buf, u64 len)
 {
-    u8 buf[INPUT_READ_MAX];
-    usize n;
-    struct task_file *f = file_of(fd);
+    struct file *f = fd_get(fd);
 
-    if (f)
-        return read_file(f, user_buf, len);
-    if (fd != 0)
+    if (!f || !f->ops->read)
         return -EBADF;
-    if (!user_range_ok(user_buf, len))
-        return -EFAULT;
-    n = (usize)MIN(len, (u64)INPUT_READ_MAX);
-    if (n == 0)
-        return 0;
-    if (copy_from_user(buf, (const void *)user_buf, n) != 0 ||
-        copy_to_user((void *)user_buf, buf, n) != 0)
-        return -EFAULT;
-    if (!input_present())
-        return -ENODEV;
-    n = input_read(buf, n);
-    if (copy_to_user((void *)user_buf, buf, n) != 0)
-        return -EFAULT; /* cannot happen: probed above */
-    return (s64)n;
+    return f->ops->read(f, user_buf, len);
 }
 
 /*
@@ -244,8 +195,8 @@ static s64 sys_open(u64 user_path, u64 a1, u64 a2)
 {
     char path[PATH_MAX];
     struct tarfs_node node;
-    struct task *self = task_current();
-    int err;
+    struct file *f;
+    int err, fd;
 
     (void)a1;
     (void)a2;
@@ -256,24 +207,37 @@ static s64 sys_open(u64 user_path, u64 a1, u64 a2)
         return err;
     if (node.is_dir)
         return -EISDIR;
-    for (int i = 0; i < FILES_MAX; i++) {
-        if (!self->files[i].open) {
-            self->files[i] = (struct task_file){node.data, node.size, 0, true};
-            return FD_FIRST + i;
-        }
-    }
-    return -EMFILE;
+    fd = fd_free(FD_FIRST);
+    if (fd < 0)
+        return fd;
+    f = file_open_initrd(node.data, node.size);
+    if (!f)
+        return -ENOMEM;
+    fd_install(fd, f);
+    return fd;
 }
 
+/* close(fd): -EBADF for 0-2 (they stay open) and for any fd not open. */
 static s64 sys_close(u64 fd, u64 a1, u64 a2)
 {
-    struct task_file *f = file_of(fd);
-
     (void)a1;
     (void)a2;
+    return fd_close(fd);
+}
+
+/* fstat(fd, out): -EBADF, then -EFAULT unless all of `out` is writable. */
+static s64 sys_fstat(u64 fd, u64 user_out, u64 a2)
+{
+    struct file *f = fd_get(fd);
+    struct stat st = {0};
+
+    (void)a2;
     if (!f)
-        return -EBADF; /* the console's fds included: they stay open */
-    f->open = false;
+        return -EBADF;
+    st.type = f->ops->type;
+    st.size = f->ops->type == STAT_FILE ? f->size : 0;
+    if (copy_to_user((void *)user_out, &st, sizeof(st)) != 0)
+        return -EFAULT;
     return 0;
 }
 
@@ -313,6 +277,7 @@ static const syscall_fn syscall_table[SYS_COUNT] = {
     [SYS_GETPID] = sys_getpid, [SYS_SLEEP_MS] = sys_sleep_ms, [SYS_SPAWN] = sys_spawn,
     [SYS_WAIT] = sys_wait,     [SYS_TIME_MS] = sys_time_ms,   [SYS_READ] = sys_read,
     [SYS_OPEN] = sys_open,     [SYS_CLOSE] = sys_close,       [SYS_READDIR] = sys_readdir,
+    [SYS_FSTAT] = sys_fstat,
 };
 
 /* Called from syscall.asm with interrupts enabled. Result goes in RAX. */

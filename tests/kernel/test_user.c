@@ -14,6 +14,9 @@
 #include <core/ktest.h>
 #include <core/printk.h>
 #include <core/time.h>
+#include <fs/file.h>
+#include <fs/initrd.h>
+#include <fs/tarfs.h>
 #include <lib/errno.h>
 #include <lib/string.h>
 #include <mm/kmalloc.h>
@@ -69,10 +72,19 @@ KTEST(syscalls_reject_hostile_arguments)
     KEXPECT_EQ(run("badptr"), 0); /* exit status = number of wrong answers */
 }
 
-/* open, read, close and readdir on the initrd, every error in its order, nothing inherited. */
+/*
+ * open, read, close, readdir and fstat on the initrd, every error in its
+ * order, and spawn()'s stdio. Every fd fstest and its children had is
+ * closed by the end, the child killed by a fault with a closed fd among open ones included.
+ */
 KTEST(file_calls_work_and_reject_hostile_arguments)
 {
+    u32 files = file_count(), in = console_input.refs, out = console_output.refs;
+
     KEXPECT_EQ(run("fstest"), 0); /* exit status = number of wrong answers, each printed */
+    KEXPECT_EQ(file_count(), files);
+    KEXPECT_EQ(console_input.refs, in);
+    KEXPECT_EQ(console_output.refs, out);
 }
 
 /*
@@ -545,6 +557,79 @@ KTEST(shell_leaves_typeahead_to_the_program_it_starts)
     input_test_set_present(was);
 }
 
+/* cat with no arguments copies its standard input to its end: here a file the test opened. */
+KTEST(cat_copies_its_standard_input)
+{
+    usize len, first_line = 0;
+    const u8 *rd = initrd_get(&len);
+    struct tarfs_node node;
+    char want[128];
+    int status = -1;
+
+    KEXPECT(rd != NULL);
+    if (!rd || tarfs_lookup(rd, len, "/etc/manifest", &node) != 0) {
+        ktest_fail(__FILE__, __LINE__, "no /etc/manifest");
+        return;
+    }
+    while (first_line < node.size && first_line < sizeof(want) - 1 && node.data[first_line] != '\n')
+        first_line++;
+    memcpy(want, node.data, first_line);
+    want[first_line] = '\0';
+
+    u32 files = file_count();
+    struct file *in = file_open_initrd(node.data, node.size);
+    struct file *std[3] = {in, &console_output, &console_output};
+    int pid = in ? process_spawn_args("cat", NULL, std) : -ENOMEM;
+
+    if (in)
+        file_put(in); /* the child holds its own reference */
+    KEXPECT(pid > 0);
+    if (pid > 0) {
+        KEXPECT_EQ(task_wait(pid, &status), pid);
+        KEXPECT_EQ(status, 0);
+    }
+    KEXPECT(first_line > 0 &&
+            log_has(want)); /* the manifest's first line, which nothing else prints */
+    KEXPECT_EQ(file_count(), files);
+}
+
+/*
+ * cat at the console: edited and echoed a line at a time (Ctrl-C drops
+ * one), each line copied as it ends, and Ctrl-D on an empty line ends
+ * it. What follows the Ctrl-D is left for the shell.
+ */
+KTEST(cat_reads_the_console_until_ctrl_d)
+{
+    static const char session[] = "cat\nhi\nabc\x03there\n\x04"
+                                  "exit\n"; /* \x04e is one byte */
+    bool was = input_test_set_present(true);
+
+    input_test_flush();
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    KEXPECT_EQ(run("sh"), 0);
+    KEXPECT(log_has("sh> cat\nhi\nhi\nabc^C\nthere\nthere\n[exit 0]\nsh> exit\n"));
+    input_test_flush();
+    input_test_set_present(was);
+}
+
+/*
+ * The same from a serial terminal, whose Enter is CRLF: the shell ends
+ * "cat" at the CR, and the LF left queued is not an empty line for cat.
+ */
+KTEST(cat_reads_crlf_lines_from_the_console)
+{
+    static const char session[] = "cat\r\nhi\r\n\x04"
+                                  "exit\r\n";
+    bool was = input_test_set_present(true);
+
+    input_test_flush();
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    KEXPECT_EQ(run("sh"), 0);
+    KEXPECT(log_has("sh> cat\nhi\nhi\n[exit 0]\nsh> exit\n"));
+    input_test_flush();
+    input_test_set_present(was);
+}
+
 /* Ctrl-D on an empty line leaves, and the output still ends with a newline. */
 KTEST(shell_eof_exits_cleanly)
 {
@@ -562,7 +647,7 @@ KTEST(shell_eof_exits_cleanly)
 /* Runs `name` with `args` and returns its exit status, or a negative error. */
 static int run_args(const char *name, const struct spawn_args *args)
 {
-    int pid = process_spawn_args(name, args);
+    int pid = process_spawn_args(name, args, NULL);
     int status = -1000;
 
     if (pid < 0)

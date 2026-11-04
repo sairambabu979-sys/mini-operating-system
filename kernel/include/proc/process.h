@@ -45,16 +45,19 @@ struct spawn_args {
 /* Appends one argument: 0, or -E2BIG if it would pass either limit. */
 int spawn_args_add(struct spawn_args *a, const char *arg);
 
+struct file;
+
 /*
  * Starts the named program as a child of the current task, as main(argc,
- * argv) with argv[0] the name and `args` (NULL for none) after it.
- * Returns its pid, or -ENAMETOOLONG (a name of TASK_NAME_MAX characters
- * or more), -ENOENT (no such image), -ENOEXEC/-EINVAL (bad ELF),
- * -ENOMEM, or -EAGAIN (TASK_MAX tasks exist).
+ * argv) with argv[0] the name and `args` (NULL for none) after it, and
+ * with std[0..2] as its fds 0-2 (NULL: the console's). Returns its pid,
+ * or -ENAMETOOLONG (a name of TASK_NAME_MAX characters or more), -ENOENT
+ * (no such image), -ENOEXEC/-EINVAL (bad ELF), -ENOMEM, or -EAGAIN
+ * (TASK_MAX tasks exist).
  */
-int process_spawn_args(const char *name, const struct spawn_args *args);
+int process_spawn_args(const char *name, const struct spawn_args *args, struct file *const *std);
 
-/* The same, without arguments. */
+/* The same, without arguments, on the console. */
 int process_spawn(const char *name);
 
 /* A user-mode exception: report it and terminate the process. */

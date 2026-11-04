@@ -9,12 +9,12 @@
 #ifndef MINIOS_UAPI_SYSCALL_H
 #define MINIOS_UAPI_SYSCALL_H
 
-#define SYS_EXIT     0  /* exit(int code): does not return */
-#define SYS_WRITE    1  /* write(int fd, const void *buf, size_t len) -> len */
-#define SYS_YIELD    2  /* yield() -> 0 */
-#define SYS_GETPID   3  /* getpid() -> pid */
-#define SYS_SLEEP_MS 4  /* sleep_ms(u64 ms) -> 0 */
-#define SYS_SPAWN    5  /* spawn(const char *name, const char *const *args) -> child pid */
+#define SYS_EXIT     0 /* exit(int code): does not return */
+#define SYS_WRITE    1 /* write(int fd, const void *buf, size_t len) -> len */
+#define SYS_YIELD    2 /* yield() -> 0 */
+#define SYS_GETPID   3 /* getpid() -> pid */
+#define SYS_SLEEP_MS 4 /* sleep_ms(u64 ms) -> 0 */
+#define SYS_SPAWN    5 /* spawn(const char *name, const char *const *args, const int *stdio) -> pid */
 #define SYS_WAIT     6  /* wait(int pid or -1, int *status) -> pid */
 #define SYS_TIME_MS  7  /* time_ms() -> milliseconds since boot */
 #define SYS_READ     8  /* read(int fd, void *buf, size_t len) -> bytes; 0 at end of file */
@@ -22,6 +22,7 @@
 #define SYS_CLOSE    10 /* close(int fd) -> 0 */
 #define SYS_READDIR                                                                                \
     11 /* readdir(const char *path, u64 index, struct dirent *out) -> 1, or 0 past the end */
+#define SYS_FSTAT 12 /* fstat(int fd, struct stat *out) -> 0 */
 
 /*
  * spawn()'s arguments: `args` is NULL or a NULL-terminated list of at most
@@ -29,6 +30,12 @@
  * more is -E2BIG. The program starts as main(argc, argv), argv[0] its name
  * and argv[argc] NULL: crt0 gets argc in RDI and argv in RSI, and the
  * strings and the vector sit at the top of its stack.
+ *
+ * `stdio` is NULL, or three fds of the caller's: the child's fds 0, 1
+ * and 2 are those, the same open files (a file's position is shared,
+ * not copied). NULL gives it the caller's own 0, 1 and 2. A bad pointer
+ * is -EFAULT and an fd that is not open -EBADF, both checked after the
+ * arguments and before anything is created.
  */
 #define SPAWN_ARGS_MAX  8
 #define SPAWN_ARGS_SIZE 256
@@ -36,9 +43,16 @@
 /*
  * Files: the initrd, read-only, by absolute path ("/bin/sh"; "/" is the
  * root, one trailing "/" is allowed, and "", ".", ".." components are
- * -EINVAL). PATH_MAX counts the NUL. fds 0-2 are the console; open()
+ * -EINVAL). PATH_MAX counts the NUL.
+ *
+ * fds 0-2 are the standard input, output and error: the console's input
+ * and output (twice) for the first process, then whatever spawn() gave.
+ * They stay open until the process exits (close() is -EBADF). open()
  * hands out the lowest free fd from FD_FIRST, at most FILES_MAX at once
- * (-EMFILE), and a new process starts with none open.
+ * (-EMFILE), and a new process starts with none of those open. Reading
+ * or writing a file that cannot be read or written (the console's
+ * output, an initrd file) is -EBADF. Everything still open closes when
+ * the process exits, however it ends.
  */
 #define PATH_MAX  256
 #define FD_FIRST  3
@@ -59,7 +73,22 @@ struct dirent {
     char name[DIRENT_NAME_MAX];
 };
 
-#define SYS_COUNT 12
+/*
+ * fstat()'s record: what an open fd refers to. `type` uses readdir()'s
+ * numbers where they overlap: STAT_FILE is an initrd file, `size` its
+ * size; STAT_CONSOLE the console's input or output, `size` 0. -EBADF for
+ * an fd that is not open, then -EFAULT unless `out` is writable.
+ */
+#define STAT_FILE    DIRENT_FILE
+#define STAT_CONSOLE 3
+
+struct stat {
+    unsigned long long size;
+    unsigned int type;     /* STAT_* */
+    unsigned int reserved; /* 0 */
+};
+
+#define SYS_COUNT 13
 
 /* Exit status of a process killed by CPU exception `vector`. */
 #define EXIT_STATUS_FAULT(vector) (128 + (vector))

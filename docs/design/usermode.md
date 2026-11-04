@@ -122,17 +122,18 @@ outcome and documents why.
 | # | Call | Notes |
 |---|------|-------|
 | 0 | `exit(code)` | |
-| 1 | `write(fd, buf, len)` | fd 1/2 only; copied in 256-byte chunks; each chunk is one console message, sent to COM1 with interrupts off (see [console.md](console.md)) |
+| 1 | `write(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be written: only the console's output can. Copied in 256-byte chunks; each chunk is one console message, sent to COM1 with interrupts off (see [console.md](console.md)) |
 | 2 | `yield()` | |
 | 3 | `getpid()` | |
 | 4 | `sleep_ms(ms)` | capped at one hour; sleeps at least `ms` (see [scheduler.md](scheduler.md)) |
-| 5 | `spawn(name, args)` | name copied byte by byte (it may end just before an unmapped page); `args` is NULL or a NULL-terminated list of at most 8 strings, 256 bytes in all with their NULs (`-E2BIG` past either); all of it is copied and checked before anything is created (`-EFAULT`, `-ENAMETOOLONG`, `-E2BIG`, in that order of discovery); `-EAGAIN` at `TASK_MAX` tasks |
+| 5 | `spawn(name, args, stdio)` | name copied byte by byte (it may end just before an unmapped page); `args` is NULL or a NULL-terminated list of at most 8 strings, 256 bytes in all with their NULs (`-E2BIG` past either); `stdio` is NULL (the child gets the caller's fds 0-2) or three of the caller's fds to be the child's 0-2 (`-EBADF` for one that is not open). All of it is copied and checked before anything is created (`-EFAULT`, `-ENAMETOOLONG`, `-E2BIG`, `-EBADF`, in that order of discovery); `-EAGAIN` at `TASK_MAX` tasks |
 | 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
-| 8 | `read(fd, buf, len)` | fd 0: console input as raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EBADF`, `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device. A file's fd: from its position, as much as fits, 0 at the end; `-EBADF`, `-EFAULT` for the range, 0 for `len` 0, then copied out one user page at a time: the first page that is not writable ends the read exactly there (`-EFAULT` if it is the first), and the position moves by exactly the bytes before it. Any other fd is `-EBADF` |
-| 9 | `open(path)` | a file in the initrd, read-only (paths below). The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then looked up (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR`, then `-EMFILE` with `FILES_MAX` = 8 open. Returns the lowest free fd from 3 |
-| 10 | `close(fd)` | `-EBADF` for anything but an open file's fd: the console's 0-2 stay open |
+| 8 | `read(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be read, then as the file's kind says. The console's input (fd 0 unless spawn said otherwise): raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device. An initrd file: from its position, as much as fits, 0 at the end; `-EFAULT` for the range, 0 for `len` 0, then copied out one user page at a time: the first page that is not writable ends the read exactly there (`-EFAULT` if it is the first), and the position moves by exactly the bytes before it |
+| 9 | `open(path)` | a file in the initrd, read-only (paths below). The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then looked up (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR`, then `-EMFILE` with `FILES_MAX` = 8 open, then `-ENOMEM`. Returns the lowest free fd from 3 |
+| 10 | `close(fd)` | `-EBADF` for 0-2, which stay open until exit, and for any fd not open |
 | 11 | `readdir(path, index, struct dirent *out)` | entry `index` of a directory, from 0 in archive order: 1 with `out` filled (`size`, `type` `DIRENT_FILE` or `DIRENT_DIR`, its own `name`), 0 past the last. The path first (`-EFAULT`, `-ENAMETOOLONG`), then `-EFAULT` unless `out` is in the user range, then `-EINVAL`, `-ENOENT`, `-ENOTDIR`, then `-EFAULT` if `out` is not writable. No handle: listing a directory is calling it with 0, 1, 2... |
+| 12 | `fstat(fd, struct stat *out)` | what an open fd is: `type` `STAT_FILE` (an initrd file; `size` its size) or `STAT_CONSOLE` (`size` 0). `-EBADF`, then `-EFAULT` unless `out` is writable |
 
 **Files.** The initrd is the only file system, read-only. A path is
 absolute: `/` is the root and `/bin/sh` the archive's `bin/sh`; a
@@ -144,12 +145,42 @@ parent on a path must be one (`-ENOENT` if missing, `-ENOTDIR` if a
 file). The first entry of a name wins, for a lookup and in a listing
 alike; the tar reader refuses names with an empty, `.` or `..`
 component outright, so a hostile archive cannot make a lookup and a
-listing disagree. Each process has its own table of `FILES_MAX` open
-files (fds 3-10) in its task; a new process starts with none open, and
-nothing needs closing at exit, since an open file is only a range of the
-never-freed initrd and a position. `fstest` checks each error above from
-ring 3, the order where two can apply, and a read whose buffer runs
-into an unmapped page.
+listing disagree.
+
+**Open files** (`kernel/fs/file.c`). An fd refers to an open file: the
+console's input, the console's output, or an initrd file (a range of the
+never-freed initrd, and a position). Each kind says whether it can be
+read and written; one that cannot is `-EBADF`. Every fd that refers to a
+file shares it, its position included, and holds a reference; the last
+to close frees it. The console's two files are static and never freed.
+
+Each process has a table of 11 fds in its task. 0-2 are its standard
+input, output and error: for `init`, the console's input and its output
+twice; for a child, what `spawn` named, or else its parent's own 0-2.
+They cannot be closed. 3-10 (`FILES_MAX` from `FD_FIRST`) are the files
+it opened, and a new process has none of those. Every fd closes when
+the process exits, however it ends: `task_exit()` drops each reference
+before it frees the address space. A process is single-threaded and only
+it changes its own table, so the table needs no lock; a file's count is
+atomic, as processes share it, and a read of an initrd file runs with
+preemption off from reading the position to moving it, so two processes
+reading one file never both read from the same place.
+
+The console has no end of its own, so a program that reads standard
+input to its end (`cat` with no arguments) goes through `stdin_read()`
+in `user/lib/libsys.c`: when `fstat` says fd 0 is the console, it edits
+input a line at a time with the shell's line editor (31 characters at
+most), echoes it to fd 2 when that is the console too, and takes Ctrl-D
+on an empty line as the end, as a terminal would. A first byte LF is
+skipped: the shell starts a program at the CR of a terminal's CRLF, and
+the LF is still queued.
+
+`fstest` checks each error above from ring 3, the order where two can
+apply, a read whose buffer runs into an unmapped page, and `spawn`'s
+`stdio`: a child sharing the parent's file position, a grandchild
+inheriting fd 0 after the parent closed it, the console's input and
+output swapped, and one killed by a fault with a closed fd among open ones. The kernel
+test around it checks that no file outlives the processes.
 
 **User memory** is reached only through `copy_from_user`, `copy_to_user`
 and `strncpy_from_user`. Each checks that the whole range lies below

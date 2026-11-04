@@ -586,6 +586,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --type-after '^sh> ' --type 'xyz\x15nosuch\n' --type-after '^sh> ' --type 'abc\x03' \
 	  --type-after '^sh> ' --type 'faulter\n' --type-after '^sh> ' --type 'echo hello  world\n' \
 	  --type-after '^sh> ' --type 'ls /bin\n' --type-after '^sh> ' --type 'cat /etc/motd /nope\n' \
+	  --type-after '^sh> ' --type 'cat\nhi\n\x04' \
 	  --type-after '^sh> ' --type 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' \
 	  --type-after '^sh> ' --type 'sh\n' --type-after '^sh> ' --type '\x04' \
 	  --type-after '^sh> ' --type 'exit\n' \
@@ -596,7 +597,7 @@ qemu-test: $(TEST_IMG) $(TEST_NOAPIC_IMG) $(TEST_NOHPET_IMG) $(TEST_QUIET_IMG) $
 	  --expect 'killed by #PF' --expect '^\[exit 142\]$$' \
 	  --expect '^hello world$$' --expect '^cat +[1-9][0-9]*$$' --expect '^\[exit 0\]$$' \
 	  --expect '^Welcome to minios\.$$' --expect '^cat: /nope: not found$$' --expect '^\[exit 1\]$$' \
-	  --expect '^sh> a{31}$$' \
+	  --expect '^sh> cat\nhi\nhi\n\[exit 0\]$$' --expect '^sh> a{31}$$' \
 	  --expect '^sh: name too long' --expect '^\[exit 0\]$$' --expect 'init exited with status 0' \
 	  --reject 'KERNEL PANIC' --reject 'WARNING: (i8042|input): ' --reject '^sh> \nsh> '
 	$(Q)$(PYTHON) tests/qemu/run_tests.py --image $(SHELL_IMG) --log-dir $(BUILD)/logs --no-tap \

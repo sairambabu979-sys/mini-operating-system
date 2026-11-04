@@ -51,23 +51,19 @@ struct wait_queue {
     }
 
 struct address_space;
+struct file;
 
-/* A file a process opened: a byte range of the initrd, which is never freed. */
-struct task_file {
-    const u8 *data;
-    u64 size;
-    u64 pos;
-    bool open;
-};
+/* A process's fds: 0-2, then FILES_MAX from FD_FIRST (<uapi/syscall.h>, <fs/file.h>). */
+#define TASK_FDS (FD_FIRST + FILES_MAX)
 
 struct task {
     uptr saved_rsp; /* switch.asm: must stay first (asm-offsets checks) */
     void *kstack;   /* vmalloc base; NULL for the boot task */
     uptr kstack_top;
-    struct address_space *as;          /* NULL: kernel thread */
-    void *fpu_state;                   /* FXSAVE area for user tasks */
-    uptr user_entry;                   /* first user RIP (processes only) */
-    struct task_file files[FILES_MAX]; /* fd FD_FIRST + i; all closed in a new task */
+    struct address_space *as;   /* NULL: kernel thread */
+    void *fpu_state;            /* FXSAVE area for user tasks */
+    uptr user_entry;            /* first user RIP (processes only) */
+    struct file *fds[TASK_FDS]; /* NULL: not open; all NULL in a kernel thread */
 
     enum task_state state;
     int pid;
