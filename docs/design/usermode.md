@@ -184,7 +184,9 @@ open anywhere, it returns what is left and then 0. A write waits until
 all of it is in, 256 bytes (`PIPE_ATOMIC`) at a time, each piece put in
 whole, so writes of up to 256 bytes from several processes never mix;
 once no read end is open, it returns the bytes it put in, or `-EPIPE`
-if none (there are no signals). User memory is copied outside the
+if none (there are no signals). A process that reads a pipe it also
+holds the only write end of, with nothing in it, waits forever, as on
+Unix. User memory is copied outside the
 pipe's lock, a piece at a time through a buffer on the kernel stack. A
 read probes each piece of the buffer before it takes a byte, as the
 console's read does, so a buffer that is not writable never loses data:
@@ -192,10 +194,12 @@ the call ends at the first bad piece, with `-EFAULT` if it is the first.
 Both sides wait with `wait_event()`, which checks after the task is
 queued and marked blocked, so a wakeup cannot be lost between the check
 and the sleep. `pipetest` checks all of this from ring 3, with children
-that wait on a full and an empty pipe, two writers of whole records
-into one pipe, and `cat` between two pipes; the kernel test around it
-checks that every pipe and end is freed, and another fails each of the
-allocations a pipe makes in turn.
+that wait on a full and an empty pipe, a 200-byte write that must wait
+with none of it in while the pipe has room for only 150, two writers of
+whole records into one pipe, and `cat` between two pipes; the kernel
+test around it checks that every pipe and end is freed, and another
+fails each of the four allocations a pipe makes in turn
+(`kmalloc_test_fail_one()`).
 
 `fstest` checks each error above from ring 3, the order where two can
 apply, a read whose buffer runs into an unmapped page, and `spawn`'s

@@ -3,8 +3,8 @@
  * Checks pipe() from ring 3: the fds it gives, each error in its order,
  * reads and writes that block and wake, the end of input once no writer
  * is left, -EPIPE once no reader is, buffers that fail without losing a
- * byte, writes of up to PIPE_ATOMIC bytes that never mix, and cat between
- * two pipes. The children are pipetest itself, told by argv[1] what to do.
+ * byte, writes of up to PIPE_ATOMIC bytes that go in whole or not at all,
+ * and cat between two pipes. The children are pipetest itself, told by argv[1] what to do.
  * Any wrong answer is printed (to fd 2: some children's fd 1 is a pipe)
  * and counted. Exit status is the number of failures.
  */
@@ -90,6 +90,16 @@ static int child_blocked(void)
     if (first != PIPE_SIZE)
         return 1;
     return sys_write(1, "x", 1) == -EPIPE ? 0 : 2;
+}
+
+/* "pipetest whole": fd 1 is a pipe with room for less than a RECORD; one write of RECORD bytes. */
+static int child_whole(void)
+{
+    char rec[RECORD];
+
+    for (int i = 0; i < RECORD; i++)
+        rec[i] = (char)('a' + i % 26);
+    return sys_write(1, rec, sizeof(rec)) == RECORD ? 0 : 1;
 }
 
 /* "pipetest records X": fd 1 is a pipe; RECORDS writes of RECORD bytes, all X but a final \n. */
@@ -186,8 +196,9 @@ static void errors(void)
 
 /*
  * Bad buffers fail before a byte moves, and a read that runs into one
- * keeps what is past it. The 256 bytes before `edge` are the end of .bss:
- * big's tail and libsys's statics, which pipetest uses for nothing else.
+ * keeps what is past it. The 256 bytes before `edge` are the end of the
+ * page .bss ends in: padding past _end, or at worst big's tail and
+ * libsys's statics, which pipetest uses for nothing else.
  */
 static void bad_buffers(void)
 {
@@ -293,6 +304,37 @@ static void children(void)
     sys_close(fds[0]);
     expect("blocked: status (0: PIPE_SIZE, then -EPIPE)", wait_for(pid), 0);
 
+    /*
+     * A write of at most PIPE_ATOMIC bytes into a pipe with less room than
+     * that waits with none of it in, then goes in whole. (Putting what
+     * fits, or smaller pieces, would show here as the pipe filling.)
+     */
+    expect("pipe", sys_pipe(fds), 0);
+    long room = 150, filler = PIPE_SIZE - room;
+
+    memset(big, '.', (usize)filler);
+    expect("fill to 150 short", sys_write(fds[1], big, (usize)filler), filler);
+    pid = spawn_child("whole", (int[3]){0, fds[1], 2});
+    sys_close(fds[1]);
+    bool none_in = true;
+
+    for (int i = 0; i < 50; i++) { /* 100 ms for the child to try */
+        sys_sleep_ms(2);
+        none_in &= sys_fstat(fds[0], &st) == 0 && (long)st.size == filler;
+    }
+    expect("whole: none of it went in while it did not fit", none_in, 1);
+    got = 0;
+    while (got < filler + RECORD && (n = sys_read(fds[0], big + got, 512)) > 0)
+        got += n;
+    expect("whole: then all of it, after the filler", got, filler + RECORD);
+    bool intact = true;
+
+    for (int i = 0; i < RECORD; i++)
+        intact &= big[filler + i] == (char)('a' + i % 26);
+    expect("whole: in one piece", intact, 1);
+    expect("whole: status", wait_for(pid), 0);
+    sys_close(fds[0]);
+
     /* two writers of whole records into one pipe: no record is split */
     expect("pipe", sys_pipe(fds), 0);
     pid = spawn_child("A", (int[3]){0, fds[1], 2});
@@ -355,6 +397,8 @@ int main(int argc, char **argv)
             return child_reader();
         if (strcmp(argv[1], "blocked") == 0)
             return child_blocked();
+        if (strcmp(argv[1], "whole") == 0)
+            return child_whole();
         if (strcmp(argv[1], "A") == 0 || strcmp(argv[1], "B") == 0)
             return child_records(argv[1][0]);
     }

@@ -285,7 +285,9 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
   creating or deleting, no current directory (paths are absolute), and no
   disk driver to load anything else. Programs start by name from `/bin`;
   there is `spawn`, but no `fork`/`exec`.
-- **No signals, pipes or IPC.** Processes talk only through exit statuses.
+- **No signals, and no IPC but pipes.** Processes talk through pipes and
+  exit statuses only; a write to a pipe with no reader is `-EPIPE`, not a
+  signal, and nothing can interrupt a process blocked on one.
 - **Input from a PS/2 keyboard or COM1 only.** There is no USB stack: a USB
   keyboard can only reach it through the firmware's PS/2 emulation, and
   UEFI-booted PCs that drop that emulation, or have no 8042, have no keyboard

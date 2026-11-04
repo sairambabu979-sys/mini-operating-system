@@ -38,4 +38,13 @@ struct kmalloc_stats {
 
 void kmalloc_get_stats(struct kmalloc_stats *out);
 
+/*
+ * For tests: of the allocations from now on, the one numbered n (from 0)
+ * fails, small or large, and all others succeed; -1 turns that off (the
+ * default, and the state once that one has failed). Returns the previous
+ * setting. The caller keeps other tasks from allocating meanwhile
+ * (preempt_disable()).
+ */
+long kmalloc_test_fail_one(long n);
+
 #endif /* MINIOS_MM_KMALLOC_H */
