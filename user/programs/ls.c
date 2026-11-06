@@ -16,7 +16,7 @@ static int list(const char *path, bool heading)
     long r = sys_readdir(path, 0, &d);
 
     if (r == -ENOTDIR) { /* a file: there is nothing under it to list */
-        long fd = sys_open(path);
+        long fd = sys_open(path, O_RDONLY);
 
         if (fd < 0) {
             eprintf("ls: %s: %s\n", path, sys_strerror(fd));

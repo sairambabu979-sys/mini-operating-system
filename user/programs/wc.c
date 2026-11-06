@@ -66,7 +66,7 @@ int main(int argc, char **argv)
     }
     for (int i = 1; i < argc; i++) {
         struct counts c = {0};
-        long fd = sys_open(argv[i]);
+        long fd = sys_open(argv[i], O_RDONLY);
 
         if (fd < 0) {
             eprintf("wc: %s: %s\n", argv[i], sys_strerror(fd));

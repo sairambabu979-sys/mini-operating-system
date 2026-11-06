@@ -48,7 +48,7 @@ int main(int argc, char **argv)
         return n != 0;
     }
     for (int i = 1; i < argc; i++) {
-        long fd = sys_open(argv[i]);
+        long fd = sys_open(argv[i], O_RDONLY);
 
         if (fd < 0) {
             eprintf("cat: %s: %s\n", argv[i], sys_strerror(fd));

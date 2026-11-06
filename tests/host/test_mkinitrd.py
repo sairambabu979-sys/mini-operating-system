@@ -78,6 +78,15 @@ class MkinitrdTest(unittest.TestCase):
                 self.assertIn("bad DEST=SRC", r.stderr)
         self.assertIn("bad DEST=SRC", self.run_tool("no-equals-sign").stderr)
 
+    def test_refuses_tmp(self) -> None:
+        for dest in ["tmp", "tmp/x", "tmp/x/y"]:
+            with self.subTest(dest=dest):
+                r = self.run_tool(f"{dest}={self.src}")
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("/tmp is the kernel's RAM file system", r.stderr)
+        self.assertIn("RAM file system", self.run_tool(f"x={self.src}", "--manifest", "tmp/m").stderr)
+        self.assertEqual(self.run_tool(f"etc/tmp={self.src}", f"tmpx={self.src}").returncode, 0)
+
     def test_refuses_duplicates_and_clashes(self) -> None:
         r = self.run_tool(f"x={self.src}", f"x={self.src}")
         self.assertIn("given twice", r.stderr)

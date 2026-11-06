@@ -3,7 +3,8 @@
  * Open files: what a process's fds refer to.
  *
  * A file is one open thing: the console's input, the console's output, an
- * initrd file with its read position, or one end of a pipe (fs/pipe.c). Every fd that refers to it, in
+ * initrd file with its read position, a /tmp file with its position
+ * (fs/vfs.c), or one end of a pipe (fs/pipe.c). Every fd that refers to it, in
  * one process or several (spawn() hands a child its parent's), shares it,
  * position included, and counts as one reference; the last to go frees
  * it. The console's two files are static and never freed.
@@ -43,6 +44,7 @@ struct file_ops {
 };
 
 struct pipe;
+struct tmpfs_inode;
 
 struct file {
     const struct file_ops *ops;
@@ -51,7 +53,9 @@ struct file {
     const u8 *data;
     u64 size;
     u64 pos;
-    struct pipe *pipe; /* a pipe end: its pipe */
+    struct pipe *pipe;         /* a pipe end: its pipe */
+    struct tmpfs_inode *inode; /* a /tmp file: its file, at `pos` */
+    u32 flags;                 /* a /tmp file: open()'s flags */
 };
 
 /* The console: fd 0 of the first process, and fds 1 and 2. */

@@ -39,6 +39,8 @@ def main() -> int:
     def check_dest(dest: str, what: str) -> None:
         if any(p in ("", ".", "..") for p in dest.split("/")):
             ap.error(f"bad {what}: {dest!r} (a relative path of plain names)")
+        if dest.split("/")[0] == "tmp":
+            ap.error(f"bad {what}: {dest!r} (/tmp is the kernel's RAM file system, which hides it)")
         if dest in files:
             ap.error(f"{dest} given twice")
 

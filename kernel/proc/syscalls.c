@@ -14,9 +14,8 @@
 #include <core/printk.h>
 #include <core/time.h>
 #include <fs/file.h>
-#include <fs/initrd.h>
 #include <fs/pipe.h>
-#include <fs/tarfs.h>
+#include <fs/vfs.h>
 #include <lib/errno.h>
 #include <proc/process.h>
 #include <proc/uaccess.h>
@@ -165,15 +164,6 @@ static int path_from_user(char path[PATH_MAX], u64 user_path)
     return len < 0 ? len : 0;
 }
 
-/* Looks a path up in the initrd (none: nothing exists). */
-static int lookup(const char *path, struct tarfs_node *node)
-{
-    usize len;
-    const u8 *rd = initrd_get(&len);
-
-    return rd ? tarfs_lookup(rd, len, path, node) : -ENOENT;
-}
-
 /*
  * read(fd, ...): -EBADF unless fd is open and its kind can be read, then
  * the kind's own (<fs/file.h>: the console's input, an initrd file).
@@ -188,34 +178,39 @@ static s64 sys_read(u64 fd, u64 user_buf, u64 len)
 }
 
 /*
- * open(path): the path first (-EFAULT, -ENAMETOOLONG), then the lookup
- * (-EINVAL, -ENOENT), -EISDIR for a directory, -EMFILE with FILES_MAX
- * open. The lowest free fd wins.
+ * open(path, flags): the path first (-EFAULT, -ENAMETOOLONG), then the
+ * rest in vfs_open()'s order (<uapi/syscall.h>). The lowest free fd wins.
  */
-static s64 sys_open(u64 user_path, u64 a1, u64 a2)
+static s64 sys_open(u64 user_path, u64 flags, u64 a2)
 {
     char path[PATH_MAX];
-    struct tarfs_node node;
     struct file *f;
     int err, fd;
+
+    (void)a2;
+    err = path_from_user(path, user_path);
+    if (err)
+        return err;
+    if (flags > 0xFFFFFFFFull)
+        return -EINVAL;
+    fd = fd_free(FD_FIRST);
+    err = vfs_open(path, (u32)flags, fd >= 0, &f);
+    if (err)
+        return err;
+    fd_install(fd, f);
+    return fd;
+}
+
+/* unlink(path): the path (-EFAULT, -ENAMETOOLONG), then vfs_unlink()'s errors. */
+static s64 sys_unlink(u64 user_path, u64 a1, u64 a2)
+{
+    char path[PATH_MAX];
+    int err;
 
     (void)a1;
     (void)a2;
     err = path_from_user(path, user_path);
-    if (!err)
-        err = lookup(path, &node);
-    if (err)
-        return err;
-    if (node.is_dir)
-        return -EISDIR;
-    fd = fd_free(FD_FIRST);
-    if (fd < 0)
-        return fd;
-    f = file_open_initrd(node.data, node.size);
-    if (!f)
-        return -ENOMEM;
-    fd_install(fd, f);
-    return fd;
+    return err ? err : vfs_unlink(path);
 }
 
 /* close(fd): -EBADF for 0-2 (they stay open) and for any fd not open. */
@@ -251,15 +246,13 @@ static s64 sys_readdir(u64 user_path, u64 index, u64 user_out)
 {
     char path[PATH_MAX];
     struct dirent d;
-    usize len;
-    const u8 *rd = initrd_get(&len);
     int r = path_from_user(path, user_path);
 
     if (r)
         return r;
     if (!user_range_ok(user_out, sizeof(d)))
         return -EFAULT;
-    r = rd ? tarfs_readdir(rd, len, path, index, &d) : -ENOENT;
+    r = vfs_readdir(path, index, &d);
     if (r == 1 && copy_to_user((void *)user_out, &d, sizeof(d)) != 0)
         return -EFAULT;
     return r;
@@ -308,7 +301,7 @@ static const syscall_fn syscall_table[SYS_COUNT] = {
     [SYS_GETPID] = sys_getpid, [SYS_SLEEP_MS] = sys_sleep_ms, [SYS_SPAWN] = sys_spawn,
     [SYS_WAIT] = sys_wait,     [SYS_TIME_MS] = sys_time_ms,   [SYS_READ] = sys_read,
     [SYS_OPEN] = sys_open,     [SYS_CLOSE] = sys_close,       [SYS_READDIR] = sys_readdir,
-    [SYS_FSTAT] = sys_fstat,   [SYS_PIPE] = sys_pipe,
+    [SYS_FSTAT] = sys_fstat,   [SYS_PIPE] = sys_pipe,         [SYS_UNLINK] = sys_unlink,
 };
 
 /* Called from syscall.asm with interrupts enabled. Result goes in RAX. */

@@ -122,7 +122,7 @@ outcome and documents why.
 | # | Call | Notes |
 |---|------|-------|
 | 0 | `exit(code)` | |
-| 1 | `write(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be written: the console's output or a pipe's write end. The console: copied in 256-byte chunks; each chunk is one console message, sent to COM1 with interrupts off (see [console.md](console.md)). A pipe: below |
+| 1 | `write(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be written: the console's output, a pipe's write end, or a `/tmp` file opened to write (below). The console: copied in 256-byte chunks; each chunk is one console message, sent to COM1 with interrupts off (see [console.md](console.md)). A pipe: below |
 | 2 | `yield()` | |
 | 3 | `getpid()` | |
 | 4 | `sleep_ms(ms)` | capped at one hour; sleeps at least `ms` (see [scheduler.md](scheduler.md)) |
@@ -130,13 +130,15 @@ outcome and documents why.
 | 6 | `wait(pid or -1, int *status)` | the status pointer is written (with 0) *before* reaping, so an unmapped, read-only or kernel pointer returns `-EFAULT` and the child stays waitable |
 | 7 | `time_ms()` | |
 | 8 | `read(fd, buf, len)` | `-EBADF` unless `fd` is open and its file can be read, then as the file's kind says. The console's input (fd 0 unless spawn said otherwise): raw bytes, never echoed; blocks until at least one byte is queued, returns at most 256. Fails in this order, before anything is taken off the queue: `-EFAULT` for the range, 0 for `len` 0, `-EFAULT` unless every byte it could fill is mapped and writable (probed, contents kept, so a bad buffer never swallows a keystroke), `-ENODEV` with no input device. An initrd file: from its position, as much as fits, 0 at the end; `-EFAULT` for the range, 0 for `len` 0, then copied out one user page at a time: the first page that is not writable ends the read exactly there (`-EFAULT` if it is the first), and the position moves by exactly the bytes before it. A pipe's read end: below |
-| 9 | `open(path)` | a file in the initrd, read-only (paths below). The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then looked up (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR`, then `-EMFILE` with `FILES_MAX` = 8 open, then `-ENOMEM`. Returns the lowest free fd from 3 |
+| 9 | `open(path, flags)` | a file (paths below). `flags`: `O_RDONLY` 0, `O_WRONLY` 1 or `O_RDWR` 2, with any of `O_CREAT` (make it if missing, in `/tmp` only), `O_TRUNC` (empty it) and `O_APPEND` (every write at its end); any other bit, mode 3, or `O_TRUNC`/`O_APPEND` without writing is `-EINVAL`, so a v1.5 program's `open(path)` still opens to read. The path is copied first (`-EFAULT`, `-ENAMETOOLONG` with no NUL in `PATH_MAX` = 256 bytes), then the flags (`-EINVAL`), then the lookup (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), `-EISDIR`, `-EROFS` (writing or making a file outside `/tmp`), `-EMFILE` with `FILES_MAX` = 8 open, then making it (`-ENOSPC`, `-ENOMEM`). `O_TRUNC` empties a file only once nothing else can fail. Returns the lowest free fd from 3 |
 | 10 | `close(fd)` | `-EBADF` for 0-2, which stay open until exit, and for any fd not open |
-| 11 | `readdir(path, index, struct dirent *out)` | entry `index` of a directory, from 0 in archive order: 1 with `out` filled (`size`, `type` `DIRENT_FILE` or `DIRENT_DIR`, its own `name`), 0 past the last. The path first (`-EFAULT`, `-ENAMETOOLONG`), then `-EFAULT` unless `out` is in the user range, then `-EINVAL`, `-ENOENT`, `-ENOTDIR`, then `-EFAULT` if `out` is not writable. No handle: listing a directory is calling it with 0, 1, 2... |
-| 12 | `fstat(fd, struct stat *out)` | what an open fd is: `type` `STAT_FILE` (an initrd file; `size` its size), `STAT_CONSOLE` (`size` 0) or `STAT_PIPE` (either end; `size` the bytes waiting). `-EBADF`, then `-EFAULT` unless `out` is writable |
+| 11 | `readdir(path, index, struct dirent *out)` | entry `index` of a directory, from 0: the root lists `tmp` first, then the initrd's root in archive order; `/tmp` lists its files in the order they were made; 1 with `out` filled (`size`, `type` `DIRENT_FILE` or `DIRENT_DIR`, its own `name`), 0 past the last. The path first (`-EFAULT`, `-ENAMETOOLONG`), then `-EFAULT` unless `out` is in the user range, then `-EINVAL`, `-ENOENT`, `-ENOTDIR`, then `-EFAULT` if `out` is not writable. No handle: listing a directory is calling it with 0, 1, 2... |
+| 12 | `fstat(fd, struct stat *out)` | what an open fd is: `type` `STAT_FILE` (an initrd or `/tmp` file; `size` its size now), `STAT_CONSOLE` (`size` 0) or `STAT_PIPE` (either end; `size` the bytes waiting). `-EBADF`, then `-EFAULT` unless `out` is writable |
 | 13 | `pipe(int fds[2])` | a new pipe: `fds[0]` its read end and `fds[1]` its write end, at the two lowest free fds from 3. `-EFAULT` unless both ints are writable (probed, contents kept, before anything is made), `-EMFILE` with fewer than two fds free, `-ENOMEM` |
+| 14 | `unlink(path)` | removes a `/tmp` file's name. The path (`-EFAULT`, `-ENAMETOOLONG`), then the lookup (`-EINVAL`, `-ENOENT`, `-ENOTDIR`), then `-EISDIR` for a directory (`/tmp`, `/`, `/bin`), `-EROFS` for an initrd file. The file goes when its last fd closes |
 
-**Files.** The initrd is the only file system, read-only. A path is
+**Files.** Two file systems: the initrd, read-only, and `/tmp`, files
+in RAM (below). A path is
 absolute: `/` is the root and `/bin/sh` the archive's `bin/sh`; a
 trailing `/` names a directory (`-ENOTDIR` on a file); an empty, `.` or
 `..` component, or a path not starting with `/`, is `-EINVAL`
@@ -148,9 +150,31 @@ alike; the tar reader refuses names with an empty, `.` or `..`
 component outright, so a hostile archive cannot make a lookup and a
 listing disagree.
 
+**/tmp** (`kernel/fs/tmpfs.c`, pure and host-tested, and
+`kernel/fs/vfs.c`). A flat directory of files held in RAM: there is no
+disk driver, so they are gone at reboot. `/tmp/NAME`, with `NAME` at most
+63 bytes (`TMP_NAME_MAX`); there are no subdirectories, so
+`/tmp/f/x` is `-ENOTDIR` for a file `f` and `-ENOENT` otherwise. The
+path rules are the initrd's, and `/tmp` hides any `tmp` the archive has
+(`mkinitrd.py` refuses to make one). A file is a name, a size and up to
+256 pages of 4 KiB, allocated as writes reach them; at most 32 files
+(`TMP_FILES_MAX`), counting removed ones still open, and 1 MiB of pages
+in all (`TMP_BYTES_MAX`): past either, `-ENOSPC`. A write that runs out
+of room part-way returns what it wrote. `unlink` takes the name away;
+the file lives on through the fds open on it, and goes with the last.
+Each `open` makes its own open file with its own position, starting at
+0 (`O_APPEND` moves it to the end at each write); the fds `spawn` hands
+on share theirs. Reads and writes copy a piece at a time, within one
+page of the file and one page of the user's buffer: the first piece
+that faults ends the call there, with `-EFAULT` if it was the first, so
+the position always moves by exactly what was copied. Every use of
+`/tmp` holds one sleeping mutex, the copies included, so a file and its
+positions change one call at a time.
+
 **Open files** (`kernel/fs/file.c`). An fd refers to an open file: the
 console's input, the console's output, an initrd file (a range of the
-never-freed initrd, and a position), or one end of a pipe. Each kind says whether it can be
+never-freed initrd, and a position), a `/tmp` file and a position, or
+one end of a pipe. Each kind says whether it can be
 read and written; one that cannot is `-EBADF`. Every fd that refers to a
 file shares it, its position included, and holds a reference; the last
 to close frees it. The console's two files are static and never freed.
@@ -200,6 +224,16 @@ whole records into one pipe, and `cat` between two pipes; the kernel
 test around it checks that every pipe and end is freed, and another
 fails each of the four allocations a pipe makes in turn
 (`kmalloc_test_fail_one()`).
+
+`tmptest` checks `/tmp` from ring 3: each of `open`'s flags and errors
+in order, the initrd's `-EROFS`, files made, written, read, emptied,
+appended to from two fds and removed while open, names at and past the
+limit, the space and file limits to the byte, a full fd table, buffers
+that fault part-way, and `echo` and `cat` with `/tmp` files as their
+stdin and stdout. The kernel test around it checks that every file,
+page and open file is given back; another fails each allocation
+`open` makes in turn. The host tests run the core through every path
+rule, limit and lifetime, and 20,000 random operations against a model.
 
 `fstest` checks each error above from ring 3, the order where two can
 apply, a read whose buffer runs into an unmapped page, and `spawn`'s

@@ -445,7 +445,7 @@ debug: $(DISK_IMG) $(KERNEL_ELF)
 HOST_TEST_KERNEL_SRCS := kernel/lib/string.c kernel/lib/printf.c kernel/lib/cmdline.c \
 	kernel/mm/memmap.c kernel/mm/buddy.c kernel/proc/elf.c kernel/acpi/tables.c \
 	kernel/lib/textgrid.c kernel/lib/fbrender.c kernel/lib/font8x8.c kernel/lib/kbdmap.c \
-	kernel/lib/tar.c kernel/fs/tarfs.c kernel/drivers/serial.c
+	kernel/lib/tar.c kernel/fs/tarfs.c kernel/fs/tmpfs.c kernel/drivers/serial.c
 HOST_TEST_USER_SRCS   := user/lib/lineedit.c
 HOST_TEST_SRCS        := $(sort $(wildcard tests/host/*.c))
 HOST_TEST_BIN         := $(BUILD)/tests/host/run_host_tests

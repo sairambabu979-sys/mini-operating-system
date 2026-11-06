@@ -18,12 +18,13 @@
 #define SYS_WAIT     6  /* wait(int pid or -1, int *status) -> pid */
 #define SYS_TIME_MS  7  /* time_ms() -> milliseconds since boot */
 #define SYS_READ     8  /* read(int fd, void *buf, size_t len) -> bytes; 0 at end of file */
-#define SYS_OPEN     9  /* open(const char *path) -> fd, read-only */
+#define SYS_OPEN     9  /* open(const char *path, int flags) -> fd */
 #define SYS_CLOSE    10 /* close(int fd) -> 0 */
 #define SYS_READDIR                                                                                \
     11 /* readdir(const char *path, u64 index, struct dirent *out) -> 1, or 0 past the end */
-#define SYS_FSTAT 12 /* fstat(int fd, struct stat *out) -> 0 */
-#define SYS_PIPE  13 /* pipe(int fds[2]) -> 0: fds[0] the read end, fds[1] the write end */
+#define SYS_FSTAT  12 /* fstat(int fd, struct stat *out) -> 0 */
+#define SYS_PIPE   13 /* pipe(int fds[2]) -> 0: fds[0] the read end, fds[1] the write end */
+#define SYS_UNLINK 14 /* unlink(const char *path) -> 0 */
 
 /*
  * spawn()'s arguments: `args` is NULL or a NULL-terminated list of at most
@@ -42,9 +43,9 @@
 #define SPAWN_ARGS_SIZE 256
 
 /*
- * Files: the initrd, read-only, by absolute path ("/bin/sh"; "/" is the
- * root, one trailing "/" is allowed, and "", ".", ".." components are
- * -EINVAL). PATH_MAX counts the NUL.
+ * Files: the initrd, read-only, and /tmp, files in RAM, by absolute path
+ * ("/bin/sh"; "/" is the root, one trailing "/" is allowed, and "", ".",
+ * ".." components are -EINVAL). PATH_MAX counts the NUL.
  *
  * fds 0-2 are the standard input, output and error: the console's input
  * and output (twice) for the first process, then whatever spawn() gave.
@@ -52,7 +53,7 @@
  * hands out the lowest free fd from FD_FIRST, at most FILES_MAX at once
  * (-EMFILE), and a new process starts with none of those open. Reading
  * or writing a file that cannot be read or written (the console's
- * output, an initrd file) is -EBADF. Everything still open closes when
+ * output, a file opened only to read or only to write) is -EBADF. Everything still open closes when
  * the process exits, however it ends.
  */
 #define PATH_MAX  256
@@ -60,8 +61,45 @@
 #define FILES_MAX 8
 
 /*
- * readdir()'s record: entry `index` of a directory, counted from 0 in the
- * archive's order. `name` is the entry's own name, not its path.
+ * open()'s flags: one access mode, and any of the others. 0 is O_RDONLY,
+ * so a v1.5 program's open(path) still opens to read. -EINVAL for any
+ * other bit, the mode 3, or O_TRUNC or O_APPEND without writing.
+ *   O_CREAT  create the file if it is missing (in /tmp only)
+ *   O_TRUNC  empty it first
+ *   O_APPEND every write goes at its end
+ * In the initrd, opening a file to write is -EROFS, and so is O_CREAT
+ * for a file that is missing where the initrd could have held it. The order of the
+ * errors: the path (-EFAULT, -ENAMETOOLONG), the flags (-EINVAL), the
+ * lookup (-EINVAL, -ENOENT, -ENOTDIR), -EISDIR, -EROFS, -EMFILE, then
+ * creating it (-ENOSPC, -ENOMEM).
+ */
+#define O_RDONLY  0
+#define O_WRONLY  1
+#define O_RDWR    2
+#define O_ACCMODE 3
+#define O_CREAT   0x40
+#define O_TRUNC   0x200
+#define O_APPEND  0x400
+
+/*
+ * /tmp: a flat directory of files in RAM, gone at reboot. "/tmp/NAME",
+ * NAME at most TMP_NAME_MAX - 1 bytes (-ENAMETOOLONG); there are no
+ * subdirectories. At most TMP_FILES_MAX files, counting removed ones
+ * still open, and TMP_BYTES_MAX bytes of data in all, counted in whole
+ * TMP_PAGE pieces of each file: -ENOSPC past either. A removed file
+ * (unlink) stays readable and writable through the fds open on it, and
+ * goes with the last of them.
+ */
+#define TMP_NAME_MAX  64
+#define TMP_FILES_MAX 32
+#define TMP_PAGE      4096
+#define TMP_BYTES_MAX (256ul * TMP_PAGE)
+
+/*
+ * readdir()'s record: entry `index` of a directory, counted from 0: in
+ * the archive's order for the initrd's, in the order they were made for
+ * /tmp's, and "tmp" first in the root. `name` is the entry's own name,
+ * not its path.
  */
 #define DIRENT_FILE     1
 #define DIRENT_DIR      2
@@ -76,7 +114,7 @@ struct dirent {
 
 /*
  * fstat()'s record: what an open fd refers to. `type` uses readdir()'s
- * numbers where they overlap: STAT_FILE is an initrd file, `size` its
+ * numbers where they overlap: STAT_FILE is a file (the initrd's or /tmp's), `size` its
  * size; STAT_CONSOLE the console's input or output, `size` 0; STAT_PIPE
  * either end of a pipe, `size` the bytes waiting in it. -EBADF for an fd
  * that is not open, then -EFAULT unless `out` is writable.
@@ -111,7 +149,7 @@ struct stat {
     unsigned int reserved; /* 0 */
 };
 
-#define SYS_COUNT 14
+#define SYS_COUNT 15
 
 /* Exit status of a process killed by CPU exception `vector`. */
 #define EXIT_STATUS_FAULT(vector) (128 + (vector))

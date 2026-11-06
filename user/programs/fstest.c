@@ -56,7 +56,7 @@ static int child(void)
 static long motd_size(void)
 {
     char buf[64];
-    long fd = sys_open("/etc/motd"), total = 0, n;
+    long fd = sys_open("/etc/motd", O_RDONLY), total = 0, n;
 
     while ((n = sys_read((int)fd, buf, sizeof(buf))) > 0)
         total += n;
@@ -133,7 +133,7 @@ static int child_swapped(void)
 static int child_crash(void)
 {
     for (int i = 0; i < FILES_MAX; i++)
-        sys_open("/etc/motd");
+        sys_open("/etc/motd", O_RDONLY);
     sys_close(FD_FIRST + 2);
     *(volatile int *)0x1000 = 1; /* UNMAPPED */
     return 1;
@@ -144,22 +144,22 @@ static void bad_paths(void)
     too_long[0] = '/';
     for (usize i = 1; i < PATH_MAX; i++)
         too_long[i] = 'a';
-    expect("open(kernel pointer)", sys_open(KPTR), -EFAULT);
-    expect("open(unmapped)", sys_open(UNMAPPED), -EFAULT);
-    expect("open(no NUL in PATH_MAX bytes)", sys_open(too_long), -ENAMETOOLONG);
-    expect("open(relative)", sys_open("etc/motd"), -EINVAL);
-    expect("open(..)", sys_open("/bin/../etc/motd"), -EINVAL);
-    expect("open(missing)", sys_open("/etc/nope"), -ENOENT);
-    expect("open(a directory)", sys_open("/bin"), -EISDIR);
-    expect("open(the root)", sys_open("/"), -EISDIR);
-    expect("open(a file with a trailing /)", sys_open("/etc/motd/"), -ENOTDIR);
-    expect("open(below a file)", sys_open("/etc/motd/x"), -ENOTDIR);
+    expect("open(kernel pointer)", sys_open(KPTR, O_RDONLY), -EFAULT);
+    expect("open(unmapped)", sys_open(UNMAPPED, O_RDONLY), -EFAULT);
+    expect("open(no NUL in PATH_MAX bytes)", sys_open(too_long, O_RDONLY), -ENAMETOOLONG);
+    expect("open(relative)", sys_open("etc/motd", O_RDONLY), -EINVAL);
+    expect("open(..)", sys_open("/bin/../etc/motd", O_RDONLY), -EINVAL);
+    expect("open(missing)", sys_open("/etc/nope", O_RDONLY), -ENOENT);
+    expect("open(a directory)", sys_open("/bin", O_RDONLY), -EISDIR);
+    expect("open(the root)", sys_open("/", O_RDONLY), -EISDIR);
+    expect("open(a file with a trailing /)", sys_open("/etc/motd/", O_RDONLY), -ENOTDIR);
+    expect("open(below a file)", sys_open("/etc/motd/x", O_RDONLY), -ENOTDIR);
 }
 
 static void reads(void)
 {
     char buf[128]; /* more than all of /etc/motd */
-    long fd = sys_open("/etc/motd"), n;
+    long fd = sys_open("/etc/motd", O_RDONLY), n;
 
     expect("open(/etc/motd) is the first file fd", fd, FD_FIRST);
     expect("read(len 0)", sys_read((int)fd, buf, 0), 0);
@@ -186,7 +186,7 @@ static void reads(void)
     struct dirent d;
     long total = 0;
 
-    fd = sys_open("/bin/sh");
+    fd = sys_open("/bin/sh", O_RDONLY);
     expect("open(/bin/sh)", fd, FD_FIRST);
     while ((n = sys_read((int)fd, big + total, sizeof(big) - (usize)total)) > 0)
         total += n;
@@ -210,7 +210,7 @@ static void reads(void)
      */
     char *edge = (char *)(((u64)_end + 4095) & ~4095ull);
 
-    fd = sys_open("/bin/sh");
+    fd = sys_open("/bin/sh", O_RDONLY);
     expect("read(200 bytes, 100 before an unmapped page)", sys_read((int)fd, edge - 100, 200), 100);
     expect("read: those are the first 100 bytes", memcmp(edge - 100, big, 100) == 0, 1);
     expect("read: goes on from byte 100", sys_read((int)fd, buf, 8), 8);
@@ -226,12 +226,12 @@ static void fd_table(void)
     long fds[FILES_MAX];
 
     for (int i = 0; i < FILES_MAX; i++) {
-        fds[i] = sys_open("/etc/motd");
+        fds[i] = sys_open("/etc/motd", O_RDONLY);
         expect("open: the lowest free fd", fds[i], FD_FIRST + i);
     }
-    expect("open(one too many)", sys_open("/etc/motd"), -EMFILE);
+    expect("open(one too many)", sys_open("/etc/motd", O_RDONLY), -EMFILE);
     expect("close(a middle one)", sys_close((int)fds[2]), 0);
-    expect("open: reuses it", sys_open("/etc/motd"), fds[2]);
+    expect("open: reuses it", sys_open("/etc/motd", O_RDONLY), fds[2]);
     for (int i = 0; i < FILES_MAX; i++)
         expect("close all", sys_close((int)fds[i]), 0);
 }
@@ -239,7 +239,7 @@ static void fd_table(void)
 static void stats(void)
 {
     struct stat st = {.reserved = 7};
-    long fd = sys_open("/etc/motd");
+    long fd = sys_open("/etc/motd", O_RDONLY);
 
     expect("fstat(0)", sys_fstat(0, &st), 0);
     expect("fstat(0): the console, size 0", st.type == STAT_CONSOLE && st.size == 0, 1);
@@ -271,7 +271,7 @@ static void spawn_stdio(void)
     static const int swapped[3] = {1, 0, 2};
     char buf[16];
     int status = -1;
-    long fd = sys_open("/etc/motd"), pid;
+    long fd = sys_open("/etc/motd", O_RDONLY), pid;
     int std[3] = {(int)fd, 1, 2};
 
     expect("read 9 before spawn", sys_read((int)fd, buf, 9), 9);
@@ -282,7 +282,7 @@ static void spawn_stdio(void)
     expect("the child's reads moved this fd's position", sys_read((int)fd, buf, 1), 0);
     sys_close((int)fd);
 
-    fd = sys_open("/etc/motd");
+    fd = sys_open("/etc/motd", O_RDONLY);
     std[0] = (int)fd;
     pid = sys_spawn_stdio("fstest", inherit_args, std);
     expect("spawn(inherit)", pid > 0, 1);
@@ -294,7 +294,7 @@ static void spawn_stdio(void)
     expect("wait(swapped)", sys_wait((int)pid, &status), pid);
     expect("swapped's failures", status, 0);
 
-    fd = sys_open("/etc/motd");
+    fd = sys_open("/etc/motd", O_RDONLY);
     std[0] = (int)fd;
     pid = sys_spawn_stdio("fstest", crash_args, std);
     expect("wait(crash)", sys_wait((int)pid, &status), pid);
@@ -377,7 +377,7 @@ int main(int argc, char **argv)
     stats();
     spawn_stdio();
 
-    long fd = sys_open("/etc/motd"), pid;
+    long fd = sys_open("/etc/motd", O_RDONLY), pid;
 
     expect("open before spawn", fd, FD_FIRST);
     pid = sys_spawnv("fstest", child_args);
