@@ -173,14 +173,14 @@ static void errors(void)
     expect("pipe(unmapped)", sys_pipe(UNMAPPED), -EFAULT);
     expect("pipe(read-only)", sys_pipe((int *)read_only), -EFAULT);
     expect("pipe(running into an unmapped page)", sys_pipe((int *)(edge - 4)), -EFAULT);
-    expect("none of those took an fd", sys_open("/etc/motd"), FD_FIRST);
+    expect("none of those took an fd", sys_open("/etc/motd", O_RDONLY), FD_FIRST);
     sys_close(FD_FIRST);
 
     for (int i = 0; i < FILES_MAX - 1; i++)
-        opened[i] = sys_open("/etc/motd");
+        opened[i] = sys_open("/etc/motd", O_RDONLY);
     expect("pipe with one fd free", sys_pipe(fds), -EMFILE);
     expect("pipe: -EMFILE left fds as it was", fds[0] == 77 && fds[1] == 88, 1);
-    expect("pipe: and took no fd", sys_open("/etc/motd"), FD_FIRST + FILES_MAX - 1);
+    expect("pipe: and took no fd", sys_open("/etc/motd", O_RDONLY), FD_FIRST + FILES_MAX - 1);
     expect("pipe with none free", sys_pipe(fds), -EMFILE);
     sys_close(FD_FIRST + FILES_MAX - 1);
     sys_close((int)opened[1]);

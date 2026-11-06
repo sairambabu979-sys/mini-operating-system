@@ -63,9 +63,14 @@ long sys_read(int fd, void *buf, usize len)
     return syscall3(SYS_READ, fd, (long)buf, (long)len);
 }
 
-long sys_open(const char *path)
+long sys_open(const char *path, int flags)
 {
-    return syscall3(SYS_OPEN, (long)path, 0, 0);
+    return syscall3(SYS_OPEN, (long)path, flags, 0);
+}
+
+long sys_unlink(const char *path)
+{
+    return syscall3(SYS_UNLINK, (long)path, 0, 0);
 }
 
 long sys_close(int fd)
@@ -163,6 +168,10 @@ const char *sys_strerror(long err)
         return "path too long";
     case EMFILE:
         return "too many open files";
+    case EROFS:
+        return "read-only file system";
+    case ENOSPC:
+        return "no space left";
     case EFAULT:
         return "bad address";
     case EBADF:

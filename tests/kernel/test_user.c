@@ -12,12 +12,14 @@
 #include <arch/trap.h>
 #include <core/input.h>
 #include <core/ktest.h>
+#include <core/preempt.h>
 #include <core/printk.h>
 #include <core/time.h>
 #include <fs/file.h>
 #include <fs/initrd.h>
 #include <fs/pipe.h>
 #include <fs/tarfs.h>
+#include <fs/vfs.h>
 #include <lib/errno.h>
 #include <lib/printf.h>
 #include <lib/string.h>
@@ -826,4 +828,71 @@ KTEST(wc_counts_a_file_and_a_pipe)
     KEXPECT(log_has(want));
     KEXPECT_EQ(file_count(), files);
     KEXPECT_EQ(pipe_count(), pipes);
+}
+
+/*
+ * /tmp from ring 3: tmptest checks open()'s flags and errors, writes,
+ * removal, the limits and bad buffers, and leaves /tmp empty. Every
+ * file, page and open file is given back.
+ */
+KTEST(tmp_files_work_and_reject_hostile_arguments)
+{
+    u32 files = file_count();
+
+    KEXPECT_EQ(vfs_tmp_files(), 0);
+    KEXPECT_EQ(run("tmptest"), 0); /* exit status = number of wrong answers, each printed */
+    KEXPECT_EQ(vfs_tmp_files(), 0);
+    KEXPECT_EQ(vfs_tmp_pages(), 0);
+    KEXPECT_EQ(file_count(), files);
+}
+
+/* Opens `path` with kmalloc's allocation number n failing (n -1: none). */
+static int open_failing(const char *path, u32 flags, long n, struct file **f)
+{
+    int err;
+
+    preempt_disable(); /* no other task allocates meanwhile; the lock is free, so no sleep */
+    long previous = kmalloc_test_fail_one(n);
+
+    err = vfs_open(path, flags, true, f);
+    (void)kmalloc_test_fail_one(previous);
+    preempt_enable();
+    return err;
+}
+
+/*
+ * Making a /tmp file takes two allocations, the file and its open file;
+ * either failing is -ENOMEM with nothing made. O_TRUNC on an existing
+ * file whose open file cannot be had leaves it as it was.
+ */
+KTEST(tmp_open_out_of_memory_changes_nothing)
+{
+    struct kmalloc_stats k0, k1;
+    struct spawn_args args = {0};
+    struct file *f = NULL;
+    u32 files = file_count();
+
+    kmalloc_get_stats(&k0);
+    KEXPECT_EQ(open_failing("/tmp/oom", O_WRONLY | O_CREAT, 0, &f), -ENOMEM);
+    KEXPECT_EQ(vfs_tmp_files(), 0);
+    KEXPECT_EQ(open_failing("/tmp/oom", O_WRONLY | O_CREAT, 1, &f), -ENOMEM);
+    KEXPECT_EQ(vfs_tmp_files(), 0); /* made, then taken back */
+    KEXPECT_EQ(open_failing("/tmp/oom", O_WRONLY | O_CREAT, 2, &f), 0);
+    KEXPECT_EQ(vfs_tmp_files(), 1);
+    file_put(f);
+    KEXPECT_EQ(vfs_unlink("/tmp/oom"), 0);
+    kmalloc_get_stats(&k1);
+    KEXPECT_EQ(k1.small_live, k0.small_live);
+    KEXPECT_EQ(k1.large_live, k0.large_live);
+
+    KEXPECT_EQ(spawn_args_add(&args, "fill"), 0);
+    KEXPECT_EQ(run_args("tmptest", &args), 0); /* /tmp/keep: "keep me" */
+    KEXPECT_EQ(open_failing("/tmp/keep", O_WRONLY | O_TRUNC, 0, &f), -ENOMEM);
+    KEXPECT_EQ(vfs_open("/tmp/keep", O_RDONLY, true, &f), 0);
+    KEXPECT_EQ(f->ops->size(f), 7); /* not emptied */
+    file_put(f);
+    KEXPECT_EQ(vfs_unlink("/tmp/keep"), 0);
+    KEXPECT_EQ(vfs_tmp_files(), 0);
+    KEXPECT_EQ(vfs_tmp_pages(), 0);
+    KEXPECT_EQ(file_count(), files);
 }
