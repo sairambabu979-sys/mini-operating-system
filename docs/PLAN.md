@@ -3,8 +3,8 @@
 > Status: **v1.0.0** = M0–M8 · **v1.1.0** = everything merged after it (parts 2–4) ·
 > **v1.2.0** = the keyboard, COM1 input and the shell · **v1.3.0** = arguments for programs ·
 > **v1.4.0** = the initrd, with files programs can read · **v1.4.1** = hardening, and macOS
-> builds · **v1.5.0** = pipes; §11 records the main additions and fixes, several of which fix
-> v1.0.0 code ·
+> builds · **v1.5.0** = pipes · **v1.6.0** = files you can write, in `/tmp`; §11 records the main
+> additions and fixes, several of which fix v1.0.0 code ·
 > Target: x86_64, single core, QEMU first, never yet booted on real hardware
 >
 > This is the plan as written before any code, kept as the record of what was
@@ -573,6 +573,12 @@ or something the implementation taught us.
 | Item | Notes |
 |------|-------|
 | Pipes | Three parts. Open files: an fd points at a shared, counted file (the console's input or output, an initrd file with its position, a pipe end), `spawn` takes the child's fds 0-2 as a third argument, `fstat` (syscall 12) says what an fd is, and every fd closes at exit. `pipe()` (syscall 13): a 4 KiB ring with blocking reads and writes, the end of input once the last writer goes, `-EPIPE` once the last reader does, writes of up to 256 bytes kept whole, and bad buffers that never lose a byte. The shell runs `a \| b \| c` with up to 8 programs, and `wc` joins `cat` and `ls`, which now report errors on fd 2. The console has no end of input, so programs that read standard input to its end edit console input a line at a time and stop at Ctrl-D (`stdin_read()`). The adversarial reviews of the three parts found an empty first line from `cat` on a serial terminal (the LF of the CRLF that ended the shell's line), an exit path no test left a closed fd in, and tests that could not see a write split in two or an allocation failing in a slab; each is now caught by a test, the last with a new hook, `kmalloc_test_fail_one()`. See [design/usermode.md](design/usermode.md) and [design/input.md](design/input.md). |
+
+**Built after v1.5.0** (released as v1.6.0)
+
+| Item | Notes |
+|------|-------|
+| Files you can write | Two parts. `/tmp`: a flat directory of files in RAM beside the read-only initrd (there is no disk driver, so they are gone at reboot), at most 32 files and 1 MiB; its core (`kernel/fs/tmpfs.c`) is pure code, host-tested against a model over 20,000 random operations. `open` takes Linux's flags (`O_CREAT`, `O_TRUNC`, `O_APPEND`; 0 is still read-only, so v1.5 programs are unchanged), `write` writes `/tmp` files, `unlink` (syscall 14) removes them, and the initrd answers `-EROFS`. The shell redirects with `<`, `>` and `>>`, and `rm` removes files. The adversarial review found that a write that faulted kept the page it had made, so a failed write took space, and that nothing read a hole; both are now caught by tests. A disk would need a block driver and an on-disk format; these calls would carry over unchanged. See [design/usermode.md](design/usermode.md) and [design/input.md](design/input.md). |
 
 **Learned the hard way** (each one is now covered by a test or a check)
 
