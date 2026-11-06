@@ -75,6 +75,9 @@ void tmpfs_truncate(struct tmpfs *fs, struct tmpfs_inode *inode);
  */
 int tmpfs_page(struct tmpfs *fs, struct tmpfs_inode *inode, u64 pos, bool make, u8 **page);
 
+/* Gives back the page holding byte `pos`, if there is one: for a page made for a write that failed. */
+void tmpfs_drop_page(struct tmpfs *fs, struct tmpfs_inode *inode, u64 pos);
+
 /* Entry `index` of /tmp, in the order the files were made: 1 with *out filled, 0 past the last. */
 int tmpfs_readdir(const struct tmpfs *fs, u64 index, struct dirent *out);
 

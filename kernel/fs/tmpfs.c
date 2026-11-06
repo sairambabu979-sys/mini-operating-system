@@ -151,6 +151,17 @@ int tmpfs_page(struct tmpfs *fs, struct tmpfs_inode *inode, u64 pos, bool make, 
     return 0;
 }
 
+void tmpfs_drop_page(struct tmpfs *fs, struct tmpfs_inode *inode, u64 pos)
+{
+    u64 index = pos / TMP_PAGE;
+
+    if (index < TMPFS_PAGES_MAX && inode->pages[index]) {
+        fs->free(inode->pages[index]);
+        inode->pages[index] = NULL;
+        fs->npages--;
+    }
+}
+
 int tmpfs_readdir(const struct tmpfs *fs, u64 index, struct dirent *out)
 {
     const struct tmpfs_inode *inode;

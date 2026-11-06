@@ -74,7 +74,9 @@ static s64 tmp_read(struct file *f, u64 user_buf, u64 len)
  * range, 0 for len 0. With O_APPEND it starts at the end. A piece at a
  * time: a page that cannot be had (-ENOSPC, -ENOMEM) or a piece that is
  * not readable (-EFAULT) ends it, with that error if nothing was written,
- * else the bytes written. The size grows only by what was copied.
+ * else the bytes written. The size grows only by what was copied, and a
+ * page made for a piece that faulted is given back, so a failed write
+ * takes no space.
  */
 static s64 tmp_write(struct file *f, u64 user_buf, u64 len)
 {
@@ -94,12 +96,15 @@ static s64 tmp_write(struct file *f, u64 user_buf, u64 len)
     while (done < len) {
         u64 pos = f->pos + done;
         usize n = piece(len - done, pos, user_buf + done);
-        u8 *page;
+        u8 *page, *had;
 
+        (void)tmpfs_page(&tmp, in, pos, false, &had);
         err = tmpfs_page(&tmp, in, pos, true, &page);
         if (err)
             break;
         if (copy_from_user(page + pos % TMP_PAGE, (const void *)(user_buf + done), n)) {
+            if (!had)
+                tmpfs_drop_page(&tmp, in, pos);
             err = -EFAULT;
             break;
         }

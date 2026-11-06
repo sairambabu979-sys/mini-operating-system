@@ -67,7 +67,8 @@
  *   O_CREAT  create the file if it is missing (in /tmp only)
  *   O_TRUNC  empty it first
  *   O_APPEND every write goes at its end
- * In the initrd, a write mode or O_CREAT is -EROFS. The order of the
+ * In the initrd, opening a file to write is -EROFS, and so is O_CREAT
+ * for a file that is missing where the initrd could have held it. The order of the
  * errors: the path (-EFAULT, -ENAMETOOLONG), the flags (-EINVAL), the
  * lookup (-EINVAL, -ENOENT, -ENOTDIR), -EISDIR, -EROFS, -EMFILE, then
  * creating it (-ENOSPC, -ENOMEM).
@@ -95,8 +96,10 @@
 #define TMP_BYTES_MAX (256ul * TMP_PAGE)
 
 /*
- * readdir()'s record: entry `index` of a directory, counted from 0 in the
- * archive's order. `name` is the entry's own name, not its path.
+ * readdir()'s record: entry `index` of a directory, counted from 0: in
+ * the archive's order for the initrd's, in the order they were made for
+ * /tmp's, and "tmp" first in the root. `name` is the entry's own name,
+ * not its path.
  */
 #define DIRENT_FILE     1
 #define DIRENT_DIR      2

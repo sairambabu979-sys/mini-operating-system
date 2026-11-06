@@ -223,6 +223,25 @@ TEST(tmpfs_out_of_memory_changes_nothing)
     EXPECT_EQ(live, 0);
 }
 
+TEST(tmpfs_gives_back_a_dropped_page)
+{
+    static struct tmpfs fs;
+    struct tmpfs_inode *a;
+    u8 *page;
+
+    fresh(&fs);
+    EXPECT_EQ(tmpfs_create(&fs, "a", &a), 0);
+    EXPECT_EQ(tmpfs_page(&fs, a, 9000, true, &page), 0);
+    EXPECT_EQ(fs.npages, 1);
+    tmpfs_drop_page(&fs, a, 8192); /* the same page */
+    EXPECT_TRUE(fs.npages == 0 && a->pages[2] == NULL && live == 1);
+    tmpfs_drop_page(&fs, a, 8192);          /* not there: nothing */
+    tmpfs_drop_page(&fs, a, TMP_BYTES_MAX); /* past the file: nothing */
+    EXPECT_EQ(fs.npages, 0);
+    tmpfs_unlink(&fs, a);
+    EXPECT_EQ(live, 0);
+}
+
 TEST(tmpfs_root_lists_tmp_then_the_archive)
 {
     static struct archive with, without;
@@ -312,16 +331,20 @@ TEST(tmpfs_random_operations_match_a_model)
         } else if (op == 4) {
             tmpfs_truncate(&fs, m[i].in);
             m[i].size = 0;
-        } else if (op >= 5) { /* write at a place up to the end */
-            usize pos = (usize)rand() % (m[i].size + 1), n = (usize)rand() % 3000;
+        } else if (op >= 5) { /* write at a place up to two pages past the end: a hole */
+            usize pos = (usize)rand() % (m[i].size + 2 * TMP_PAGE), n = (usize)rand() % 3000;
 
+            if (pos > MODEL_MAX)
+                pos = MODEL_MAX;
             if (pos + n > MODEL_MAX)
                 n = MODEL_MAX - pos;
             for (usize k = 0; k < n; k++)
                 buf[k] = (u8)rand();
             EXPECT_EQ(fs_write(&fs, m[i].in, pos, buf, n), 0);
+            if (n && pos > m[i].size) /* the hole reads as zeros; writing nothing makes none */
+                memset(m[i].data + m[i].size, 0, pos - m[i].size);
             memcpy(m[i].data + pos, buf, n);
-            if (pos + n > m[i].size)
+            if (n && pos + n > m[i].size)
                 m[i].size = pos + n;
         }
         if (i >= 0 && !m[i].linked && m[i].opens == 0) /* freed: drop it from the model */

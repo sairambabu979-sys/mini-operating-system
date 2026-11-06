@@ -241,16 +241,51 @@ static void large(void)
     sys_unlink("/tmp/big");
 }
 
+/*
+ * A file emptied through one fd while another's position is past the new
+ * end: a write there leaves a hole before it, which reads as zeros.
+ */
+static void holes(void)
+{
+    struct stat st = {0};
+    long a = sys_open("/tmp/hole", WR_NEW), b, r, got = 0, n;
+    bool zeros = true;
+
+    memset(big, 'x', 5000);
+    expect("hole: write 5000", sys_write((int)a, big, 5000), 5000);
+    b = sys_open("/tmp/hole", O_WRONLY | O_TRUNC);
+    expect("hole: emptied through another fd", sys_fstat((int)a, &st) == 0 && st.size == 0, 1);
+    expect("hole: write at 5000, past the end", sys_write((int)a, "Z", 1), 1);
+    expect("hole: the size is 5001", sys_fstat((int)a, &st) == 0 && st.size == 5001, 1);
+    r = sys_open("/tmp/hole", O_RDONLY);
+    while ((n = sys_read((int)r, big + got, sizeof(big) - (usize)got)) > 0)
+        got += n;
+    expect("hole: read all 5001", got, 5001);
+    for (long i = 0; i < 5000; i++)
+        zeros &= big[i] == 0;
+    expect("hole: 5000 zeros, never the old x's", zeros, 1);
+    expect("hole: then Z", big[5000], 'Z');
+    sys_close((int)a);
+    sys_close((int)b);
+    sys_close((int)r);
+    sys_unlink("/tmp/hole");
+}
+
 static void space(void)
 {
     char name[24];
+    long fault = sys_open("/tmp/fault", WR_NEW);
     long fd = sys_open("/tmp/full", WR_NEW), total = 0, n, other;
+
+    /* a write that faults before a byte goes in takes no space */
+    expect("write(unmapped) to an empty file", sys_write((int)fault, UNMAPPED, 1), -EFAULT);
 
     memset(big, 'f', sizeof(big));
     while ((n = sys_write((int)fd, big, sizeof(big))) > 0)
         total += n;
     expect("fill: -ENOSPC at the end", n, -ENOSPC);
-    expect("fill: exactly TMP_BYTES_MAX", total, TMP_BYTES_MAX);
+    expect("fill: exactly TMP_BYTES_MAX, the faulted write's page given back", total,
+           TMP_BYTES_MAX);
     expect("fill: not one byte more", sys_write((int)fd, big, 1), -ENOSPC);
     other = sys_open("/tmp/other", WR_NEW);
     expect("another file: made (no data yet)", other >= FD_FIRST, 1);
@@ -260,6 +295,8 @@ static void space(void)
     expect("room again once it is gone", sys_write((int)other, "x", 1), 1);
     sys_close((int)other);
     sys_unlink("/tmp/other");
+    sys_close((int)fault);
+    sys_unlink("/tmp/fault");
 
     for (int i = 0; i < TMP_FILES_MAX; i++) {
         k_snprintf(name, sizeof(name), "/tmp/f%d", i);
@@ -359,6 +396,7 @@ int main(int argc, char **argv)
     names();
     removed_but_open();
     large();
+    holes();
     space();
     no_fd();
     bad_buffers();
