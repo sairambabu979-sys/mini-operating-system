@@ -682,8 +682,8 @@ KTEST(shell_runs_pipelines)
         "sh> | wc\nsh: a pipeline needs a program on each side of every |\n",
         "sh> wc |\nsh: a pipeline needs a program on each side of every |\n",
         "sh> ls || wc\nsh: a pipeline needs a program on each side of every |\n",
-        "sh> help | wc\nsh: help cannot be in a pipeline\n",
-        "sh> help x | wc\nsh: help cannot be in a pipeline\n",
+        "sh> help | wc\nsh: help cannot be in a pipeline or redirected\n",
+        "sh> help x | wc\nsh: help cannot be in a pipeline or redirected\n",
         "sh> wc|wc|wc|wc|wc|wc|wc|wc|wc\nsh: too many programs in a pipeline (8 at most)\n",
         "2 16 89 /etc/motd\nwc: /nope: not found\n2 16 89 total\n[exit 1]\n",
         "sh> wc\nab cd\n1 2 6\n[exit 0]\nsh> exit\n",
@@ -894,5 +894,146 @@ KTEST(tmp_open_out_of_memory_changes_nothing)
     KEXPECT_EQ(vfs_unlink("/tmp/keep"), 0);
     KEXPECT_EQ(vfs_tmp_files(), 0);
     KEXPECT_EQ(vfs_tmp_pages(), 0);
+    KEXPECT_EQ(file_count(), files);
+}
+
+/*
+ * Runs the shell on `session` (less than the 256-byte input queue, which
+ * drops the rest) and checks the console log holds each of want[].
+ */
+static void shell_session(const char *session, const char *const *want, usize nwant)
+{
+    bool was = input_test_set_present(true);
+
+    input_test_flush();
+    input_inject((const u8 *)session, strlen(session));
+    KEXPECT_EQ(run("sh"), 0);
+    for (usize i = 0; i < nwant; i++)
+        if (!log_has(want[i]))
+            ktest_fail(__FILE__, __LINE__, "no '%s' in the console log", want[i]);
+    input_test_flush();
+    input_test_set_present(was);
+}
+
+/*
+ * Redirection: > makes or empties a /tmp file, >> adds to it, < reads
+ * one, with or without spaces, alone and in a pipeline; rm removes them,
+ * and /tmp is empty again at the end.
+ */
+KTEST(shell_redirects_to_and_from_files)
+{
+    static const char session[] = "echo hi > /tmp/a\n"
+                                  "echo yo >>/tmp/a\n"
+                                  "cat /tmp/a\n"
+                                  "wc</tmp/a\n"
+                                  "cat < /tmp/a | wc\n"
+                                  "wc /tmp/a > /tmp/n\n"
+                                  "cat /tmp/n\n"
+                                  "echo new > /tmp/a\n"
+                                  "cat /tmp/a\n"
+                                  "rm /tmp/a /tmp/n\n"
+                                  "rm /tmp/a\n"
+                                  "rm\n"
+                                  "ls /tmp\n"
+                                  "exit\n";
+    static const char *const want[] = {
+        "sh> echo hi > /tmp/a\n[exit 0]\n",
+        "sh> echo yo >>/tmp/a\n[exit 0]\n",
+        "sh> cat /tmp/a\nhi\nyo\n[exit 0]\n",
+        "sh> wc</tmp/a\n2 2 6\n[exit 0]\n",
+        "sh> cat < /tmp/a | wc\n2 2 6\n[exit 0 0]\n",
+        "sh> cat /tmp/n\n2 2 6 /tmp/a\n[exit 0]\n",
+        "sh> cat /tmp/a\nnew\n[exit 0]\n", /* > empties it first */
+        "sh> rm /tmp/a /tmp/n\n[exit 0]\n",
+        "sh> rm /tmp/a\nrm: /tmp/a: not found\n[exit 1]\n",
+        "sh> rm\nusage: rm FILE...\n[exit 2]\n",
+        "sh> ls /tmp\n[exit 0]\nsh> exit\n", /* nothing left */
+    };
+    u32 files = file_count();
+
+    _Static_assert(sizeof(session) <= INPUT_QUEUE_SIZE, "the input queue would drop the rest");
+    shell_session(session, want, ARRAY_SIZE(want));
+    KEXPECT_EQ(vfs_tmp_files(), 0);
+    KEXPECT_EQ(file_count(), files);
+}
+
+/*
+ * Each wrong redirection is refused before anything runs, and a file
+ * that cannot be opened runs nothing: /tmp is still empty after.
+ */
+KTEST(shell_refuses_bad_redirections)
+{
+    static const char session[] = "cat < /tmp/nope\n"
+                                  "echo x > /etc/motd\n"
+                                  "echo x > out\n"
+                                  "echo >\n"
+                                  "cat <\n"
+                                  "echo > | wc\n"
+                                  "echo > > /tmp/x\n"
+                                  "> /tmp/x\n"
+                                  "cat | wc < /tmp/a\n"
+                                  "echo a > /tmp/a | wc\n"
+                                  "echo a >/tmp/a >/tmp/b\n"
+                                  "help > /tmp/x\n"
+                                  "ls /tmp\n"
+                                  "exit\n";
+    static const char *const want[] = {
+        "sh> cat < /tmp/nope\nsh: /tmp/nope: not found\nsh> ",
+        "sh> echo x > /etc/motd\nsh: /etc/motd: read-only file system\nsh> ",
+        "sh> echo x > out\nsh: out: bad path",
+        "sh> echo >\nsh: > needs a file name after it\n",
+        "sh> cat <\nsh: < needs a file name after it\n",
+        "sh> echo > | wc\nsh: > needs a file name after it\n",
+        "sh> echo > > /tmp/x\nsh: > needs a file name after it\n",
+        "sh> > /tmp/x\nsh: no program to run\n",
+        "sh> cat | wc < /tmp/a\nsh: only the first program of a pipeline can read a file (<)\n",
+        "sh> echo a > /tmp/a | wc\nsh: only the last program of a pipeline can write a file (>)\n",
+        "sh> echo a >/tmp/a >/tmp/b\nsh: two > or >> for one program\n",
+        "sh> help > /tmp/x\nsh: help cannot be in a pipeline or redirected\n",
+        "sh> ls /tmp\n[exit 0]\nsh> exit\n", /* nothing made by any of them */
+    };
+    u32 files = file_count();
+
+    _Static_assert(sizeof(session) <= INPUT_QUEUE_SIZE, "the input queue would drop the rest");
+    shell_session(session, want, ARRAY_SIZE(want));
+    KEXPECT_EQ(vfs_tmp_files(), 0);
+    KEXPECT_EQ(file_count(), files);
+}
+
+/*
+ * The shell closes each redirected file once its program has it: nine
+ * of each would run out of fds (FILES_MAX is 8) if it kept one.
+ */
+KTEST(shell_closes_redirected_files)
+{
+    static const char session[] =
+        "echo>/tmp/a\necho>/tmp/a\necho>/tmp/a\necho>/tmp/a\necho>/tmp/a\n"
+        "echo>/tmp/a\necho>/tmp/a\necho>/tmp/a\necho>/tmp/a\n"
+        "cat</tmp/a\ncat</tmp/a\ncat</tmp/a\ncat</tmp/a\ncat</tmp/a\n"
+        "cat</tmp/a\ncat</tmp/a\ncat</tmp/a\ncat</tmp/a\n"
+        "rm /tmp/a\nexit\n";
+    static const char *const want[] = {"sh> rm /tmp/a\n[exit 0]\nsh> exit\n"};
+    u32 files = file_count();
+
+    _Static_assert(sizeof(session) <= INPUT_QUEUE_SIZE, "the input queue would drop the rest");
+    shell_session(session, want, ARRAY_SIZE(want));
+    KEXPECT_EQ(log_count("sh> echo>/tmp/a\n[exit 0]\n"), 9);
+    KEXPECT_EQ(log_count("sh> cat</tmp/a\n\n[exit 0]\n"), 9);
+    KEXPECT_EQ(log_count("too many open files"), 0);
+
+    /* and the < file when the > file cannot be opened, so nothing runs */
+    static const char failing[] =
+        "echo>/tmp/a\n"
+        "cat</tmp/a>/etc/x\ncat</tmp/a>/etc/x\ncat</tmp/a>/etc/x\ncat</tmp/a>/etc/x\n"
+        "cat</tmp/a>/etc/x\ncat</tmp/a>/etc/x\ncat</tmp/a>/etc/x\ncat</tmp/a>/etc/x\n"
+        "cat</tmp/a>/etc/x\n"
+        "rm /tmp/a\nexit\n";
+    static const char *const after[] = {"sh> rm /tmp/a\n[exit 0]\nsh> exit\n"};
+
+    _Static_assert(sizeof(failing) <= INPUT_QUEUE_SIZE, "the input queue would drop the rest");
+    shell_session(failing, after, ARRAY_SIZE(after));
+    KEXPECT_EQ(log_count("sh: /etc/x: read-only file system\n"), 9);
+    KEXPECT_EQ(log_count("too many open files"), 0);
+    KEXPECT_EQ(vfs_tmp_files(), 0);
     KEXPECT_EQ(file_count(), files);
 }
