@@ -196,8 +196,14 @@ handles Backspace and DEL, Ctrl-U, Ctrl-C (`^C`, the line dropped), Ctrl-D
 80-column screen. A finished line is split into words at runs of spaces
 (no quoting), and each `|` is a word of its own, spaces around it or
 not. The first word names the program, and the rest are its arguments
-(`echo` prints them back); `|` separates the programs of a pipeline. On a
-finished line:
+(`echo` prints them back); `|` separates the programs of a pipeline. `<`,
+`>` and `>>` are words of their own too, each with the file after it:
+`a < f` gives `a` the file `f` as its fd 0, `a > f` makes `f` its fd 1
+(made if missing, emptied first) and `a >> f` the same but added to at
+its end. In a pipeline `<` belongs to the first program and `>` or `>>`
+to the last. The files are opened before anything runs, in `/tmp` for
+writing (the initrd is read-only), and closed by the shell once the
+program has them. On a finished line:
 
 | Line | Output |
 |------|--------|
@@ -212,17 +218,24 @@ finished line:
 | at `TASK_MAX` | `sh: too many tasks` |
 | `a | b | c`, up to 8 programs | a pipeline: each program's fd 1 is a pipe to the next one's fd 0, the first reads the console and the last writes it; their output, then each status in order, `[exit 0 1]`, `-` for one that did not start (it is reported, and the rest still run; if a pipe cannot be made, none from there on starts) |
 | a `|` with no program on one side | `sh: a pipeline needs a program on each side of every |` |
-| `help` or `exit` in a pipeline, with arguments or not | `sh: help cannot be in a pipeline` (or `exit`) |
+| `help` or `exit` in a pipeline or redirected, with arguments or not | `sh: help cannot be in a pipeline or redirected` (or `exit`) |
 | more than 8 programs | `sh: too many programs in a pipeline (8 at most)` |
+| `cat < f`, `echo hi > f`, `echo hi >> f`, `cat < a | wc > b` | the programs, with those files as their fd 0 and 1, then `[exit N]` |
+| a file that cannot be opened | `sh: f: not found` (or `read-only file system`, `bad path ...`), and nothing runs |
+| `<`, `>` or `>>` with no file after it | `sh: > needs a file name after it` |
+| only redirections, no program | `sh: no program to run` |
+| `<` after the first program, `>` before the last | `sh: only the first program of a pipeline can read a file (<)` (or `last ... write`) |
+| two `<`, or two of `>` and `>>`, for one program | `sh: two > or >> for one program` (or `<`) |
 
 Ctrl-D on an empty line exits 0. If `read()` fails, the shell prints `sh:
 cannot read input (-19)` and exits 1. Every way out ends its output with a
 newline. The shell waits for every program it starts before it reads
 again, so it holds at most one pipeline's children, and it closes each
 pipe end as soon as the program it is for has it, so a reader sees the
-end of its input once its writer exits. `cat`, `ls` and `wc` print
-their errors on fd 2, so in a pipeline those reach the console, not the
-next program.
+end of its input once its writer exits. `cat`, `ls`, `wc` and `rm`
+print their errors on fd 2, so in a pipeline or with `>` those reach the
+console, not the next program or the file. `rm FILE...` removes `/tmp`
+files (`unlink`).
 
 `make run-shell` boots `disk-shell.img` with this terminal as COM1
 (`-serial mon:stdio`: Ctrl-C reaches the guest, Ctrl-A x quits QEMU).
@@ -239,9 +252,9 @@ keyboard.
 | 8042: the configuration byte, `Hi\n` through IRQ 1, every printable character, the masked edge, control and extended keys | command `0xD2`, which delivers a set 1 byte as if typed | `tests/kernel/test_input.c` |
 | COM1: bytes through IRQ 4, a full FIFO in order, a woken reader, the drain's cap, an error seen by transmit polling | the UART's own loopback, interrupts off | `tests/kernel/test_input.c` |
 | `read()` from ring 3: bad buffers and the check order, blocking, at most 256 bytes, never more than asked, no device, a reader woken by IRQ 1 | `readkeys`, `readmax`, `badptr` | `tests/kernel/test_user.c` |
-| the shell: `[exit N]`, not found, name too long, arguments (`echo a  b`, too many, a builtin with one), `^C`, blank and padded lines, `exit` (not the Ctrl-D behind it), task count restored, Ctrl-D alone, `-ENODEV`; pipelines of two and four, with and without spaces, an error kept out of the pipe, a program that cannot start on either side (a writer of more than a pipe holds must get `-EPIPE`, not wait), a `|` with nothing on one side, a builtin in a pipeline with and without arguments, 9 programs, `wc` and `cat` at the console with LF and CRLF, `wc` on a 16 KiB file by name and through a pipe against counts the test makes, every pipe freed | `input_inject()` | `tests/kernel/test_user.c` |
+| the shell: `[exit N]`, not found, name too long, arguments (`echo a  b`, too many, a builtin with one), `^C`, blank and padded lines, `exit` (not the Ctrl-D behind it), task count restored, Ctrl-D alone, `-ENODEV`; pipelines of two and four, with and without spaces, an error kept out of the pipe, a program that cannot start on either side (a writer of more than a pipe holds must get `-EPIPE`, not wait), a `|` with nothing on one side, a builtin in a pipeline with and without arguments, 9 programs, `wc` and `cat` at the console with LF and CRLF, `wc` on a 16 KiB file by name and through a pipe against counts the test makes, every pipe freed; `<`, `>` and `>>` with and without spaces, alone and in a pipeline, `rm`, and each wrong redirection refused with nothing run or made |  `input_inject()` | `tests/kernel/test_user.c` |
 | boot | a key pressed during boot (`boot_keypress.py`); bytes 0-239 on stdin during boot must arrive rising (the typeahead run) | `make qemu-test` |
-| typed sessions | the shell typed at through QMP `send-key` (APIC, 8259, UEFI) and over COM1 with no 8042, `cat` at the console and `cat /etc/motd|wc` among the lines; a bad `init=` | `make qemu-test` |
+| typed sessions | the shell typed at through QMP `send-key` (APIC, 8259, UEFI) and over COM1 with no 8042, `cat` at the console, `cat /etc/motd|wc`, `echo hi>/tmp/x` and `cat </tmp/x` among the lines; a bad `init=` | `make qemu-test` |
 
 Each of these planted bugs fails at least one test:
 - no wakeup, `wake_up_one`, a check before getting on the wait queue, a
