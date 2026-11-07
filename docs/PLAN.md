@@ -580,6 +580,12 @@ or something the implementation taught us.
 |------|-------|
 | Files you can write | Two parts. `/tmp`: a flat directory of files in RAM beside the read-only initrd (there is no disk driver, so they are gone at reboot), at most 32 files and 1 MiB; its core (`kernel/fs/tmpfs.c`) is pure code, host-tested against a model over 20,000 random operations. `open` takes Linux's flags (`O_CREAT`, `O_TRUNC`, `O_APPEND`; 0 is still read-only, so v1.5 programs are unchanged), `write` writes `/tmp` files, `unlink` (syscall 14) removes them, and the initrd answers `-EROFS`. The shell redirects with `<`, `>` and `>>`, and `rm` removes files. The adversarial review found that a write that faulted kept the page it had made, so a failed write took space, and that nothing read a hole; both are now caught by tests. A disk would need a block driver and an on-disk format; these calls would carry over unchanged. See [design/usermode.md](design/usermode.md) and [design/input.md](design/input.md). |
 
+**Built after v1.6.0** (not yet released)
+
+| Item | Notes |
+|------|-------|
+| Longer lines | The line editor holds 75 characters, not 31: after the shell's 4-column prompt the cursor stops at column 79, so the echo still never wraps on an 80-column screen (the host fuzz now runs on an 80-column grid, where a 76th character would wrap and fail it). 31 left no room for a pipeline with a redirection, and the 8-program pipeline the shell allows could not be typed with spaces. A serial terminal now needs 80 columns, not 36. See [design/input.md](design/input.md). |
+
 **Learned the hard way** (each one is now covered by a test or a check)
 
 - The early page-table pool sits in the kernel image, whose direct-map

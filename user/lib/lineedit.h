@@ -17,16 +17,17 @@
  *     whole; one that runs to 16 bytes without its final byte ends there;
  *   - Tab, other control bytes and bytes from 0x80 are ignored.
  * A line holds at most LE_LINE_MAX - 1 characters, so after a 4-column
- * prompt the cursor never passes column 35: the echo never wraps on an
- * 80-column screen, where "\b" could not cross back over the edge.
+ * prompt the cursor never passes column 79, the last of an 80-column
+ * screen: the echo never wraps, where "\b" could not cross back over the
+ * edge.
  */
 #ifndef MINIOS_USER_LINEEDIT_H
 #define MINIOS_USER_LINEEDIT_H
 
 #include <types.h>
 
-#define LE_LINE_MAX 32 /* bytes in buf: 31 characters and the NUL */
-#define LE_ECHO_MAX 96 /* the longest echo of one byte: Ctrl-U on a full line */
+#define LE_LINE_MAX 76                      /* bytes in buf: 75 characters and the NUL */
+#define LE_ECHO_MAX (3 * (LE_LINE_MAX - 1)) /* the longest echo of a byte: Ctrl-U on a full line */
 
 enum le_event {
     LE_MORE,   /* keep feeding */

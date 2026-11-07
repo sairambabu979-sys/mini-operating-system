@@ -15,8 +15,8 @@
 #include <string.h>
 
 /* The spec's numbers, stated here rather than taken from the header under test. */
-_Static_assert(LE_LINE_MAX == 32, "a line holds 31 characters");
-#define LINE_CHARS  31
+_Static_assert(LE_LINE_MAX == 76, "a line holds 75 characters");
+#define LINE_CHARS  75
 #define PROMPT_COLS 4
 
 /* Feeds a string; collects the echo, the last event, and every finished line ("a|b|"). */
@@ -141,19 +141,18 @@ TEST(lineedit_caps_the_line_and_ignores_the_rest)
 {
     struct lineedit le;
     struct run r = {0};
-    char forty[41];
+    char many[LINE_CHARS + 25];
 
-    memset(forty, 'a', 40);
-    forty[40] = '\0';
+    memset(many, 'a', sizeof(many));
     le_reset(&le);
-    feed(&le, &r, forty, 40);
+    feed(&le, &r, many, sizeof(many));
     FEED(&le, &r, "\n");
-    EXPECT_EQ(strlen(r.lines), LINE_CHARS + 1); /* 31 characters and the '|' */
+    EXPECT_EQ(strlen(r.lines), LINE_CHARS + 1); /* 75 characters and the '|' */
     EXPECT_EQ(r.echo_len, LINE_CHARS + 1);
 
-    /* Ctrl-U on a full line: the longest echo there is, 31 erases. */
+    /* Ctrl-U on a full line: the longest echo there is, 75 erases. */
     r = (struct run){0};
-    feed(&le, &r, forty, LINE_CHARS);
+    feed(&le, &r, many, LINE_CHARS);
     size_t typed = r.echo_len;
 
     FEED(&le, &r, "\x15");
@@ -165,7 +164,7 @@ TEST(lineedit_caps_the_line_and_ignores_the_rest)
 
     /* Backspace on a full line makes room for exactly one more. */
     r = (struct run){0};
-    feed(&le, &r, forty, LINE_CHARS);
+    feed(&le, &r, many, LINE_CHARS);
     FEED(&le, &r, "\x7fxy\n");
     EXPECT_EQ(strlen(r.lines), LINE_CHARS + 1);
     EXPECT_EQ(r.lines[LINE_CHARS - 1], 'x');
@@ -184,7 +183,7 @@ TEST(lineedit_caps_the_line_and_ignores_the_rest)
  * a string, for the fuzz to hold the editor against.
  */
 struct model {
-    char line[64];
+    char line[LINE_CHARS];
     size_t len;
     int esc; /* 0 none, 1 after ESC, 2 in a sequence */
     int esc_len;
@@ -241,7 +240,7 @@ static enum le_event model_feed(struct model *m, uint8_t c)
     return LE_MORE;
 }
 
-#define COLS 40
+#define COLS 80 /* the narrowest screen the line fits without wrapping */
 #define ROWS 4
 
 static void no_draw(void *ctx, uint32_t col, uint32_t row, uint8_t ch)
@@ -267,7 +266,7 @@ static uint8_t random_byte(void)
         return burst_byte;
     }
     if (rand() % 64 == 0) {
-        burst = 20 + rand() % 30;
+        burst = 60 + rand() % 40;
         burst_byte = rand() % 2 ? 'k' : '1';
     }
     if (rand() % 4 == 0)

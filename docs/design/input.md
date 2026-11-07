@@ -192,9 +192,10 @@ paste of `readkeys\nok\n` gives `readkeys` its `ok`). It feeds each byte
 to the line editor, writing each echo with one `write()`. The editor
 handles Backspace and DEL, Ctrl-U, Ctrl-C (`^C`, the line dropped), Ctrl-D
 (end of input on an empty line), and swallows escape sequences. Lines hold
-31 characters, so after the 4-column prompt the echo never wraps on an
-80-column screen. A finished line is split into words at runs of spaces
-(no quoting), and each `|` is a word of its own, spaces around it or
+75 characters (typing past them is ignored), so after the 4-column prompt
+the cursor stops at column 79 and the echo never wraps on an 80-column
+screen; a narrower one would wrap, and Backspace could not cross back. A
+finished line is split into words at runs of spaces (no quoting), and each `|` is a word of its own, spaces around it or
 not. The first word names the program, and the rest are its arguments
 (`echo` prints them back); `|` separates the programs of a pipeline. `<`,
 `>` and `>>` are words of their own too, each with the file after it:

@@ -703,6 +703,34 @@ KTEST(shell_runs_pipelines)
     input_test_set_present(was);
 }
 
+/*
+ * A line holds 75 characters: enough for a pipeline of 8 programs written
+ * with spaces, and what is typed past them is dropped, echo included.
+ */
+KTEST(shell_takes_75_character_lines)
+{
+#define B10 "bbbbbbbbbb"
+    static const char session[] = "cat /etc/motd | cat | cat | cat | cat | cat | cat | wc\n"
+                                  "echo " B10 B10 B10 B10 B10 B10 B10 B10 "\n" /* 85 typed */
+                                  "exit\n";
+    static const char *const want[] = {
+        "sh> cat /etc/motd | cat | cat | cat | cat | cat | cat | wc\n2 16 89\n"
+        "[exit 0 0 0 0 0 0 0 0]\n",
+        "sh> echo " B10 B10 B10 B10 B10 B10 B10 "\n" B10 B10 B10 B10 B10 B10 B10 "\n[exit 0]\n",
+    };
+#undef B10
+    bool was = input_test_set_present(true);
+
+    input_test_flush();
+    input_inject((const u8 *)session, sizeof(session) - 1);
+    KEXPECT_EQ(run("sh"), 0);
+    for (usize i = 0; i < ARRAY_SIZE(want); i++)
+        if (!log_has(want[i]))
+            ktest_fail(__FILE__, __LINE__, "no '%s' in the console log", want[i]);
+    input_test_flush();
+    input_test_set_present(was);
+}
+
 /* Ctrl-D on an empty line leaves, and the output still ends with a newline. */
 KTEST(shell_eof_exits_cleanly)
 {

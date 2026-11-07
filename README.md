@@ -308,9 +308,10 @@ These are deliberate scope cuts and known gaps (see [`docs/PLAN.md`](docs/PLAN.m
 - **A minimal shell.** Programs run by name, with at most 8 arguments split
   at spaces (no quoting, no wildcards, no variables), alone or in a
   pipeline of up to 8, and `<`, `>` and `>>` to `/tmp` (one of each per
-  program; no `2>`, no here-documents); no background jobs; lines hold 31 characters; no history. Echo comes from the shell, so typeahead shows
+  program; no `2>`, no here-documents); no background jobs; lines hold 75 characters; no history. Echo comes from the shell, so typeahead shows
   only when it reads, and kernel messages printed mid-line are not redrawn.
-  A serial terminal must be at least 36 columns wide for erasing to be exact.
+  A serial terminal, like the screen, must be at least 80 columns wide for
+  erasing to be exact.
   Outside `exit-after-init`, leaving the shell leaves the system idle. On a
   real UART a paste can overrun the 16-byte receive FIFO while the console
   transmits with interrupts off; overruns are counted, and QEMU cannot show

@@ -194,7 +194,7 @@ reading one file never both read from the same place.
 The console has no end of its own, so a program that reads standard
 input to its end (`cat` with no arguments) goes through `stdin_read()`
 in `user/lib/libsys.c`: when `fstat` says fd 0 is the console, it edits
-input a line at a time with the shell's line editor (31 characters at
+input a line at a time with the shell's line editor (75 characters at
 most), echoes it to fd 2 when that is the console too, and takes Ctrl-D
 on an empty line as the end, as a terminal would. A first byte LF is
 skipped: the shell starts a program at the CR of a terminal's CRLF, and
