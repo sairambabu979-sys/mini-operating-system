@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 /*
  * Prints its arguments, separated by single spaces, and a newline, in one
- * write. Exit status 0.
+ * write. Exit status 0, or 1 if the write failed (reported on fd 2).
  */
 #include "libsys.h"
 
@@ -21,6 +21,11 @@ int main(int argc, char **argv)
         n += len;
     }
     line[n++] = '\n';
-    sys_write(1, line, n);
+    long written = write_all(1, line, n);
+
+    if (written < 0) {
+        eprintf("echo: standard output: %s\n", sys_strerror(written));
+        return 1;
+    }
     return 0;
 }

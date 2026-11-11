@@ -52,7 +52,17 @@ long sys_pipe(int fds[2]);
  */
 long stdin_read(void *buf, usize len);
 
-/* To fd 1, and to fd 2 (errors, so they stay out of a pipe): one write each, 255 bytes at most. */
+/*
+ * Writes all len bytes, writing the rest again after a short write (a full
+ * /tmp, or a pipe whose reader left): len, or the error that stopped it
+ * (-EIO if a write took nothing without saying why).
+ */
+long write_all(int fd, const void *buf, usize len);
+
+/*
+ * To fd 1, and to fd 2 (errors, so they stay out of a pipe): one write each,
+ * 255 bytes at most. The length formatted, or the write's error.
+ */
 int printf(const char *fmt, ...) __printf(1, 2);
 int eprintf(const char *fmt, ...) __printf(1, 2);
 

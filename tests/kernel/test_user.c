@@ -674,7 +674,6 @@ KTEST(shell_runs_pipelines)
         "sh> cat /etc/motd|cat|cat|wc\n2 16 89\n[exit 0 0 0 0]\n",
         "sh> cat /nope | wc\ncat: /nope: not found\n0 0 0\n[exit 1 0]\n",
         "sh> nosuch | wc\nsh: nosuch: not found\n0 0 0\n[exit - 0]\n",
-        "sh> ls /bin | nosuch\nsh: nosuch: not found\n[exit 0 -]\n",
         /* more than a pipe holds, to a reader that never came: cat must get -EPIPE, not wait */
         ("sh> cat /bin/sh | nosuch\nsh: nosuch: not found\ncat: standard output: broken pipe\n"
          "[exit 1 -]\n"),
@@ -697,6 +696,10 @@ KTEST(shell_runs_pipelines)
     for (usize i = 0; i < ARRAY_SIZE(want); i++)
         if (!log_has(want[i]))
             ktest_fail(__FILE__, __LINE__, "no '%s' in the console log", want[i]);
+    /* ls's output fits in the pipe: -EPIPE, unless it ran before the shell closed the read end */
+    KEXPECT(log_has("sh> ls /bin | nosuch\nsh: nosuch: not found\n"
+                    "ls: standard output: broken pipe\n[exit 1 -]\n") ||
+            log_has("sh> ls /bin | nosuch\nsh: nosuch: not found\n[exit 0 -]\n"));
     KEXPECT_EQ(file_count(), files);
     KEXPECT_EQ(pipe_count(), pipes);
     input_test_flush();

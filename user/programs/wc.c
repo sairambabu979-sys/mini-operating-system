@@ -5,8 +5,9 @@
  * see stdin_read()), and prints them as "LINES WORDS BYTES", a file's
  * name after its own, and a total after more than one. A line is a "\n";
  * a word is a run of bytes that are not space, tab, CR or LF. A file that
- * cannot be opened or read is reported on fd 2 and left out. Exit status
- * 0, or 1 if any failed.
+ * cannot be opened or read is reported on fd 2 and left out; standard
+ * output failing is reported and ends it. Exit status 0, or 1 if anything
+ * failed.
  */
 #include "libsys.h"
 
@@ -41,12 +42,15 @@ static long count(long (*read_fn)(int fd, void *buf, usize len), int fd, struct 
     return n;
 }
 
-static void report(const struct counts *c, const char *name)
+/* Prints one line of counts: false, after saying why, if standard output failed. */
+static bool report(const struct counts *c, const char *name)
 {
-    if (name)
-        printf("%lu %lu %lu %s\n", c->lines, c->words, c->bytes, name);
-    else
-        printf("%lu %lu %lu\n", c->lines, c->words, c->bytes);
+    int r = name ? printf("%lu %lu %lu %s\n", c->lines, c->words, c->bytes, name)
+                 : printf("%lu %lu %lu\n", c->lines, c->words, c->bytes);
+
+    if (r < 0)
+        eprintf("wc: standard output: %s\n", sys_strerror(r));
+    return r >= 0;
 }
 
 int main(int argc, char **argv)
@@ -61,8 +65,7 @@ int main(int argc, char **argv)
             eprintf("wc: standard input: %s\n", sys_strerror(n));
             return 1;
         }
-        report(&total, NULL);
-        return 0;
+        return report(&total, NULL) ? 0 : 1;
     }
     for (int i = 1; i < argc; i++) {
         struct counts c = {0};
@@ -80,12 +83,13 @@ int main(int argc, char **argv)
             status = 1;
             continue;
         }
-        report(&c, argv[i]);
+        if (!report(&c, argv[i]))
+            return 1;
         total.lines += c.lines;
         total.words += c.words;
         total.bytes += c.bytes;
     }
-    if (argc > 2)
-        report(&total, "total");
+    if (argc > 2 && !report(&total, "total"))
+        return 1;
     return status;
 }

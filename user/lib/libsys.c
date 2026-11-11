@@ -185,6 +185,20 @@ const char *sys_strerror(long err)
     }
 }
 
+long write_all(int fd, const void *buf, usize len)
+{
+    usize done = 0;
+
+    while (done < len) {
+        long n = sys_write(fd, (const char *)buf + done, len - done);
+
+        if (n <= 0)
+            return n < 0 ? n : -EIO;
+        done += (usize)n;
+    }
+    return (long)len;
+}
+
 /*
  * One write per call, so concurrent processes never interleave mid-line
  * (on a pipe too: 256 bytes is PIPE_ATOMIC, and the NUL is not written).
@@ -193,9 +207,9 @@ static int vdprintf(int fd, const char *fmt, va_list ap)
 {
     char buf[256];
     int n = k_vsnprintf(buf, sizeof(buf), fmt, ap);
+    long written = write_all(fd, buf, (usize)MIN(n, (int)sizeof(buf) - 1));
 
-    sys_write(fd, buf, (usize)MIN(n, (int)sizeof(buf) - 1));
-    return n;
+    return written < 0 ? (int)written : n;
 }
 
 int printf(const char *fmt, ...)
