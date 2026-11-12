@@ -4,8 +4,9 @@
  * to its end (at the console, line by line, 31 characters at most, until
  * Ctrl-D on an empty line: see stdin_read()). A file that cannot be
  * opened or read is reported on fd 2 and skipped; a write that fails
- * (-EPIPE: the reader of a pipe is gone) is reported and ends it. Exit
- * status 0 if everything printed, 1 if anything failed.
+ * (-EPIPE: the reader of a pipe is gone; -ENOSPC: /tmp is full) is
+ * reported and ends it. Exit status 0 if everything printed, 1 if
+ * anything failed.
  */
 #include "libsys.h"
 
@@ -26,10 +27,10 @@ static long copy_out(long (*read_fn)(int fd, void *buf, usize len), int fd)
     long n;
 
     while ((n = read_fn(fd, buf, sizeof(buf))) > 0) {
-        long written = sys_write(1, buf, (usize)n);
+        long written = write_all(1, buf, (usize)n);
 
-        if (written != n) { /* a pipe whose reader went part-way is -EPIPE too */
-            eprintf("cat: standard output: %s\n", sys_strerror(written < 0 ? written : -EPIPE));
+        if (written < 0) {
+            eprintf("cat: standard output: %s\n", sys_strerror(written));
             return WRITE_FAILED;
         }
     }

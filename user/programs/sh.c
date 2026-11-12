@@ -65,8 +65,8 @@ static void help(void)
         if (d.type == DIRENT_FILE)
             printf("  %s\n", d.name);
     printf("a | b runs a with its output going to b\n"
-           "a > f writes a's output to the file f (in /tmp), a >> f adds it at the end, and\n"
-           "a < f gives a the file f as its input\n");
+           "a > /tmp/f writes a's output to /tmp/f, a >> /tmp/f adds it at the end, and\n"
+           "a < f gives a the file f as its input (paths are absolute)\n");
 }
 
 /* Starts one program with these fds 0-2: its pid, or -1 after saying why not. */
